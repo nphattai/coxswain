@@ -9,7 +9,7 @@ here="$(cd "$(dirname "$0")" && pwd)"; proto="$(cd "$here/../../docs/protocol" &
 python3 - "$proto" <<'PY'
 import json, re, sys, pathlib
 proto = pathlib.Path(sys.argv[1])
-names = ["event", "checkpoint", "inbox", "wake", "fleet"]
+names = ["event", "checkpoint", "inbox", "wake", "fleet", "quota"]
 
 def deref(schema, root):
     if isinstance(schema, dict) and "$ref" in schema:
@@ -115,4 +115,4 @@ else:
 
 sys.exit(fail)
 PY
-echo "ok: protocol-schemas (5 examples validate against their JSON Schemas)"
+echo "ok: protocol-schemas (6 examples validate against their JSON Schemas)"

@@ -1,0 +1,89 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 620" role="img" aria-labelledby="title desc">
+  <title id="title">Coxswain orchestration topology</title>
+  <desc id="desc">The captain directs one leader. The leader calls the cox core, which reaches workers through backend, harness, forge, and service adapters. Workers return durable status and checkpoints through files.</desc>
+  <defs>
+    <marker id="arrow-ink" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0l10 5-10 5z" fill="#606b74"/></marker>
+    <marker id="arrow-red" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0l10 5-10 5z" fill="#a82b35"/></marker>
+    <marker id="arrow-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0l10 5-10 5z" fill="#315f89"/></marker>
+    <style>
+      text{font-family:"IBM Plex Sans","Segoe UI",sans-serif;fill:#182027}
+      .label{font-size:11px;font-weight:600;letter-spacing:1.2px;fill:#59656e}
+      .node-title{font-size:16px;font-weight:600}
+      .node-copy{font-size:12px;fill:#59656e}
+      .mono{font-family:ui-monospace,"SFMono-Regular",Consolas,monospace;font-size:11px;fill:#59656e}
+      .band{fill:#edf1f2}
+      .node{fill:#f9faf9;stroke:#aeb8bf;stroke-width:1}
+      .core{fill:#182027;stroke:#182027}
+      .core-text{fill:#f3f6f5}
+      .signal{fill:#f9faf9;stroke:#a82b35;stroke-width:2}
+      .flow{fill:none;stroke:#606b74;stroke-width:1.5;marker-end:url(#arrow-ink)}
+      .command{fill:none;stroke:#a82b35;stroke-width:2;marker-end:url(#arrow-red)}
+      .data-flow{fill:none;stroke:#315f89;stroke-width:1.5;stroke-dasharray:8 8;marker-end:url(#arrow-blue);animation:data-pulse 4s cubic-bezier(.25,1,.5,1) infinite}
+      @keyframes data-pulse{to{stroke-dashoffset:-32}}
+      @media (prefers-reduced-motion:reduce){.data-flow{animation:none}}
+    </style>
+  </defs>
+
+  <rect class="band" x="16" y="16" width="928" height="72"/>
+  <text class="label" x="32" y="38">HUMAN AUTHORITY</text>
+  <rect class="signal" x="366" y="34" width="228" height="38"/>
+  <text class="node-title" x="480" y="58" text-anchor="middle">Captain</text>
+
+  <rect class="band" x="16" y="104" width="928" height="104"/>
+  <text class="label" x="32" y="126">LEADER SESSION</text>
+  <rect class="node" x="112" y="140" width="330" height="48"/>
+  <text class="node-title" x="277" y="160" text-anchor="middle">Leader</text>
+  <text class="node-copy" x="277" y="178" text-anchor="middle">designs, dispatches, audits</text>
+  <rect class="node" x="518" y="140" width="330" height="48"/>
+  <text class="node-title" x="683" y="160" text-anchor="middle">Wake delivery</text>
+  <text class="node-copy" x="683" y="178" text-anchor="middle">push hooks or pull wait</text>
+
+  <rect class="band" x="16" y="224" width="928" height="132"/>
+  <text class="label" x="32" y="246">HARNESS-AGNOSTIC CORE</text>
+  <rect class="core" x="70" y="270" width="820" height="64"/>
+  <text class="node-title core-text" x="138" y="296">cox</text>
+  <text class="node-copy core-text" x="138" y="316">one Go binary</text>
+  <path d="M248 280v44M438 280v44M628 280v44" stroke="#59656e"/>
+  <text class="node-title core-text" x="343" y="296" text-anchor="middle">state</text>
+  <text class="node-copy core-text" x="343" y="316" text-anchor="middle">event log · resolver</text>
+  <text class="node-title core-text" x="533" y="296" text-anchor="middle">protocol</text>
+  <text class="node-copy core-text" x="533" y="316" text-anchor="middle">brief · steer · wake</text>
+  <text class="node-title core-text" x="758" y="296" text-anchor="middle">verdict</text>
+  <text class="node-copy core-text" x="758" y="316" text-anchor="middle">pass · fail · unknown</text>
+
+  <rect class="band" x="16" y="372" width="928" height="104"/>
+  <text class="label" x="32" y="394">EXTERNAL BOUNDARIES</text>
+  <rect class="node" x="48" y="414" width="190" height="42"/>
+  <rect class="node" x="272" y="414" width="190" height="42"/>
+  <rect class="node" x="496" y="414" width="190" height="42"/>
+  <rect class="node" x="720" y="414" width="190" height="42"/>
+  <text class="node-title" x="143" y="440" text-anchor="middle">backend</text>
+  <text class="node-title" x="367" y="440" text-anchor="middle">harness</text>
+  <text class="node-title" x="591" y="440" text-anchor="middle">forge</text>
+  <text class="node-title" x="815" y="440" text-anchor="middle">service</text>
+
+  <rect class="band" x="16" y="492" width="928" height="112"/>
+  <text class="label" x="32" y="514">ISOLATED EXECUTION</text>
+  <rect class="node" x="76" y="536" width="240" height="48"/>
+  <rect class="node" x="360" y="536" width="240" height="48"/>
+  <rect class="node" x="644" y="536" width="240" height="48"/>
+  <text class="node-title" x="196" y="558" text-anchor="middle">Worker A</text>
+  <text class="mono" x="196" y="576" text-anchor="middle">story · worktree · attempt</text>
+  <text class="node-title" x="480" y="558" text-anchor="middle">Worker B</text>
+  <text class="mono" x="480" y="576" text-anchor="middle">story · worktree · attempt</text>
+  <text class="node-title" x="764" y="558" text-anchor="middle">Arena adversary</text>
+  <text class="mono" x="764" y="576" text-anchor="middle">separate harness · read only</text>
+
+  <path class="command" d="M480 72v68"/>
+  <text class="mono" x="492" y="112" fill="#a82b35">directs</text>
+  <path class="flow" d="M277 188v82"/>
+  <text class="mono" x="289" y="230">cox --json</text>
+  <path class="data-flow" d="M683 270v-82"/>
+  <text class="mono" x="696" y="230" fill="#315f89">wake.jsonl</text>
+  <path class="flow" d="M480 334v80"/>
+  <path class="flow" d="M143 456v42h53v38"/>
+  <path class="flow" d="M367 456v42h113v38"/>
+  <path class="flow" d="M815 456v42h-51v38"/>
+  <path class="data-flow" d="M360 560h-20V354h176v-20"/>
+  <text class="mono" x="350" y="368" fill="#315f89">status · checkpoint on disk</text>
+</svg>

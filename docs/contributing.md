@@ -20,7 +20,13 @@ claude plugin validate .
 - **Harness capability card** (`docs/adapters/`): declare a harness's roles, wake mode, checkpoint mode, and sandbox;
   `cox doctor` and `cox story dispatch` read it.
 
+Read [Author an adapter](contributing/adapters.md) before changing an external boundary. It maps each interface to its
+fake, tests, reduced-mode rules, and evidence requirements.
+
 ## Conventions
 
 Conventional commits. No generated files edited by hand (`CHANGELOG.md`, anything marked auto-generated). Every non-trivial
-change lands a runnable test. See the [ADRs](decisions/) for the decisions behind the architecture.
+change lands a runnable test. See the [ADRs](decisions/index.md) for the decisions behind the architecture.
+
+Documentation points to executable owners instead of copying mutable command, schema, or configuration inventories.
+Dated compatibility results belong under [Evidence](evidence/index.md).

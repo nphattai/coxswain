@@ -1,3 +1,8 @@
+---
+hide:
+  - toc
+---
+
 # Core concepts
 
 | Term | What it is |
@@ -11,6 +16,17 @@
 | **Wake protocol** | How a parked or idle leader/worker is woken - push (harness hooks) or pull (`cox wake wait`) - so no event is lost. |
 | **Event log** | The append-only `.cox/events.jsonl` that is the single source of truth for story lifecycle. |
 
-The lifecycle: `cox epic new` -> `cox epic stories` -> `cox story dispatch` -> supervise via wakes -> `cox audit pr` ->
-captain merges -> `cox story done`. See [Architecture](../ARCHITECTURE.md) for the full picture and
-[Handoff protocol](../handoff.md) for the leader/worker contract.
+<figure class="cox-diagram">
+  <div class="cox-diagram__surface">
+    <picture>
+      <source media="(max-width: 640px)" srcset="../../assets/diagrams/story-lifecycle-mobile.svg">
+      <img src="../../assets/diagrams/story-lifecycle.svg" alt="A story moves from submitted through working, may pause for input or parking, and ends completed, failed, or canceled.">
+    </picture>
+  </div>
+  <figcaption>The event log records each transition. Live observations refine the view but never replace that history. <a href="../../assets/diagrams/story-lifecycle.svg">Open full size</a></figcaption>
+</figure>
+
+The lifecycle is: define the epic, approve its design, render repo-scoped stories, dispatch workers, supervise through
+wakes, audit each result, let the captain merge, then record completion and close. [Run your first epic](../QUICKSTART.md)
+provides the narrow command path. [Architecture](../ARCHITECTURE.md) explains the boundaries and [Handoff](../handoff.md)
+explains the leader/worker contract.

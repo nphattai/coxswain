@@ -1,30 +1,48 @@
-# Configuration
+<span id="configuration" aria-hidden="true"></span>
 
-Two files under `cox/` configure a workspace.
+# Configuration authority
 
-## `workspace.json`
+Coxswain separates workspace registry facts from justified behavioral policy. The shipped templates and Go loaders are
+the authoritative shape. This page explains where a decision belongs and how precedence works.
 
-The registry of projects and repos.
+## Authority map
 
-| Field | Meaning |
-|---|---|
-| `projects` | Named projects grouping repos. |
-| `repos[]` | Each repo: `alias`, local `path`, `production` branch, optional `staging` branch. |
-| `services[]` | Long-running services an epic backend may start. |
-| `hosts[]` | Named hosts a worker can run on. |
+| Surface | Purpose | Machine authority |
+|---|---|---|
+| `cox/workspace.json` | Projects, repositories, services, hosts, and backend worktree location | `templates/workspace.json`, `internal/workspace/workspace.go` |
+| `cox/policy.json` | Workspace-wide behavioral defaults and their rationale | `templates/policy.json`, `internal/workspace/policy.go` |
+| `<project>/cox/policy.json` | Project-specific replacement of selected policy sections | `internal/workspace/policy.go:Resolve` and tests |
+| Story frontmatter | Per-story harness, model, repo, ownership, and resolved delivery facts | `templates/story.md`, `cmd/cox/story.go`, `internal/epic/stories.go` |
+| Process environment | Narrow operational overrides documented by the owning command | `cmd/cox/` and adapter launch code |
 
-Generate it with `cox workspace init` on each machine (it holds absolute paths, so it is per-machine and not shared).
+Do not copy the template into documentation. Inspect the current template before editing a workspace, and run
+`cox doctor` to detect drift.
 
-## `policy.json`
+## Resolution rules
 
-Harness, model, and workflow defaults (optionally overridden per project at `<project>/cox/policy.json`).
+Workspace policy loads first. A project policy may replace only the top-level sections it declares. Replacement is
+section-granular, not a deep merge, so an overridden justified section must carry its own `why` and `review_when`.
+The merged result is validated before use.
 
-| Field | Meaning |
-|---|---|
-| `harness.leader` / `harness.worker` | Allowed harnesses and the default (`claude`, `codex`, ...). |
-| `harness.worker.models` | Per-harness worker model, e.g. `claude` -> a Claude model, `codex` -> a Codex model. |
-| `harness.launch` | Launch flags per harness (approval/sandbox for Codex, permission mode for Claude). |
-| `harness.arena` | Adversary and reviewer selection rules (adversary must differ from the leader). |
-| `quota` | Quota thresholds and the `quota-axi` adapter opt-in. |
+A story may pin a value that the relevant command explicitly allows, such as harness or model. Command-line overrides
+are deliberate one-operation choices. Environment variables are not a general policy layer; only named variables read
+by a command have authority.
 
-`cox doctor` reports policy drift when a workspace policy predates newer keys.
+## Decide where a change belongs
+
+- Registry identity or location belongs in `workspace.json`.
+- A workspace-wide behavioral default belongs in workspace policy.
+- A project-specific behavioral exception belongs in that project's policy and must replace the complete section.
+- A one-story choice belongs in story frontmatter or an explicit command flag.
+- A compatibility fact about an external tool belongs in [Evidence](../evidence/index.md), not policy.
+
+## Safety properties
+
+- Missing or invalid required configuration is an error, not an empty default registry.
+- Justified policy sections cannot omit their reason or review condition.
+- An explicit empty launch-flag list is a captain opt-out, distinct from an absent entry.
+- Optional newer sections retain code defaults so older workspace policy can still load.
+- Project policy cannot silently inherit a rationale that no longer matches its replacement value.
+
+For exact keys and defaults, read `templates/workspace.json`, `templates/policy.json`, and the types in
+`internal/workspace/`. For operational commands, use [CLI map](cli.md).

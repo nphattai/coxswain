@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 360 930" role="img" aria-labelledby="title desc">
+  <title id="title">Leader and worker handoff channels for a narrow screen</title>
+  <desc id="desc">Five stacked visual lanes show how the leader and worker use seven durable channel records for briefs, steering, control, reports, questions, replies, and checkpoints.</desc>
+  <defs>
+    <style>
+      text{font-family:"IBM Plex Sans","Segoe UI",sans-serif;fill:#182027}.label{font-size:13px;font-weight:600;letter-spacing:.8px;fill:#59656e}.title{font-size:17px;font-weight:600}.copy{font-size:14px;fill:#59656e}.mono{font-family:ui-monospace,"SFMono-Regular",Consolas,monospace;font-size:13px;fill:#315f89}
+      .channel{fill:#f9faf9;stroke:#aeb8bf}.direction{stroke:#606b74;stroke-width:1.5}.control{stroke:#a82b35}.return{stroke:#315f89}.file{fill:#edf1f2}
+    </style>
+  </defs>
+
+  <text class="label" x="16" y="24">LEADER · DURABLE FILES · WORKER</text>
+
+  <rect class="channel" x="16" y="42" width="328" height="142"/>
+  <text class="title" x="32" y="70">Brief</text>
+  <text class="copy" x="328" y="70" text-anchor="end">leader → worker</text>
+  <path class="direction" d="M32 84h296"/>
+  <rect class="file" x="32" y="100" width="296" height="48"/>
+  <text class="mono" x="180" y="121" text-anchor="middle">stories/&lt;id&gt;.md</text>
+  <text class="copy" x="180" y="138" text-anchor="middle">exact work + resolved context</text>
+  <text class="copy" x="32" y="168">Read again on relaunch.</text>
+
+  <rect class="channel" x="16" y="200" width="328" height="142"/>
+  <text class="title" x="32" y="228">Steer</text>
+  <text class="copy" x="328" y="228" text-anchor="end">leader → worker</text>
+  <path class="direction" d="M32 242h296"/>
+  <rect class="file" x="32" y="258" width="296" height="48"/>
+  <text class="mono" x="180" y="279" text-anchor="middle">inbox/&lt;id&gt;/NNN.msg</text>
+  <text class="copy" x="180" y="296" text-anchor="middle">atomic write · move acknowledges</text>
+  <text class="copy" x="32" y="326">File carries direction; ring points to it.</text>
+
+  <rect class="channel" x="16" y="358" width="328" height="142"/>
+  <text class="title" x="32" y="386">Control</text>
+  <text class="copy" x="328" y="386" text-anchor="end">leader → adapter</text>
+  <path class="direction control" d="M32 400h296"/>
+  <rect class="file" x="32" y="416" width="296" height="48"/>
+  <text class="mono" x="180" y="437" text-anchor="middle">.cox/events.jsonl</text>
+  <text class="copy" x="180" y="454" text-anchor="middle">interrupt · park · relaunch</text>
+  <text class="copy" x="32" y="484">Allowlisted verbs only.</text>
+
+  <rect class="channel" x="16" y="516" width="328" height="158"/>
+  <text class="title" x="32" y="544">Report and reply</text>
+  <text class="copy" x="328" y="544" text-anchor="end">worker ↔ leader</text>
+  <path class="direction return" d="M32 558h296"/>
+  <rect class="file" x="32" y="574" width="296" height="64"/>
+  <text class="mono" x="180" y="595" text-anchor="middle">wake.jsonl</text>
+  <text class="mono" x="180" y="612" text-anchor="middle">questions/&lt;id&gt;/qNNN.md</text>
+  <text class="copy" x="180" y="629" text-anchor="middle">generation-stamped · recoverable</text>
+  <text class="copy" x="32" y="658">Status is a log; events resolve state.</text>
+
+  <rect class="channel" x="16" y="690" width="328" height="158"/>
+  <text class="title" x="32" y="718">Checkpoint</text>
+  <text class="copy" x="328" y="718" text-anchor="end">worker → future self</text>
+  <path class="direction return" d="M32 732h296"/>
+  <rect class="file" x="32" y="748" width="296" height="64"/>
+  <text class="mono" x="180" y="769" text-anchor="middle">handoffs/&lt;id&gt;.md</text>
+  <text class="copy" x="180" y="786" text-anchor="middle">attempt · head · decisions</text>
+  <text class="copy" x="180" y="803" text-anchor="middle">verified outcomes · next action</text>
+  <text class="copy" x="32" y="832">Resume checks freshness before context.</text>
+
+  <path d="M16 878h328" stroke="#cbd2d6"/>
+  <text class="copy" x="16" y="900">The backend provides a worktree and terminal.</text>
+  <text class="copy" x="16" y="918">Coxswain owns the handoff.</text>
+</svg>

@@ -56,4 +56,5 @@ route some-auto-story: harness=claude
 
 - Routing never becomes a hard rule; the bar and the citation requirement are enforced in `Decide` and in the policy.
 - Until the downstream baseline (>= 3 stories x 2 harnesses x 2 conditions) lands, routing can only card-filter and keep
-  the default. See `docs/baselines/README.md`.
+  the default. [ADR 0005](decisions/0005-defer-baseline-to-m6.md) records that gate; `cox baseline run` owns the
+  executable measurement path.

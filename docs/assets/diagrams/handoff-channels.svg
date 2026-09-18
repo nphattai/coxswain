@@ -1,0 +1,72 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 560" role="img" aria-labelledby="title desc">
+  <title id="title">Leader and worker handoff channels</title>
+  <desc id="desc">Leader and worker exchange briefs, steering, control, reports, questions, and checkpoints through durable files in the epic. The backend only provides the worktree and terminal.</desc>
+  <defs>
+    <marker id="handoff-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0l10 5-10 5z" fill="#606b74"/></marker>
+    <marker id="handoff-arrow-red" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0l10 5-10 5z" fill="#a82b35"/></marker>
+    <marker id="handoff-arrow-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0l10 5-10 5z" fill="#315f89"/></marker>
+    <style>
+      text{font-family:"IBM Plex Sans","Segoe UI",sans-serif;fill:#182027}.label{font-size:11px;font-weight:600;letter-spacing:1.2px;fill:#59656e}.title{font-size:14px;font-weight:600}.copy{font-size:11px;fill:#59656e}.mono{font-family:ui-monospace,"SFMono-Regular",Consolas,monospace;font-size:10px;fill:#59656e}
+      .lane{fill:#edf1f2}.file{fill:#f9faf9;stroke:#aeb8bf}.flow{fill:none;stroke:#606b74;stroke-width:1.5;marker-end:url(#handoff-arrow)}.control{fill:none;stroke:#a82b35;stroke-width:1.5;marker-end:url(#handoff-arrow-red)}.return{fill:none;stroke:#315f89;stroke-width:1.5;marker-end:url(#handoff-arrow-blue)}
+    </style>
+  </defs>
+
+  <rect class="lane" x="16" y="16" width="210" height="528"/>
+  <rect class="lane" x="250" y="16" width="460" height="528"/>
+  <rect class="lane" x="734" y="16" width="210" height="528"/>
+  <text class="label" x="32" y="42">LEADER</text>
+  <text class="label" x="266" y="42">DURABLE EPIC FILES</text>
+  <text class="label" x="750" y="42">WORKER</text>
+
+  <text class="title" x="32" y="94">Brief</text>
+  <text class="copy" x="32" y="112">dispatches exact work</text>
+  <rect class="file" x="294" y="72" width="372" height="50"/>
+  <text class="mono" x="480" y="94" text-anchor="middle">stories/&lt;id&gt;.md</text>
+  <text class="copy" x="480" y="112" text-anchor="middle">plus resolved context</text>
+  <text class="title" x="750" y="94">Read</text>
+  <text class="copy" x="750" y="112">on start or relaunch</text>
+  <path class="flow" d="M176 97h118"/><path class="flow" d="M666 97h68"/>
+
+  <path d="M32 144h896" stroke="#cbd2d6"/>
+  <text class="title" x="32" y="184">Steer</text>
+  <text class="copy" x="32" y="202">adds durable direction</text>
+  <rect class="file" x="294" y="162" width="372" height="50"/>
+  <text class="mono" x="480" y="184" text-anchor="middle">inbox/&lt;id&gt;/NNN.msg</text>
+  <text class="copy" x="480" y="202" text-anchor="middle">atomic write · move is acknowledgement</text>
+  <text class="title" x="750" y="184">Acknowledge</text>
+  <text class="copy" x="750" y="202">move into handled/</text>
+  <path class="flow" d="M176 187h118"/><path class="flow" d="M666 187h68"/>
+
+  <path d="M32 234h896" stroke="#cbd2d6"/>
+  <text class="title" x="32" y="274">Control</text>
+  <text class="copy" x="32" y="292">interrupt · park · relaunch</text>
+  <rect class="file" x="294" y="252" width="372" height="50"/>
+  <text class="mono" x="480" y="274" text-anchor="middle">.cox/events.jsonl</text>
+  <text class="copy" x="480" y="292" text-anchor="middle">allowlisted verbs, never free text</text>
+  <text class="title" x="750" y="274">Execute</text>
+  <text class="copy" x="750" y="292">adapter confirms effect</text>
+  <path class="control" d="M176 277h118"/><path class="control" d="M666 277h68"/>
+
+  <path d="M32 324h896" stroke="#cbd2d6"/>
+  <text class="title" x="32" y="364">Observe</text>
+  <text class="copy" x="32" y="382">drains wakes and replies</text>
+  <rect class="file" x="294" y="342" width="372" height="50"/>
+  <text class="mono" x="480" y="364" text-anchor="middle">wake.jsonl · questions/&lt;id&gt;/</text>
+  <text class="copy" x="480" y="382" text-anchor="middle">generation-stamped and recoverable</text>
+  <text class="title" x="750" y="364">Report</text>
+  <text class="copy" x="750" y="382">status · done · stuck · question</text>
+  <path class="return" d="M734 367h-68"/><path class="return" d="M294 367H176"/>
+
+  <path d="M32 414h896" stroke="#cbd2d6"/>
+  <text class="title" x="32" y="454">Resume</text>
+  <text class="copy" x="32" y="472">injects verified context</text>
+  <rect class="file" x="294" y="432" width="372" height="50"/>
+  <text class="mono" x="480" y="454" text-anchor="middle">handoffs/&lt;id&gt;.md</text>
+  <text class="copy" x="480" y="472" text-anchor="middle">attempt · head · decisions · next action</text>
+  <text class="title" x="750" y="454">Checkpoint</text>
+  <text class="copy" x="750" y="472">writes for future self</text>
+  <path class="return" d="M734 457h-68"/><path class="return" d="M294 457H176"/>
+
+  <path d="M32 504h896" stroke="#cbd2d6"/>
+  <text class="copy" x="480" y="530" text-anchor="middle">The terminal receives only a doorbell. The file carries the meaning.</text>
+</svg>
