@@ -1,0 +1,6 @@
+# Keep it lenient: structure only, no prose policing.
+default: true
+MD013: false   # line length
+MD033: false   # inline HTML (mermaid, details)
+MD041: false   # first line heading
+MD024: { siblings_only: true }

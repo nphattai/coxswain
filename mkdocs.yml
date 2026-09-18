@@ -1,0 +1,49 @@
+site_name: Coxswain
+site_description: Multi-agent epic orchestration for Claude Code and Codex - leader/worker, epics, stories, arena design review, on a durable event log.
+repo_url: https://github.com/nphattai/coxswain
+repo_name: nphattai/coxswain
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      toggle: { icon: material/weather-night, name: Dark mode }
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      toggle: { icon: material/weather-sunny, name: Light mode }
+  features: [navigation.sections, navigation.top, content.code.copy, search.suggest]
+markdown_extensions:
+  - admonition
+  - pymdownx.superfences
+  - pymdownx.highlight
+  - tables
+  - toc: { permalink: true }
+exclude_docs: |
+  workflow.md
+  baselines/
+nav:
+  - Home: index.md
+  - Getting started:
+    - Install: getting-started/install.md
+    - Quickstart: QUICKSTART.md
+    - Core concepts: getting-started/concepts.md
+  - Guides:
+    - Arena design review: arena.md
+    - Visual review: review.md
+    - Quota & routing: quota.md
+    - Routing: routing.md
+    - Board: board.md
+    - Lab: lab.md
+    - Migrate: migrate.md
+    - Handoff protocol: handoff.md
+  - Reference:
+    - CLI: reference/cli.md
+    - Configuration: reference/configuration.md
+    - Architecture: ARCHITECTURE.md
+    - Adapters:
+      - Orca: adapters/orca.md
+      - Claude Code: adapters/claude.md
+      - Codex: adapters/codex.md
+  - Contributing: contributing.md
+  - Decisions (ADRs): decisions/index.md
+  - FAQ: faq.md

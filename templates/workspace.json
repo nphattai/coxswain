@@ -1,0 +1,15 @@
+{
+  "projects": [
+    { "name": "example-project", "path": "example-project" }
+  ],
+  "repos": [
+    { "alias": "backend", "name": "org/backend-repo", "production": "master", "staging": "release" },
+    { "alias": "web", "name": "org/web-repo", "production": "main", "staging": "" }
+  ],
+  "services": [
+    { "alias": "backend", "script": "services/backend.sh" }
+  ],
+  "hosts": [
+    { "name": "local" }
+  ]
+}

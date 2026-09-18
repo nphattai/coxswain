@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/nphattai/coxswain/docs/protocol/schema/fleet.v1.json",
+  "title": "coxswain.fleet.v1",
+  "description": "The merged fleet view produced by cox state --json: one derived state per story with each observation tagged by source and observed_at.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["schema", "generated_at", "epic", "stories"],
+  "properties": {
+    "schema": { "const": "coxswain.fleet.v1" },
+    "generated_at": { "type": "string", "description": "RFC 3339 UTC timestamp of this resolve" },
+    "epic": { "type": "string" },
+    "stories": { "type": "array", "items": { "$ref": "#/$defs/story" } }
+  },
+  "$defs": {
+    "story": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "state", "attempt", "observations"],
+      "properties": {
+        "id": { "type": "string" },
+        "state": { "enum": ["submitted", "working", "input_required", "parked", "completed", "failed", "canceled", "pending_external"] },
+        "attempt": { "type": "integer", "minimum": 1 },
+        "observations": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/observation" },
+          "properties": {
+            "liveness": { "$ref": "#/$defs/observation" },
+            "semantic": { "$ref": "#/$defs/observation" },
+            "git": { "$ref": "#/$defs/observation" },
+            "forge": { "$ref": "#/$defs/observation" }
+          }
+        }
+      }
+    },
+    "observation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["value", "source", "observed_at"],
+      "properties": {
+        "value": {},
+        "source": { "enum": ["event", "backend", "hook", "git", "forge"] },
+        "observed_at": { "type": "string", "description": "RFC 3339 UTC timestamp; unknown when the probe failed" },
+        "error": { "type": "string", "description": "Probe failure text when value is \"unknown\" because the probe errored; omitted on success" }
+      }
+    }
+  }
+}

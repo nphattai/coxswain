@@ -1,0 +1,10 @@
+{
+  "pr": { "number": 103, "head_ref": "story/failed", "head": "dddd444", "base": "epic/demo", "state": "open" },
+  "diff": "diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n+broken\n",
+  "checks": [
+    { "name": "build", "status": "completed", "conclusion": "success" },
+    { "name": "unit", "status": "completed", "conclusion": "failure" }
+  ],
+  "comments": [{ "author": "rs-pr-reviewer", "body": "✅ code looks fine", "path": "", "line": 0 }],
+  "merged": false
+}

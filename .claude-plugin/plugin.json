@@ -1,0 +1,10 @@
+{
+  "name": "coxswain",
+  "version": "2.0.0-rc.1",
+  "description": "Multi-agent epic orchestration for Claude Code and Codex: dispatch stories to isolated worktrees, run adversarial arena design review, and track story lifecycle on a durable event log.",
+  "author": { "name": "Tai Nguyen", "email": "nphattai98@gmail.com" },
+  "homepage": "https://github.com/nphattai/coxswain",
+  "repository": "https://github.com/nphattai/coxswain",
+  "license": "MIT",
+  "keywords": ["orchestration", "multi-agent", "worktree", "arena", "epic"]
+}

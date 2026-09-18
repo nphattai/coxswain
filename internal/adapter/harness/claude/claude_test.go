@@ -1,0 +1,71 @@
+package claude
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/nphattai/coxswain/internal/adapter/harness"
+)
+
+func TestTelemetryFromSessionLog(t *testing.T) {
+	home := t.TempDir()
+	wt := "/fake/worktrees/story-x"
+	dir := logDir(home, wt)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Two assistant lines with usage; the last one wins for tokens, both count as turns.
+	log := `{"message":{"usage":{"input_tokens":10,"cache_read_input_tokens":100,"cache_creation_input_tokens":5}}}
+{"type":"user"}
+{"message":{"usage":{"input_tokens":20,"cache_read_input_tokens":300,"cache_creation_input_tokens":7}}}
+`
+	if err := os.WriteFile(filepath.Join(dir, "a.jsonl"), []byte(log), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h := &Harness{Home: home}
+	ctx, err := h.Telemetry(wt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ctx.Known {
+		t.Fatal("expected Known telemetry")
+	}
+	if ctx.Tokens != 327 { // 20+300+7
+		t.Fatalf("tokens = %d, want 327", ctx.Tokens)
+	}
+	if ctx.Turns != 2 {
+		t.Fatalf("turns = %d, want 2", ctx.Turns)
+	}
+}
+
+// F11: no session log must resolve to Unknown, not 0 tokens.
+func TestTelemetryNoLogIsUnknownNotZero(t *testing.T) {
+	h := &Harness{Home: t.TempDir()}
+	ctx, err := h.Telemetry("/no/such/worktree")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ctx.Known {
+		t.Fatal("expected Unknown when there is no log")
+	}
+	if ctx.Tokens != 0 {
+		t.Fatal("Unknown telemetry should carry Known=false; callers render 'unknown', never 0k")
+	}
+}
+
+func TestCardIsPush(t *testing.T) {
+	c := New().Card()
+	if c.Wake != harness.WakePush || c.Checkpoint != harness.CheckpointAuto || !c.Telemetry {
+		t.Fatalf("claude card wrong: %+v", c)
+	}
+}
+
+func TestLaunchArgsRelaunchInjectsCheckpoint(t *testing.T) {
+	args := New().LaunchArgs(harness.RoleWorker, "/wt", harness.Brief{StoryPath: "stories/x.md", InjectCheckpoint: true, Note: "phase 2 half done"})
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "cox checkpoint inject") || !strings.Contains(joined, "phase 2 half done") {
+		t.Fatalf("relaunch args missing checkpoint/note: %q", joined)
+	}
+}

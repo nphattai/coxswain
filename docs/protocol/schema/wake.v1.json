@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/nphattai/coxswain/docs/protocol/schema/wake.v1.json",
+  "title": "coxswain.wake.v1",
+  "description": "One entry in the durable wake queue <epic>/.cox/wake.jsonl. The leader handles it then acks through its gen.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["schema", "gen", "ts", "epic", "story", "kind"],
+  "properties": {
+    "schema": { "const": "coxswain.wake.v1" },
+    "gen": { "type": "integer", "minimum": 1, "description": "monotonically increasing generation; cox wake ack-through <gen> marks all <= gen read" },
+    "ts": { "type": "string", "description": "RFC 3339 UTC timestamp" },
+    "epic": { "type": "string" },
+    "story": { "type": "string" },
+    "kind": { "enum": ["question", "input_required", "pr_ready", "worker_done", "stuck", "runaway", "stale", "unknown_probe", "status", "idle_no_done", "quota_low", "quota_health"] },
+    "note": { "type": "string" },
+    "evidence": { "type": "object", "additionalProperties": true },
+    "acked": { "type": "boolean" }
+  }
+}

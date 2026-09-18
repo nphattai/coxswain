@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>coxswain board</title>
+<style>/*BOARD_CSS*/</style>
+</head>
+<body>
+<header>
+  <h1>coxswain board</h1>
+  <span class="meta">epic <b id="epic">?</b></span>
+  <span class="meta">generated <span id="generated"></span></span>
+  <span class="readonly">read-only - every action stays in the leader chat</span>
+</header>
+<main>
+  <section class="panel">
+    <h2>stories</h2>
+    <div id="stories"></div>
+  </section>
+  <div class="grid2">
+    <section class="panel">
+      <h2>arena</h2>
+      <div id="arena"></div>
+    </section>
+    <section class="panel">
+      <h2>latest unacked wake</h2>
+      <div id="wake"></div>
+    </section>
+  </div>
+  <section class="panel">
+    <h2>quota <span class="readonly">observe-only</span></h2>
+    <div id="quota"></div>
+  </section>
+  <section class="panel">
+    <h2>waiting on the captain</h2>
+    <div id="pending"></div>
+  </section>
+</main>
+<script>window.__BOARD_DATA__ = /*BOARD_DATA*/;</script>
+<script>/*BOARD_JS*/</script>
+</body>
+</html>

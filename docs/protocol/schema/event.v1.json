@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/nphattai/coxswain/docs/protocol/schema/event.v1.json",
+  "title": "coxswain.event.v1",
+  "description": "One append-only state-transition event in <epic>/.cox/events.jsonl.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["schema", "ts", "epic", "story", "attempt", "actor", "from", "to", "external_confirmed"],
+  "properties": {
+    "schema": { "const": "coxswain.event.v1" },
+    "ts": { "type": "string", "description": "RFC 3339 UTC timestamp" },
+    "epic": { "type": "string" },
+    "story": { "type": "string" },
+    "attempt": { "type": "integer", "minimum": 1 },
+    "actor": { "enum": ["captain", "leader", "worker", "watcher"] },
+    "from": { "$ref": "#/$defs/state" },
+    "to": { "$ref": "#/$defs/state" },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "dispatch": { "type": "string" },
+        "pr": { "type": "string" },
+        "head": { "type": "string" },
+        "reply": { "type": "string" },
+        "intended_to": { "$ref": "#/$defs/state" }
+      }
+    },
+    "external_confirmed": { "type": "boolean" }
+  },
+  "allOf": [
+    {
+      "description": "A transition that lands on pending_external must name the state it is reaching in evidence.intended_to, so Reconcile can finish it after a crash between the two appends.",
+      "if": { "required": ["to"], "properties": { "to": { "const": "pending_external" } } },
+      "then": {
+        "required": ["evidence"],
+        "properties": { "evidence": { "required": ["intended_to"] } }
+      }
+    }
+  ],
+  "$defs": {
+    "state": { "enum": ["submitted", "working", "input_required", "parked", "completed", "failed", "canceled", "pending_external"] }
+  }
+}

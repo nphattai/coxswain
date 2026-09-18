@@ -1,0 +1,30 @@
+# The machine's dev infrastructure: ONE postgres, ONE redis, ONE minio for every epic and story on this machine
+# (design D18: never a container per epic or per worker). Isolation is a database, a key prefix and a bucket, not a
+# container. Ports avoid the captain's own `app-local` project (5432/6379) and other projects on this machine.
+# Managed by bin/infra.sh (project name `crewkit`, one per machine, shared by every workspace); constants mirrored in bin/lib.sh.
+services:
+  postgres:
+    image: pgvector/pgvector:pg18        # same image as the services repo's docker/docker-compose.local.yml
+    container_name: crewkit-postgres
+    ports: ['127.0.0.1:5433:5432']   # loopback only: dev credentials are in this file
+    environment: { POSTGRES_USER: dev, POSTGRES_PASSWORD: dev, POSTGRES_DB: postgres }
+    volumes: ['postgres-data:/var/lib/postgresql']
+  redis:
+    image: redis:7-alpine
+    container_name: crewkit-redis
+    ports: ['127.0.0.1:6380:6379']
+  minio:
+    image: minio/minio:latest
+    container_name: crewkit-minio
+    command: server /data --console-address ':9001'
+    ports: ['127.0.0.1:9000:9000', '127.0.0.1:9001:9001']
+    environment: { MINIO_ROOT_USER: dev, MINIO_ROOT_PASSWORD: devsecret }
+    volumes: ['minio-data:/data']
+  temporal:                            # dev server (in-memory, single binary) for the sdk lane: pipo-core-service connects at boot
+    image: temporalio/temporal:latest
+    container_name: crewkit-temporal
+    command: server start-dev --ip 0.0.0.0 --namespace default   # in-memory: dev data is disposable
+    ports: ['127.0.0.1:7234:7233', '127.0.0.1:8234:8233']   # 7233/8233 left to the captain's own stacks
+volumes:
+  postgres-data:
+  minio-data:

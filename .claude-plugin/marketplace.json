@@ -1,0 +1,14 @@
+{
+  "name": "coxswain",
+  "owner": { "name": "Tai Nguyen", "email": "nphattai98@gmail.com" },
+  "metadata": {
+    "description": "The coxswain plugin: multi-agent epic orchestration for Claude Code and Codex."
+  },
+  "plugins": [
+    {
+      "name": "coxswain",
+      "source": "./",
+      "description": "Dispatch stories to isolated worktrees, run adversarial arena design review, and track story lifecycle on a durable event log."
+    }
+  ]
+}

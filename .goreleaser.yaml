@@ -1,0 +1,34 @@
+# goreleaser config for the cox binary. Not tagged at M0; releases begin at M5 (docs/decisions/0006).
+version: 2
+
+builds:
+  - id: cox
+    main: ./cmd/cox
+    binary: cox
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X github.com/nphattai/coxswain/internal/version.Version={{.Version}}
+
+archives:
+  - id: cox
+    formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    # Ship the runtime assets alongside the binary so a marketplace-installed cox has its hooks, templates, skills, and
+    # the harness-agnostic AGENTS.md next to it (the plugin still carries them; this is for a binary-only install).
+    files:
+      - src: LICENSE
+      - src: README.md
+      - src: AGENTS.md
+      - src: hooks/**/*
+      - src: templates/**/*
+      - src: skills/**/*
+
+checksum:
+  name_template: "checksums.txt"

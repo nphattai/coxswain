@@ -1,0 +1,64 @@
+{
+  "id": "REDACTED",
+  "ok": true,
+  "result": {
+    "worktrees": [
+      {
+        "workspaceKind": "git",
+        "worktreeId": "REPO::/Users/x/orca/workspaces/crewkit/story-a",
+        "repo": "crewkit",
+        "path": "/Users/x/orca/workspaces/crewkit/story-a",
+        "branch": "refs/heads/story/a",
+        "isMainWorktree": false,
+        "liveTerminalCount": 1,
+        "status": "working",
+        "agents": [
+          {
+            "paneKey": "TAB_A:LEAF_A",
+            "state": "working",
+            "agentType": "claude",
+            "interrupted": false
+          }
+        ]
+      },
+      {
+        "worktreeId": "REPO::/Users/x/orca/workspaces/crewkit/story-b",
+        "repo": "crewkit",
+        "path": "/Users/x/orca/workspaces/crewkit/story-b",
+        "branch": "refs/heads/story/b",
+        "status": "idle",
+        "agents": [
+          {
+            "paneKey": "TAB_B:LEAF_B",
+            "state": "idle",
+            "agentType": "codex",
+            "interrupted": false
+          }
+        ]
+      },
+      {
+        "worktreeId": "REPO::/Users/x/orca/workspaces/crewkit/story-c",
+        "repo": "crewkit",
+        "path": "/Users/x/orca/workspaces/crewkit/story-c",
+        "branch": "refs/heads/story/c",
+        "status": "idle",
+        "agents": [
+          {
+            "paneKey": "TAB_C:LEAF_C",
+            "state": "dead",
+            "agentType": "claude",
+            "interrupted": false
+          }
+        ]
+      },
+      {
+        "worktreeId": "REPO::/Users/x/Work/repo/nphattai/crewkit",
+        "repo": "crewkit",
+        "path": "/Users/x/Work/repo/nphattai/crewkit",
+        "branch": "refs/heads/main",
+        "isMainWorktree": true,
+        "agents": []
+      }
+    ]
+  }
+}

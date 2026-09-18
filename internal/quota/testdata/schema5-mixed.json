@@ -1,0 +1,138 @@
+{
+  "generatedAt": "2026-09-16T03:20:27.433Z",
+  "schemaVersion": 5,
+  "providers": [
+    {
+      "provider": "claude",
+      "windows": [],
+      "state": {
+        "status": "auth_required",
+        "stale": false,
+        "error": "keychain_prompt_required",
+        "reason": "keychain_access_required",
+        "remedyCommand": "quota-axi --allow-keychain-prompt"
+      },
+      "quotaSemantics": {
+        "status": "unknown",
+        "effectiveAvailability": []
+      }
+    },
+    {
+      "provider": "codex",
+      "plan": "prolite",
+      "windows": [
+        {
+          "id": "weekly",
+          "label": "week",
+          "kind": "weekly",
+          "resetsAt": "2026-09-19T08:24:46.000Z",
+          "percentRemaining": 46,
+          "pace": {
+            "status": "on_pace",
+            "reservePercentPoints": 0.1239,
+            "burnMultiple": 0.9977
+          }
+        },
+        {
+          "id": "model:codex_bengalfox:5h",
+          "label": "GPT-5.3-Codex-Spark session",
+          "kind": "model",
+          "resetsAt": "2026-09-16T08:20:28.000Z",
+          "percentRemaining": 100,
+          "pace": {
+            "status": "unknown",
+            "reason": "future_cycle_start"
+          }
+        },
+        {
+          "id": "model:codex_bengalfox:7d",
+          "label": "GPT-5.3-Codex-Spark week",
+          "kind": "model",
+          "resetsAt": "2026-09-23T03:20:28.000Z",
+          "percentRemaining": 100,
+          "pace": {
+            "status": "unknown",
+            "reason": "future_cycle_start"
+          }
+        }
+      ],
+      "credits": {
+        "remaining": 0,
+        "unlimited": false,
+        "unit": "credits"
+      },
+      "state": {
+        "status": "fresh",
+        "stale": false
+      },
+      "quotaSemantics": {
+        "status": "known",
+        "effectiveAvailability": [
+          {
+            "scope": "all_models",
+            "status": "known",
+            "effectivePercentRemaining": 46,
+            "boundedBy": [
+              "weekly"
+            ],
+            "limitingWindowIds": [
+              "weekly"
+            ],
+            "pace": {
+              "status": "on_pace",
+              "worstReservePercentPoints": 0.1239,
+              "worstReserveWindowId": "weekly"
+            },
+            "runway": {
+              "status": "through_reset",
+              "projectionConfidence": "established"
+            },
+            "selection": {
+              "status": "known",
+              "spendPriority": 0.005
+            }
+          },
+          {
+            "scope": "model:codex_bengalfox",
+            "status": "known",
+            "effectivePercentRemaining": 46,
+            "boundedBy": [
+              "weekly",
+              "model:codex_bengalfox:5h",
+              "model:codex_bengalfox:7d"
+            ],
+            "limitingWindowIds": [
+              "weekly"
+            ],
+            "pace": {
+              "status": "on_pace",
+              "unknownWindowIds": [
+                "model:codex_bengalfox:5h",
+                "model:codex_bengalfox:7d"
+              ],
+              "worstReservePercentPoints": 0.1239,
+              "worstReserveWindowId": "weekly"
+            },
+            "runway": {
+              "status": "unknown",
+              "unmeasurableWindowIds": [
+                "model:codex_bengalfox:5h",
+                "model:codex_bengalfox:7d"
+              ]
+            },
+            "selection": {
+              "status": "unknown",
+              "unmeasurableWindowIds": [
+                "model:codex_bengalfox:5h",
+                "model:codex_bengalfox:7d"
+              ]
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "help": [
+    "Tell your user: run `quota-axi --allow-keychain-prompt` once and approve Keychain access (\"Always Allow\") so quota-axi can read claude's live quota."
+  ]
+}

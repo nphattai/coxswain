@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/nphattai/coxswain/docs/protocol/schema/inbox.v1.json",
+  "title": "coxswain.inbox.v1",
+  "description": "One steer record <epic>/inbox/<story>/NNN.msg. The worker acks by moving the file into handled/.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["schema", "seq", "story", "at", "urgency", "body"],
+  "properties": {
+    "schema": { "const": "coxswain.inbox.v1" },
+    "seq": { "type": "integer", "minimum": 1, "description": "the NNN sequence, allocated under the per-inbox lock" },
+    "story": { "type": "string" },
+    "at": { "type": "string", "description": "RFC 3339 UTC timestamp" },
+    "urgency": { "enum": ["steer", "fyi"] },
+    "override": { "type": "string", "description": "reason, present only when the leader overrides the steer budget" },
+    "body": { "type": "string", "description": "the verbatim instruction text" }
+  }
+}

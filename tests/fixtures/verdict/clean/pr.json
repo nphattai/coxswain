@@ -1,0 +1,7 @@
+{
+  "pr": { "number": 101, "head_ref": "story/clean", "head": "aaaa111", "base": "epic/demo", "state": "open" },
+  "diff": "diff --git a/src/foo.ts b/src/foo.ts\n--- a/src/foo.ts\n+++ b/src/foo.ts\n+const x = 1;\n",
+  "checks": [{ "name": "ci", "status": "completed", "conclusion": "success" }],
+  "comments": [{ "author": "rs-pr-reviewer", "body": "✅ Approved", "path": "", "line": 0 }],
+  "merged": false
+}

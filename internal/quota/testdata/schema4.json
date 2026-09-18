@@ -1,0 +1,7 @@
+{
+  "generatedAt": "2026-09-16T03:20:27.433Z",
+  "schemaVersion": 4,
+  "providers": [
+    { "provider": "claude", "windows": [], "state": { "status": "fresh", "stale": false } }
+  ]
+}

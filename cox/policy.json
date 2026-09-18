@@ -1,0 +1,128 @@
+{
+  "workers_per_repo": {
+    "value": 1,
+    "why": "captain 2026-09-02 (decision 3): at most one worker per repo per epic; more than one only when the stories' files_owned are disjoint.",
+    "review_when": "a repo routinely has disjoint-file stories queued behind a single worker.",
+    "allow_parallel_when": {
+      "files_owned": "disjoint",
+      "enforced": false
+    }
+  },
+  "waves": {
+    "value": "backend-first",
+    "why": "workflow v3 D24 (captain 2026-09-07): the contract lands in the backend story; every client story depends on it.",
+    "review_when": "a pure-client or pure-docs epic declares waves: single."
+  },
+  "context": {
+    "plan_compact": 400000,
+    "compact_now": 500000,
+    "why": "captain 2026-09-08: compaction at 200k wasted time (three in one sdk story); budgets raised to 400k plan / 500k now.",
+    "review_when": "a harness reports usable telemetry showing a different sweet spot."
+  },
+  "arena": {
+    "trigger": [
+      "3+ repos",
+      "migration",
+      "money",
+      "auth",
+      "identity",
+      "PII",
+      "captain request"
+    ],
+    "why": "arena v2 (5.2): adversarial review earns its cost only above this bar; below it, arena-lite runs one adversary.",
+    "review_when": "after several arenas, when the calibration column shows which roles the captain keeps."
+  },
+  "delivery": {
+    "style": "default",
+    "why": "workflow v3 (captain 2026-09-02): draft PR at the plan gate, one phase = one commit, push every phase.",
+    "review_when": "a project (e.g. pipo) declares style: pipo in its <project>/cox/policy.json: commits stay local, one final push, PR opened ready."
+  },
+  "harness": {
+    "leader": {
+      "options": [
+        "claude",
+        "codex"
+      ],
+      "default": "claude"
+    },
+    "worker": {
+      "options": [
+        "claude",
+        "codex",
+        "omp",
+        "opencode"
+      ],
+      "default": "claude",
+      "models": {
+        "claude": "claude-opus-4-8",
+        "codex": "gpt-5.6-sol"
+      },
+      "model": "claude-opus-4-8"
+    },
+    "arena": {
+      "adversary": {
+        "rule": "not-leader",
+        "default": "codex"
+      },
+      "reviewer": {
+        "rule": "same-as-leader-new-session"
+      }
+    },
+    "why": "captain 2026-09-15 (decision 8, P9): model-agnostic; the leader is not locked to claude. Bare 'opus' maps to claude-opus-4-8, never Opus 5 for workers (captain 2026-09-03).",
+    "review_when": "a new harness adapter ships a capability card and is added to the options.",
+    "launch": {
+      "claude": [
+        "--permission-mode",
+        "bypassPermissions"
+      ],
+      "codex": [
+        "-a",
+        "never",
+        "-s",
+        "workspace-write"
+      ],
+      "arena": {
+        "claude": [
+          "--permission-mode",
+          "acceptEdits"
+        ],
+        "codex": [
+          "-a",
+          "never",
+          "-s",
+          "workspace-write"
+        ]
+      }
+    }
+  },
+  "routing": {
+    "default": "policy",
+    "review_when": "baseline rows >= 12 (3 stories x 2 harnesses x 2 conditions)"
+  },
+  "backend": {
+    "orca": {
+      "plane": "terminal",
+      "launch_confirm_s": 60
+    }
+  },
+  "quota": {
+    "binary": "",
+    "npx": null,
+    "low_percent": 10,
+    "ok_percent": 25,
+    "min_runway_hours": 12,
+    "poll_minutes": 5,
+    "health_debounce_minutes": 60,
+    "why": "M11 (captain 2026-09-16, option a): observe-only quota. quota-axi (installed binary; npx only via an explicit opt-in with version+integrity) fills coxswain.quota.v1; the leader reroutes by hand. Thresholds are first guesses.",
+    "review_when": "after one month of readings",
+    "_note": "2026-09-17: lowered from 24 to 12 because quota_low refired every poll for claude (resetsAt keeps moving so the once-per-window guard never holds); real fix in the next cox brief"
+  },
+  "review": {
+    "surface": "lavish",
+    "binary": "lavish-axi",
+    "npx": null,
+    "share": false,
+    "why": "M13 (captain 2026-09-16): visual review of design/plan/arena artifacts through lavish-axi as an optional external surface (installed binary; npx only via an explicit opt-in with version+integrity). cox owns the artifact and the record; answers go through cox arena answer. share=false because ht-ml.app is a third-party outward-facing host.",
+    "review_when": "after three real reviews, when it is clear whether cox-generated HTML is rich enough or the leader mostly hand-authors per lavish playbooks"
+  }
+}

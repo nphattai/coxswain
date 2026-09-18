@@ -1,0 +1,80 @@
+{
+  "result": {
+    "count": 4,
+    "deliveryId": "dlv_fixture",
+    "messages": [
+      {
+        "id": "relay_933cfeff8dbd",
+        "run_id": "run_0528f776a7a7",
+        "delivery_contract": "current_delivery",
+        "from_handle": "dispatch:ctx_ae65a30255c0",
+        "to_handle": "run:run_0528f776a7a7",
+        "subject": "alive",
+        "body": "",
+        "type": "heartbeat",
+        "priority": "normal",
+        "thread_id": null,
+        "payload": "{\"taskId\":\"task_267e14d954dd\",\"dispatchId\":\"ctx_ae65a30255c0\",\"phase\":\"reviewing\"}",
+        "read": 1,
+        "sequence": 41,
+        "created_at": "2026-08-30T10:43:17Z",
+        "delivered_at": null,
+        "sender_pane_key": null
+      },
+      {
+        "id": "relay_d3c8a8bf85b7",
+        "run_id": "run_0528f776a7a7",
+        "delivery_contract": "current_delivery",
+        "from_handle": "dispatch:ctx_282338471bfe",
+        "to_handle": "run:run_0528f776a7a7",
+        "subject": "alive",
+        "body": "",
+        "type": "heartbeat",
+        "priority": "normal",
+        "thread_id": null,
+        "payload": "{\"taskId\":\"task_96d8d3e5e199\",\"dispatchId\":\"ctx_282338471bfe\",\"phase\":\"implementing\"}",
+        "read": 1,
+        "sequence": 39,
+        "created_at": "2026-08-30T10:42:42Z",
+        "delivered_at": null,
+        "sender_pane_key": null
+      },
+      {
+        "id": "relay_0bfdccd7f75a",
+        "run_id": "run_0528f776a7a7",
+        "delivery_contract": "current_delivery",
+        "from_handle": "dispatch:ctx_ae65a30255c0",
+        "to_handle": "run:run_0528f776a7a7",
+        "subject": "Question",
+        "body": "Plan ready at plans/260830-docs-v2/ (branch docs/v2, commit df04ee8). 7 phases: (1) governance+CI lint, (2) move generat",
+        "type": "question",
+        "priority": "normal",
+        "thread_id": null,
+        "payload": "{\"taskId\":\"task_267e14d954dd\",\"dispatchId\":\"ctx_ae65a30255c0\",\"question\":\"Plan ready at plans/260830-docs-v2/ (branch docs/v2, commit df04ee8). 7 phases: (1) governance+CI lint, (2) move generated/bmad/superpowers/scan+superseded flat docs to docs/history/, (3) rewrite AGENTS.md <=100 lines + CLAUDE.md symlink, (4) docs/reference/{architecture,data-model,api,conventions} + re-home & fix the 2 partner-contract docs, (5) how-to/*+decisions/NNNN, (6) README ownership map + _stale-report ledger, (7) markdownlint+lychee then PR into epic/example-app-docs-v2. Docs-only. Open Q: leave root README.md as-is and log its stale app names in ledger, or rewrite it? OK to implement?\",\"options\":[\"approve\",\"approve+rewrite-root-readme\",\"changes\"]}",
+        "read": 1,
+        "sequence": 35,
+        "created_at": "2026-08-30T10:01:48Z",
+        "delivered_at": null,
+        "sender_pane_key": null
+      },
+      {
+        "id": "relay_7421c1a01a92",
+        "run_id": "run_0528f776a7a7",
+        "delivery_contract": "current_delivery",
+        "from_handle": "dispatch:ctx_ae65a30255c0",
+        "to_handle": "run:run_0528f776a7a7",
+        "subject": "Repo-layer docs v2 shipped: PR #212",
+        "body": "Brought acme-cashio-services repo docs to documentation-standard v2 on branch docs/v2 and opened PR #212 into epic/aim",
+        "type": "worker_done",
+        "priority": "normal",
+        "thread_id": null,
+        "payload": "{\"taskId\":\"task_267e14d954dd\",\"dispatchId\":\"ctx_ae65a30255c0\",\"outcome\":\"succeeded\",\"filesModified\":[\"AGENTS.md\",\"CLAUDE.md\",\".markdownlint.yml\",\".lycheeignore\",\".gitignore\",\".github/CODEOWNERS\",\".github/PULL_REQUEST_TEMPLATE.md\",\".github/workflows/docs-lint.yml\",\".claude/rules/\",\"docs/README.md\",\"docs/_stale-report.md\",\"docs/reference/\",\"docs/how-to/\",\"docs/decisions/\",\"docs/history/\",\"plans/260830-docs-v2/\"],\"reportPath\":\"https://github.com/ExampleOrg/acme-cashio-services/pull/212\"}",
+        "read": 1,
+        "sequence": 42,
+        "created_at": "2026-08-30T10:48:03Z",
+        "delivered_at": null,
+        "sender_pane_key": null
+      }
+    ]
+  }
+}

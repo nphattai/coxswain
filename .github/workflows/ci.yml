@@ -1,0 +1,64 @@
+name: ci
+on:
+  push:
+  pull_request:
+
+jobs:
+  # v2 core: build and test the Go skeleton, and syntax-check the v1 scripts, on both platforms.
+  go:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - run: go build ./...
+      - run: go test ./...
+      - name: bash -n over v1 scripts
+        run: for f in bin/*.sh; do bash -n "$f"; done
+
+  # v1 kit test suite. It exercises macOS-native tooling (simulators, APFS `cp -c`, `stat -f`, `sed -i ''`), so it runs
+  # on macOS only; ubuntu coverage of the scripts is the syntax check above (docs/decisions/0006: v1 is frozen).
+  bash-suite:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: bin/test suite
+        run: for t in bin/test/*.sh; do echo "== $t"; bash "$t"; done
+
+  # Plugin manifest: the .claude-plugin and hooks/skills/agents must stay installable from the marketplace.
+  plugin:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+      - run: npm install -g @anthropic-ai/claude-code
+      - name: claude plugin validate
+        run: claude plugin validate .
+
+  # Release build: goreleaser snapshot must produce the four binaries (darwin/linux x amd64/arm64) with the runtime
+  # assets archived. It does not publish (snapshot); a tagged release job is added when the captain cuts the first tag.
+  release-snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          version: "~> v2"
+          args: release --snapshot --clean
+      - name: assert four binaries
+        run: |
+          n=$(find dist -type f -name cox | wc -l | tr -d ' ')
+          echo "built $n cox binaries"
+          test "$n" -eq 4

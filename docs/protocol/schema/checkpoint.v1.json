@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/nphattai/coxswain/docs/protocol/schema/checkpoint.v1.json",
+  "title": "coxswain.checkpoint.v1",
+  "description": "YAML frontmatter of a worker checkpoint file <epic>/handoffs/<id>.md. The markdown body below the frontmatter carries the human-readable sections and is not schema-validated.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["schema", "story", "attempt", "head", "base", "written_at", "reason"],
+  "properties": {
+    "schema": { "const": "coxswain.checkpoint.v1" },
+    "story": { "type": "string" },
+    "attempt": { "type": "integer", "minimum": 1 },
+    "head": { "type": "string", "description": "HEAD sha at write time" },
+    "base": { "type": "string", "description": "base branch and sha, e.g. origin/epic/<slug>@<sha>" },
+    "written_at": { "type": "string", "description": "RFC 3339 UTC timestamp" },
+    "reason": { "enum": ["phase-end", "plan-compact", "compact-now", "park", "precompact-auto", "migrated-v1"] }
+  }
+}

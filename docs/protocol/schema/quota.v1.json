@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/nphattai/coxswain/docs/protocol/schema/quota.v1.json",
+  "title": "coxswain.quota.v1",
+  "description": "One quota headroom projection for a (harness, model). The only quota type routing, the watcher, cox state, and the board read. Persisted (projection only) in <workspace>/cox/.cache/quota.json.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["harness", "known", "runway", "usable_runway_seconds", "source"],
+  "properties": {
+    "harness": { "type": "string", "description": "claude | codex" },
+    "model": { "type": "string", "description": "window family (fable, opus, ...) or empty for the account-wide scope" },
+    "known": { "type": "boolean", "description": "false whenever the value is not machine-readable; other value fields are meaningful only when true" },
+    "percent_remaining": { "type": "integer", "description": "effective percent remaining across the bounding windows" },
+    "resets_at": { "type": "string", "description": "RFC 3339 reset of the binding window" },
+    "runway": { "enum": ["exhausted_now", "projected_exhaustion", "through_reset", "unknown"] },
+    "usable_runway_seconds": { "type": "integer", "description": "seconds of usable runway for a finite result; -1 when the source states none (through_reset, unknown, or a schema without the field)" },
+    "source": { "enum": ["quota-axi", "manual", "none"] },
+    "observed_at": { "type": "string", "description": "RFC 3339 time the projection was read" },
+    "reason": { "type": "string", "description": "why unknown (empty when known), or a health note" },
+    "window_ids": { "type": "array", "items": { "type": "string" }, "description": "the bounding window set the reading was computed from" }
+  }
+}

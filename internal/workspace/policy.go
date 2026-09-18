@@ -1,0 +1,512 @@
+package workspace
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"reflect"
+	"sort"
+	"strings"
+)
+
+// Meta is the mandatory justification every policy section carries: why the rule exists (a measurement or a captain
+// ruling, principle P7) and the condition under which it should be reviewed. A section missing either is a validation
+// error naming the section, so policy can never harden a value with no recorded reason.
+type Meta struct {
+	Why        string `json:"why"`
+	ReviewWhen string `json:"review_when"`
+}
+
+func (m Meta) missing() []string {
+	var out []string
+	if strings.TrimSpace(m.Why) == "" {
+		out = append(out, "why")
+	}
+	if strings.TrimSpace(m.ReviewWhen) == "" {
+		out = append(out, "review_when")
+	}
+	return out
+}
+
+// AllowParallel records the condition under which more than one worker may share a repo (decision 3) and whether the
+// scheduler actually enforces it. Enforced is false until a scheduler checks files_owned overlap, so parallel-same-repo
+// stays opt-out-of-safety and cox story dispatch only warns.
+type AllowParallel struct {
+	FilesOwned string `json:"files_owned"` // the disjointness condition, e.g. "disjoint"
+	Enforced   bool   `json:"enforced"`    // true only when a scheduler rejects an overlap
+}
+
+// WorkersPerRepo is the topology default (decision 3): one worker per repo unless files_owned are disjoint.
+type WorkersPerRepo struct {
+	Meta
+	Value             int           `json:"value"`
+	AllowParallelWhen AllowParallel `json:"allow_parallel_when"`
+}
+
+// Waves is the wave-ordering default (D24): backend-first, clients depend on the backend story.
+type Waves struct {
+	Meta
+	Value string `json:"value"` // "backend-first" | "single"
+}
+
+// Context holds the compaction thresholds in tokens (captain 2026-09-08: 400k plan, 500k now).
+type Context struct {
+	Meta
+	PlanCompact int `json:"plan_compact"`
+	CompactNow  int `json:"compact_now"`
+}
+
+// Arena is the arena trigger policy (5.2).
+type Arena struct {
+	Meta
+	Trigger []string `json:"trigger"`
+}
+
+// Delivery is the story delivery style resolved into each story once at creation (F14). "default": draft PR at the plan
+// gate, push every phase. "pipo": commits stay local, one push at the end, PR opened ready.
+type Delivery struct {
+	Meta
+	Style string `json:"style"` // "default" | "pipo"
+}
+
+// HarnessRole is the option set and default for one role (leader | worker). Models maps a harness name to the default
+// model id a worker of that harness runs under when a dispatch does not pin one (claude -> claude-opus-4-8, codex ->
+// gpt-5.6-sol): a claude-family default typed at a codex worker made codex reject the launch (M10c). Model is the
+// legacy single default, read only as claude's default so a pre-map policy keeps working. Both are optional and only
+// read for the worker role, via Policy.WorkerModel.
+type HarnessRole struct {
+	Options []string          `json:"options"`
+	Default string            `json:"default"`
+	Model   string            `json:"model"`  // legacy: claude's default, kept readable for pre-map policy
+	Models  map[string]string `json:"models"` // harness -> default model id
+}
+
+// ArenaHarness is the adversary/reviewer harness rule for arena roles.
+type ArenaHarness struct {
+	Adversary struct {
+		Rule    string `json:"rule"`
+		Default string `json:"default"`
+	} `json:"adversary"`
+	Reviewer struct {
+		Rule string `json:"rule"`
+	} `json:"reviewer"`
+}
+
+// Harness is the model-agnostic harness policy (P9, decision 8): options and default per role. Launch maps a harness
+// name to the approval/autonomy flags a dispatched worker of that harness launches with (harness.launch.<name>); an
+// absent entry falls back to the built-in default (a dispatched worker must run autonomously), and an explicit empty
+// list is a captain opt-out that types no flags. See Policy.LaunchFlags.
+type Harness struct {
+	Meta
+	Leader HarnessRole  `json:"leader"`
+	Worker HarnessRole  `json:"worker"`
+	Arena  ArenaHarness `json:"arena"`
+	Launch Launch       `json:"launch"`
+}
+
+// Launch maps a harness to the flags a launch carries. The flat entries (Worker) are a dispatched worker's autonomy
+// flags (harness.launch.<name>); the nested `arena` object (Arena) is an arena role's read-only flags in terminal mode
+// (harness.launch.arena.<name>, ADR 0013), kept separate so a role never inherits the worker's bypass flags. A JSON
+// value under any key other than "arena" is a worker flag list; the "arena" key holds the per-harness arena map.
+type Launch struct {
+	Worker map[string][]string
+	Arena  map[string][]string
+}
+
+// UnmarshalJSON reads the heterogeneous launch object: the "arena" key is a nested per-harness map, every other key is a
+// flag list for that harness's dispatched worker.
+func (l *Launch) UnmarshalJSON(b []byte) error {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return err
+	}
+	l.Worker = map[string][]string{}
+	l.Arena = map[string][]string{}
+	for k, v := range raw {
+		if k == "arena" {
+			if err := json.Unmarshal(v, &l.Arena); err != nil {
+				return fmt.Errorf("launch.arena: %w", err)
+			}
+			continue
+		}
+		var flags []string
+		if err := json.Unmarshal(v, &flags); err != nil {
+			return fmt.Errorf("launch.%s: %w", k, err)
+		}
+		l.Worker[k] = flags
+	}
+	return nil
+}
+
+// Routing is the harness routing default (ADR 0011). It is a review_when default, never a hard rule, so it carries no
+// `why` and is not one of the justified sections(): it only records the baseline bar under which routing may choose a
+// non-default harness. Below that bar routing filters the harness options by card fit and keeps the harness default.
+type Routing struct {
+	Default    string `json:"default"`     // "policy": fall back to the harness default until the bar is met
+	ReviewWhen string `json:"review_when"` // the baseline-row bar that unlocks a non-default choice
+}
+
+// QuotaNPX is the explicit npx opt-in for the quota-axi adapter (policy quota.npx): an exact version and integrity value.
+// null (the default) means npx is never used - the installed binary is the trustworthy default (M11).
+type QuotaNPX struct {
+	Version   string `json:"version"`
+	Integrity string `json:"integrity"`
+}
+
+// Quota is the observe-only quota policy (M11). Like routing and backend it carries why/review_when for the record but is
+// not a mandatory justified section (an epic policy without it keeps working on the code defaults), so adding this field
+// never invalidates an existing policy. Binary overrides the PATH lookup for quota-axi; NPX is the opt-in fallback;
+// low_percent/ok_percent/min_runway_hours/poll_minutes/health_debounce_minutes are the wake and gate thresholds.
+type Quota struct {
+	Meta
+	Binary                string    `json:"binary"`
+	NPX                   *QuotaNPX `json:"npx"`
+	LowPercent            int       `json:"low_percent"`
+	OKPercent             int       `json:"ok_percent"`
+	MinRunwayHours        int       `json:"min_runway_hours"`
+	PollMinutes           int       `json:"poll_minutes"`
+	HealthDebounceMinutes int       `json:"health_debounce_minutes"`
+}
+
+// Quota defaults, applied when policy declares none (or is nil).
+const (
+	DefaultQuotaLowPercent     = 10
+	DefaultQuotaOKPercent      = 25
+	DefaultQuotaMinRunwayHours = 24
+	DefaultQuotaPollMinutes    = 5
+	DefaultQuotaHealthDebounce = 60
+)
+
+// Orca plane values (ADR 0012, decision 4).
+const (
+	PlaneOrchestration = "orchestration" // drive Orca via task-create/worker-start + orchestration mailbox
+	PlaneTerminal      = "terminal"      // drive Orca via worktree + terminal only; cox owns handoff
+	// DefaultOrcaPlane is the plane used when policy declares no backend.orca.plane. M10 flips it to terminal (ADR 0012,
+	// decision 4) after preparing the live E2E; the tech lead reverts this one commit if the live E2E or a live story
+	// fails on claude or codex, which drops the default back to orchestration without touching the rest of M10.
+	DefaultOrcaPlane = PlaneTerminal
+)
+
+// OrcaBackend selects the Orca driving plane (ADR 0012). It is a compatibility switch, not a hardened behavioral value,
+// so like Routing it carries no why/review_when and is not one of the justified sections(): an absent section means the
+// code default (DefaultOrcaPlane), so no existing epic policy is invalidated by adding this field.
+type OrcaBackend struct {
+	Plane          string `json:"plane"`            // "orchestration" | "terminal"; "" => DefaultOrcaPlane
+	LaunchConfirmS int    `json:"launch_confirm_s"` // terminal-plane spawn confirm window in seconds; <=0 => DefaultLaunchConfirmS
+}
+
+// Backend groups per-backend policy. Only Orca has a plane switch today.
+type Backend struct {
+	Orca OrcaBackend `json:"orca"`
+}
+
+// ReviewNPX is the explicit npx opt-in for the lavish review adapter (policy review.npx): an exact version and integrity
+// value. null (the default) means npx is never used; the installed binary is the trustworthy default (same rule as
+// quota.npx, M13).
+type ReviewNPX struct {
+	Version   string `json:"version"`
+	Integrity string `json:"integrity"`
+}
+
+// Review is the visual-review policy (M13). Like quota and backend it carries why/review_when for the record but is not a
+// mandatory justified section, so adding it never invalidates an existing policy (an epic without it uses the code
+// defaults and lavish stays off). Surface selects the review surface ("lavish" | "none"); Binary overrides the PATH
+// lookup for lavish-axi; NPX is the opt-in fallback; Share defaults false and ht-ml.app publishing is refused unless
+// cox review share is given --share (outward-facing, DESIGN).
+type Review struct {
+	Meta
+	Surface string     `json:"surface"`
+	Binary  string     `json:"binary"`
+	NPX     *ReviewNPX `json:"npx"`
+	Share   bool       `json:"share"`
+}
+
+// Policy is the parsed cox/policy.json. Every top-level section embeds Meta and must carry why + review_when, except
+// routing, which is a review_when default and not a behavioral rule on its own.
+type Policy struct {
+	WorkersPerRepo WorkersPerRepo `json:"workers_per_repo"`
+	Waves          Waves          `json:"waves"`
+	Context        Context        `json:"context"`
+	Arena          Arena          `json:"arena"`
+	Delivery       Delivery       `json:"delivery"`
+	Harness        Harness        `json:"harness"`
+	Routing        Routing        `json:"routing"`
+	Backend        Backend        `json:"backend"`
+	Quota          Quota          `json:"quota"`
+	Review         Review         `json:"review"`
+}
+
+// QuotaLowPercent/QuotaOKPercent/QuotaMinRunwayHours/QuotaPollMinutes return the quota thresholds, falling back to the
+// defaults when policy is nil or the value is unset. A caller that could not load policy still gets working defaults.
+func (p *Policy) QuotaLowPercent() int {
+	if p != nil && p.Quota.LowPercent > 0 {
+		return p.Quota.LowPercent
+	}
+	return DefaultQuotaLowPercent
+}
+
+func (p *Policy) QuotaOKPercent() int {
+	if p != nil && p.Quota.OKPercent > 0 {
+		return p.Quota.OKPercent
+	}
+	return DefaultQuotaOKPercent
+}
+
+func (p *Policy) QuotaMinRunwayHours() int {
+	if p != nil && p.Quota.MinRunwayHours > 0 {
+		return p.Quota.MinRunwayHours
+	}
+	return DefaultQuotaMinRunwayHours
+}
+
+func (p *Policy) QuotaPollMinutes() int {
+	if p != nil && p.Quota.PollMinutes > 0 {
+		return p.Quota.PollMinutes
+	}
+	return DefaultQuotaPollMinutes
+}
+
+func (p *Policy) QuotaHealthDebounceMinutes() int {
+	if p != nil && p.Quota.HealthDebounceMinutes > 0 {
+		return p.Quota.HealthDebounceMinutes
+	}
+	return DefaultQuotaHealthDebounce
+}
+
+// DefaultWorkerModel is the captain ruling for a dispatched claude worker with no pinned model: Opus 4.8. It is the
+// final fallback under WorkerModel for the claude harness so a claude launch line always carries a --model, even with
+// no policy loaded (ADR 0012 / M10b). Other harnesses have no such ruling: an unmapped harness resolves to no model.
+const DefaultWorkerModel = "claude-opus-4-8"
+
+// WorkerModel resolves the model a worker of harness `h` runs under and whether one was found: an explicit dispatch
+// model wins, else the per-harness policy default (harness.worker.models[h]), else the legacy harness.worker.model as
+// claude's default, else DefaultWorkerModel for claude only. A harness with no mapped default returns ("", false) so
+// the caller omits --model and lets the harness pick its own default (typing claude's model at codex made codex reject
+// the launch, M10c).
+func (p *Policy) WorkerModel(h, explicit string) (string, bool) {
+	if strings.TrimSpace(explicit) != "" {
+		return explicit, true
+	}
+	if p != nil {
+		if m, ok := p.Harness.Worker.Models[h]; ok && strings.TrimSpace(m) != "" {
+			return m, true
+		}
+		if h == "claude" && strings.TrimSpace(p.Harness.Worker.Model) != "" {
+			return p.Harness.Worker.Model, true
+		}
+	}
+	if h == "claude" {
+		return DefaultWorkerModel, true
+	}
+	return "", false
+}
+
+// LaunchFlags returns the approval/autonomy flags a dispatched worker of the named harness launches with. An explicit
+// policy entry (including an empty list, a captain opt-out) wins; when the harness has no entry, or policy is nil, the
+// built-in default applies so a dispatched worker never deadlocks on a local approval prompt it cannot answer. The
+// captain owns the risk of these flags; docs/adapters/{claude,codex}.md record how to tighten them.
+func (p *Policy) LaunchFlags(harness string) []string {
+	if p != nil {
+		if f, ok := p.Harness.Launch.Worker[harness]; ok {
+			return f
+		}
+	}
+	return defaultLaunchFlags(harness)
+}
+
+// ArenaLaunchFlags returns the read-only flags an arena role of the named harness launches with in terminal mode
+// (harness.launch.arena.<name>, ADR 0013). An explicit policy entry (including an empty list) wins; otherwise the
+// built-in arena default applies (see defaultArenaLaunchFlags), so a role never inherits the worker's bypass flags even
+// when policy is silent.
+func (p *Policy) ArenaLaunchFlags(harness string) []string {
+	if p != nil {
+		if f, ok := p.Harness.Launch.Arena[harness]; ok {
+			return f
+		}
+	}
+	return defaultArenaLaunchFlags(harness)
+}
+
+// defaultArenaLaunchFlags is the arena baseline for a terminal-mode role when policy declares none. These are the
+// terminal flags, not the headless ones: headless is always read-only and hard-coded in arena.headlessArgv. In terminal
+// mode a role runs in its own disposable worktree and must be able to write its report there, so codex uses
+// -a never -s workspace-write (read-only would let it read but never write, so the report never lands; a read-only codex
+// with --add-dir also exits, M12b). claude uses --permission-mode acceptEdits (verified against claude --help): plan mode
+// cannot write even with --add-dir, so a terminal claude role in plan mode can only produce a plan to observe
+// (docs/adapters/claude.md); plan mode is the headless path (arena.headlessArgv). Both are still tighter than the worker
+// bypass flags.
+func defaultArenaLaunchFlags(harness string) []string {
+	switch harness {
+	case "claude":
+		return []string{"--permission-mode", "acceptEdits"}
+	case "codex":
+		return []string{"-a", "never", "-s", "workspace-write"}
+	default:
+		return nil
+	}
+}
+
+// defaultLaunchFlags is the autonomy baseline for a dispatched worker when policy declares none. Verified against the
+// live CLIs on 2026-09-15 (claude 2.1.272, codex-cli 0.154.0): claude uses --permission-mode bypassPermissions; codex
+// has no --full-auto at the top level, so it uses -a never -s workspace-write. An unknown harness gets no flags.
+func defaultLaunchFlags(harness string) []string {
+	switch harness {
+	case "claude":
+		return []string{"--permission-mode", "bypassPermissions"}
+	case "codex":
+		return []string{"-a", "never", "-s", "workspace-write"}
+	default:
+		return nil
+	}
+}
+
+// DefaultLaunchConfirmS is the terminal-plane spawn confirm window when policy declares none: 60 seconds, up from the
+// original 20s that warned on cold harness starts that were in fact running (M10b, docs/adapters/orca.md live fact).
+const DefaultLaunchConfirmS = 60
+
+// LaunchConfirmS returns the terminal-plane spawn confirm window in seconds, or DefaultLaunchConfirmS when policy
+// declares none (or is nil). A caller that could not load policy still gets the 60s window.
+func (p *Policy) LaunchConfirmS() int {
+	if p == nil || p.Backend.Orca.LaunchConfirmS <= 0 {
+		return DefaultLaunchConfirmS
+	}
+	return p.Backend.Orca.LaunchConfirmS
+}
+
+// OrcaPlane returns the configured Orca plane, or DefaultOrcaPlane when policy declares none. A nil policy is the
+// default too, so a caller that could not load policy still gets a plane.
+func (p *Policy) OrcaPlane() string {
+	if p == nil || strings.TrimSpace(p.Backend.Orca.Plane) == "" {
+		return DefaultOrcaPlane
+	}
+	return p.Backend.Orca.Plane
+}
+
+// section returns each named policy section's Meta for validation, in stable order.
+func (p *Policy) sections() []struct {
+	name string
+	meta Meta
+} {
+	return []struct {
+		name string
+		meta Meta
+	}{
+		{"workers_per_repo", p.WorkersPerRepo.Meta},
+		{"waves", p.Waves.Meta},
+		{"context", p.Context.Meta},
+		{"arena", p.Arena.Meta},
+		{"delivery", p.Delivery.Meta},
+		{"harness", p.Harness.Meta},
+	}
+}
+
+// Validate reports every section missing why or review_when, naming each. It returns nil only when all sections are
+// justified. The error lists sections sorted for a deterministic message.
+func (p *Policy) Validate() error {
+	var problems []string
+	for _, s := range p.sections() {
+		if m := s.meta.missing(); len(m) > 0 {
+			problems = append(problems, fmt.Sprintf("%s (missing %s)", s.name, strings.Join(m, "+")))
+		}
+	}
+	if len(problems) == 0 {
+		return nil
+	}
+	sort.Strings(problems)
+	return fmt.Errorf("policy validation failed: %s", strings.Join(problems, "; "))
+}
+
+// LoadPolicy reads and parses <ws>/cox/policy.json and validates it. An invalid policy (a section without why or
+// review_when) is a hard error naming the section.
+func LoadPolicy(wsRoot string) (*Policy, error) {
+	return LoadPolicyFile(filepath.Join(wsRoot, ControlDir, "policy.json"))
+}
+
+// LoadPolicyFile parses and validates a policy.json at an explicit path.
+func LoadPolicyFile(path string) (*Policy, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read policy: %w", err)
+	}
+	var p Policy
+	if err := json.Unmarshal(b, &p); err != nil {
+		return nil, fmt.Errorf("parse %s: %w", path, err)
+	}
+	if err := p.Validate(); err != nil {
+		return nil, err
+	}
+	return &p, nil
+}
+
+// Resolve loads the workspace policy and, when <project>/cox/policy.json exists, overlays its present sections on top of
+// it (project overrides win). The overlay is section-granular: a project file that sets only `delivery` keeps every
+// other section from the workspace policy. The merged policy is validated as a whole, so an override that drops a
+// section's why is caught. projectDir may be "" to skip the overlay.
+func Resolve(wsRoot, projectDir string) (*Policy, error) {
+	base, err := LoadPolicy(wsRoot)
+	if err != nil {
+		return nil, err
+	}
+	if projectDir == "" {
+		return base, nil
+	}
+	overridePath := filepath.Join(projectDir, ControlDir, "policy.json")
+	b, err := os.ReadFile(overridePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return base, nil // no project override
+		}
+		return nil, fmt.Errorf("read project policy: %w", err)
+	}
+	// Overlay only the sections the project file actually declares. A declared section REPLACES the base section whole
+	// (the destination is zeroed first), so a project that overrides a section must re-supply its why and review_when;
+	// an override that omits them is caught by the final Validate rather than silently inheriting a now-wrong reason.
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return nil, fmt.Errorf("parse %s: %w", overridePath, err)
+	}
+	replace := func(key string, dst, zero any) error {
+		r, ok := raw[key]
+		if !ok {
+			return nil
+		}
+		// Zero the section, then decode the override onto it.
+		reflect.ValueOf(dst).Elem().Set(reflect.ValueOf(zero).Elem())
+		return json.Unmarshal(r, dst)
+	}
+	if err := replace("workers_per_repo", &base.WorkersPerRepo, &WorkersPerRepo{}); err != nil {
+		return nil, err
+	}
+	if err := replace("waves", &base.Waves, &Waves{}); err != nil {
+		return nil, err
+	}
+	if err := replace("context", &base.Context, &Context{}); err != nil {
+		return nil, err
+	}
+	if err := replace("arena", &base.Arena, &Arena{}); err != nil {
+		return nil, err
+	}
+	if err := replace("delivery", &base.Delivery, &Delivery{}); err != nil {
+		return nil, err
+	}
+	if err := replace("harness", &base.Harness, &Harness{}); err != nil {
+		return nil, err
+	}
+	if err := replace("routing", &base.Routing, &Routing{}); err != nil {
+		return nil, err
+	}
+	if err := replace("backend", &base.Backend, &Backend{}); err != nil {
+		return nil, err
+	}
+	if err := replace("quota", &base.Quota, &Quota{}); err != nil {
+		return nil, err
+	}
+	if err := replace("review", &base.Review, &Review{}); err != nil {
+		return nil, err
+	}
+	if err := base.Validate(); err != nil {
+		return nil, fmt.Errorf("merged policy (%s over workspace): %w", overridePath, err)
+	}
+	return base, nil
+}

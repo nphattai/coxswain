@@ -1,0 +1,7 @@
+{
+  "pr": { "number": 105, "head_ref": "story/nodiff", "head": "ffff666", "base": "epic/demo", "state": "open" },
+  "checks": [{ "name": "ci", "status": "completed", "conclusion": "success" }],
+  "comments": [{ "author": "rs-pr-reviewer", "body": "✅ Approved", "path": "", "line": 0 }],
+  "merged": false,
+  "errors": { "diff": "gh pr diff: exit 1 (could not retrieve diff)" }
+}

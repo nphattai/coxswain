@@ -1,0 +1,121 @@
+{
+  "generatedAt": "2026-09-16T03:21:01.307Z",
+  "schemaVersion": 5,
+  "providers": [
+    {
+      "provider": "claude",
+      "plan": "max",
+      "windows": [
+        {
+          "id": "five_hour",
+          "label": "session",
+          "kind": "session",
+          "resetsAt": "2026-09-16T08:00:00.818267+00:00",
+          "percentRemaining": 97,
+          "pace": {
+            "status": "behind",
+            "reservePercentPoints": 4.0027,
+            "burnMultiple": 0.4284
+          }
+        },
+        {
+          "id": "seven_day",
+          "label": "week",
+          "kind": "weekly",
+          "resetsAt": "2026-09-20T04:00:00.818309+00:00",
+          "percentRemaining": 39,
+          "pace": {
+            "status": "ahead",
+            "reservePercentPoints": -18.5297,
+            "burnMultiple": 1.4363
+          }
+        },
+        {
+          "id": "model:fable",
+          "label": "Fable week",
+          "kind": "model",
+          "resetsAt": "2026-09-20T04:00:00.818552+00:00",
+          "percentRemaining": 35,
+          "pace": {
+            "status": "ahead",
+            "reservePercentPoints": -22.5297,
+            "burnMultiple": 1.5305
+          }
+        }
+      ],
+      "state": {
+        "status": "fresh",
+        "stale": false
+      },
+      "quotaSemantics": {
+        "status": "known",
+        "effectiveAvailability": [
+          {
+            "scope": "all_models",
+            "status": "known",
+            "effectivePercentRemaining": 39,
+            "boundedBy": [
+              "five_hour",
+              "seven_day"
+            ],
+            "limitingWindowIds": [
+              "seven_day"
+            ],
+            "pace": {
+              "status": "mixed",
+              "aheadWindowIds": [
+                "seven_day"
+              ],
+              "worstReservePercentPoints": -18.5297,
+              "worstReserveWindowId": "seven_day"
+            },
+            "runway": {
+              "status": "projected_exhaustion",
+              "usableRunwaySeconds": 164222,
+              "projectedExhaustedAt": "2026-09-18T00:58:03.586Z",
+              "limitingWindowId": "seven_day",
+              "projectionConfidence": "established"
+            },
+            "selection": {
+              "status": "known",
+              "spendPriority": -0.7187
+            }
+          },
+          {
+            "scope": "model:fable",
+            "status": "known",
+            "effectivePercentRemaining": 35,
+            "boundedBy": [
+              "five_hour",
+              "seven_day",
+              "model:fable"
+            ],
+            "limitingWindowIds": [
+              "model:fable"
+            ],
+            "pace": {
+              "status": "mixed",
+              "aheadWindowIds": [
+                "seven_day",
+                "model:fable"
+              ],
+              "worstReservePercentPoints": -22.5297,
+              "worstReserveWindowId": "model:fable"
+            },
+            "runway": {
+              "status": "projected_exhaustion",
+              "usableRunwaySeconds": 138309,
+              "projectedExhaustedAt": "2026-09-17T17:46:10.801Z",
+              "limitingWindowId": "model:fable",
+              "projectionConfidence": "established"
+            },
+            "selection": {
+              "status": "known",
+              "spendPriority": -0.8189
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

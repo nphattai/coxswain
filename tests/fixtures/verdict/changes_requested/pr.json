@@ -1,0 +1,9 @@
+{
+  "pr": { "number": 104, "head_ref": "story/changes", "head": "eeee555", "base": "epic/demo", "state": "open" },
+  "diff": "diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n+needs work\n",
+  "checks": [{ "name": "ci", "status": "completed", "conclusion": "success" }],
+  "comments": [
+    { "author": "rs-pr-reviewer", "body": "❌ Changes Requested: handle the null case", "path": "a.ts", "line": 3 }
+  ],
+  "merged": false
+}

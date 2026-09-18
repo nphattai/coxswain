@@ -1,0 +1,16 @@
+name: docs-lint
+on:
+  pull_request:
+    paths: ["docs/**", "AGENTS.md", "README.md", ".markdownlint.yml", ".lycheeignore"]
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DavidAnson/markdownlint-cli2-action@v19
+        with:
+          globs: "docs/**/*.md AGENTS.md README.md"
+      - uses: lycheeverse/lychee-action@v2
+        with:
+          args: --no-progress --exclude-path docs/history "docs/**/*.md" AGENTS.md README.md
+          fail: true

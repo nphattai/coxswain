@@ -1,0 +1,3 @@
+# private or local targets lychee cannot reach
+^http://localhost
+^https://github.com/ExampleOrg/.*/pull/
