@@ -162,8 +162,8 @@ func TestWorktreeCreateParsesAndStripsRef(t *testing.T) {
 
 func TestRepoSelector(t *testing.T) {
 	cases := map[string]string{
-		"acme-inside":            "name:acme-inside",
-		"ExampleOrg/acme-partner": "name:ExampleOrg/acme-partner",
+		"acme-inside":              "name:acme-inside",
+		"ExampleOrg/acme-partner":  "name:ExampleOrg/acme-partner",
 		"/Users/tai/Work/coxswain": "path:/Users/tai/Work/coxswain",
 	}
 	for in, want := range cases {
