@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 154 40" role="img" aria-labelledby="title desc">
+  <title id="title">Coxswain</title>
+  <desc id="desc">The word cox in signal red followed by swain in carbon ink.</desc>
+  <text x="2" y="30" font-family="Georgia, 'Times New Roman', serif" font-size="30" font-weight="700">
+    <tspan fill="#a82b35" font-style="italic">cox</tspan><tspan fill="#182027">swain</tspan>
+  </text>
+</svg>

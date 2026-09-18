@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 360 850" role="img" aria-labelledby="title desc">
+  <title id="title">Story lifecycle for a narrow screen</title>
+  <desc id="desc">A vertical story flow from submitted to working, with separate branches for input, parking and a new attempt, followed by completed, failed, or canceled outcomes.</desc>
+  <defs>
+    <marker id="mobile-life-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0l10 5-10 5z" fill="#606b74"/></marker>
+    <style>
+      text{font-family:"IBM Plex Sans","Segoe UI",sans-serif;fill:#182027}.title{font-size:17px;font-weight:600}.copy{font-size:15px;fill:#59656e}.mono{font-family:ui-monospace,"SFMono-Regular",Consolas,monospace;font-size:14px;fill:#59656e}.lane{font-size:13px;font-weight:600;letter-spacing:.9px;fill:#59656e}
+      .state{fill:#f9faf9;stroke:#aeb8bf;stroke-width:1.25}.active{stroke:#a82b35;stroke-width:2}.terminal{fill:#edf1f2;stroke:#606b74;stroke-width:1.25}.attempt{fill:#f9faf9;stroke:#315f89;stroke-width:1.5}
+      .flow{fill:none;stroke:#606b74;stroke-width:1.5;marker-end:url(#mobile-life-arrow)}.guide{fill:none;stroke:#cbd2d6;stroke-width:1.25}
+    </style>
+  </defs>
+
+  <text class="lane" x="16" y="24">ACTIVE ATTEMPT</text>
+  <rect class="state" x="78" y="42" width="204" height="52" rx="26"/>
+  <rect class="state active" x="78" y="132" width="204" height="52" rx="26"/>
+  <text class="title" x="180" y="74" text-anchor="middle">submitted</text>
+  <text class="title" x="180" y="164" text-anchor="middle">working</text>
+  <path class="flow" d="M180 94v38"/>
+  <text class="mono" x="194" y="116">dispatch</text>
+
+  <rect class="state" x="22" y="232" width="148" height="62" rx="5"/>
+  <rect class="state" x="190" y="232" width="148" height="62" rx="5"/>
+  <text class="title" x="96" y="258" text-anchor="middle">input required</text>
+  <text class="copy" x="96" y="278" text-anchor="middle">ask, then reply</text>
+  <text class="title" x="264" y="258" text-anchor="middle">parked</text>
+  <text class="copy" x="264" y="278" text-anchor="middle">checkpoint saved</text>
+  <path class="flow" d="M150 184v24H96v24"/>
+  <path class="flow" d="M210 184v24h54v24"/>
+  <path class="flow" d="M96 232v-18h36v-30"/>
+
+  <text class="lane" x="16" y="350">RECOVERY PATH</text>
+  <rect class="attempt" x="78" y="370" width="204" height="64"/>
+  <text class="title" x="180" y="397" text-anchor="middle">attempt N+1</text>
+  <text class="copy" x="180" y="417" text-anchor="middle">same worktree · brief replayed</text>
+  <path class="flow" d="M264 294v38h-84v38"/>
+  <path class="flow" d="M78 402H46V158h32"/>
+  <text class="mono" x="54" y="334">resume</text>
+
+  <text class="lane" x="16" y="500">TERMINAL OUTCOMES</text>
+  <text class="copy" x="16" y="521">One recorded outcome ends each active attempt.</text>
+  <rect class="terminal" x="22" y="544" width="316" height="64"/>
+  <rect class="terminal" x="22" y="630" width="316" height="64"/>
+  <rect class="terminal" x="22" y="716" width="316" height="64"/>
+  <text class="title" x="42" y="572">completed</text><text class="copy" x="318" y="592" text-anchor="end">captain confirmed merge</text>
+  <text class="title" x="42" y="658">failed</text><text class="copy" x="318" y="678" text-anchor="end">reason recorded</text>
+  <text class="title" x="42" y="744">canceled</text><text class="copy" x="318" y="764" text-anchor="end">captain dropped scope</text>
+  <path class="guide" d="M16 812h328"/>
+  <text class="copy" x="16" y="834">Every transition appends an event.</text>
+</svg>

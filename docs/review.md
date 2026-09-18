@@ -1,4 +1,6 @@
-# Visual review (M13)
+<span id="visual-review-m13" aria-hidden="true"></span>
+
+# Visual review
 
 cox turns the artifacts a captain must judge - an epic DESIGN.md, the arena synthesis, phase plans, the target
 architecture - into review pages, opens them in an optional browser surface, and records the reviewer's feedback as
@@ -13,7 +15,7 @@ A review page lives at `<epic>/reports/visual/<name>.html` with a sidecar `<name
 ```json
 { "schema": "coxswain.artifact.v1", "kind": "design|plan|arena|board|comparison",
   "sources": [{ "path": "DESIGN.md", "sha256": "..." }],
-  "generated_at": "2026-09-16T...Z", "generator": "cox|leader", "synthesis_sha": "<12-hex, kind=arena>" }
+  "generated_at": "<RFC3339 timestamp>", "generator": "cox|leader", "synthesis_sha": "<12-hex, kind=arena>" }
 ```
 
 `cox artifact list --epic <dir>` lists the pages and their sidecars.

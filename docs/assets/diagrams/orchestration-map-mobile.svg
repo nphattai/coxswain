@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 360 820" role="img" aria-labelledby="title desc">
+  <title id="title">Coxswain orchestration topology for a narrow screen</title>
+  <desc id="desc">A vertical view from captain to leader, through cox and its adapters, down to isolated workers. A dashed return path carries durable status, checkpoints, and wakes.</desc>
+  <defs>
+    <marker id="m-arrow-red" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0l10 5-10 5z" fill="#a82b35"/></marker>
+    <marker id="m-arrow-ink" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0l10 5-10 5z" fill="#606b74"/></marker>
+    <marker id="m-arrow-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0l10 5-10 5z" fill="#315f89"/></marker>
+    <style>
+      text{font-family:"IBM Plex Sans","Segoe UI",sans-serif;fill:#182027}
+      .label{font-size:13px;font-weight:600;letter-spacing:.8px;fill:#59656e}
+      .title{font-size:17px;font-weight:600}
+      .copy{font-size:15px;fill:#59656e}
+      .mono{font-family:ui-monospace,"SFMono-Regular",Consolas,monospace;font-size:14px;fill:#59656e}
+      .band{fill:#edf1f2}.node{fill:#f9faf9;stroke:#aeb8bf}.signal{fill:#f9faf9;stroke:#a82b35;stroke-width:2}
+      .core{fill:#182027}.inverse{fill:#f3f6f5}
+      .flow{fill:none;stroke:#606b74;stroke-width:1.5;marker-end:url(#m-arrow-ink)}
+      .command{fill:none;stroke:#a82b35;stroke-width:2;marker-end:url(#m-arrow-red)}
+      .data{fill:none;stroke:#315f89;stroke-width:1.5;stroke-dasharray:7 7;marker-end:url(#m-arrow-blue);animation:pulse 4s cubic-bezier(.25,1,.5,1) infinite}
+      @keyframes pulse{to{stroke-dashoffset:-28}}@media(prefers-reduced-motion:reduce){.data{animation:none}}
+    </style>
+  </defs>
+
+  <rect class="band" x="8" y="8" width="344" height="88"/>
+  <text class="label" x="20" y="28">HUMAN AUTHORITY</text>
+  <rect class="signal" x="66" y="42" width="228" height="38"/>
+  <text class="title" x="180" y="66" text-anchor="middle">Captain</text>
+
+  <rect class="band" x="8" y="112" width="344" height="132"/>
+  <text class="label" x="20" y="132">LEADER SESSION</text>
+  <rect class="node" x="28" y="150" width="304" height="42"/>
+  <text class="title" x="180" y="169" text-anchor="middle">Leader</text>
+  <text class="copy" x="180" y="184" text-anchor="middle">designs · dispatches · audits</text>
+  <rect class="node" x="28" y="202" width="304" height="30"/>
+  <text class="copy" x="180" y="221" text-anchor="middle">wake: push hook or pull wait</text>
+
+  <rect class="band" x="8" y="260" width="344" height="182"/>
+  <text class="label" x="20" y="280">HARNESS-AGNOSTIC CORE</text>
+  <rect class="core" x="28" y="298" width="304" height="124"/>
+  <text class="title inverse" x="48" y="324">cox</text>
+  <path d="M44 338h272M44 380h272" stroke="#59656e"/>
+  <text class="title inverse" x="48" y="362">state</text>
+  <text class="copy inverse" x="316" y="362" text-anchor="end">event log · resolver</text>
+  <text class="title inverse" x="48" y="404">protocol</text>
+  <text class="copy inverse" x="316" y="404" text-anchor="end">brief · steer · wake</text>
+
+  <rect class="band" x="8" y="458" width="344" height="158"/>
+  <text class="label" x="20" y="478">EXTERNAL BOUNDARIES</text>
+  <rect class="node" x="28" y="496" width="144" height="42"/><rect class="node" x="188" y="496" width="144" height="42"/>
+  <rect class="node" x="28" y="554" width="144" height="42"/><rect class="node" x="188" y="554" width="144" height="42"/>
+  <text class="title" x="100" y="522" text-anchor="middle">backend</text><text class="title" x="260" y="522" text-anchor="middle">harness</text>
+  <text class="title" x="100" y="580" text-anchor="middle">forge</text><text class="title" x="260" y="580" text-anchor="middle">service</text>
+
+  <rect class="band" x="8" y="632" width="344" height="180"/>
+  <text class="label" x="20" y="652">ISOLATED EXECUTION</text>
+  <rect class="node" x="28" y="670" width="304" height="48"/>
+  <rect class="node" x="28" y="736" width="304" height="48"/>
+  <text class="title" x="48" y="691">Worker story</text><text class="mono" x="48" y="709">worktree · attempt</text>
+  <text class="title" x="48" y="757">Arena adversary</text><text class="mono" x="48" y="775">separate harness</text>
+
+  <path class="command" d="M180 80v70"/>
+  <path class="flow" d="M180 192v106"/>
+  <path class="flow" d="M180 422v74"/>
+  <path class="flow" d="M180 596v74"/>
+  <path class="data" d="M332 760h12V217h-12"/>
+  <text class="mono" x="340" y="480" text-anchor="end" transform="rotate(-90 340 480)" fill="#315f89">status · checkpoint · wake</text>
+</svg>

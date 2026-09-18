@@ -1,9 +1,9 @@
 # Quota (observe-only)
 
 cox reads per-harness rate-limit headroom so the captain sees quota next to fleet state and gets one wake before a
-window runs dry, instead of finding out from a 429 or an idle worker. M11 is **observe-only**: quota feeds surfaces,
-wakes, a dispatch refusal, and a manual reroute. It never changes which harness routing picks (ADR 0011 stays in force);
-that automatic safety valve is deferred to a separate ADR (captain ruling 2026-09-16, option a).
+window runs dry, instead of finding out from a 429 or an idle worker. Quota is **observe-only**: it feeds surfaces,
+wakes, a dispatch refusal, and a manual reroute. It never changes which harness routing picks.
+[ADR 0011](decisions/0011-captain-opens-routing-board-lab-drops-tmux.md) owns that boundary.
 
 Design of record: `epics/m11-quota-routing/DESIGN.md` (signed after two arena rounds). Contract:
 [`docs/protocol/quota.v1.md`](protocol/quota.v1.md).
@@ -79,7 +79,7 @@ dispatches; unknown never blocks. The gate never changes the harness.
 cox never switches a harness on quota by itself (ADR 0011: no non-default pick before the 12-row baseline). When a
 harness runs low the leader reroutes by hand: `cox story park <id>` then `cox story resume <id> --harness <other>
 [--model m]`. Resume runs attempt N+1 on the other harness with the harness-neutral checkpoint injected, resolves the new
-harness's model (the cross-harness model guard, M10c, still applies), and records `evidence.reroute {from,to,reason}`.
+harness's model, still subject to the cross-harness model guard, and records reroute evidence.
 Switching the leader is also manual (open a codex session, set `harness.leader.default`); `quota_low` for the leader
 harness is a wake the captain reads.
 

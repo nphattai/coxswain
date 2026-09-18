@@ -1,55 +1,63 @@
-# CLI reference
+<span id="cli-reference" aria-hidden="true"></span>
 
-The full `cox` command surface. Generated from `cox --help`; run it locally for the version you have.
+# CLI map
 
-```text
-cox - coxswain CLI
+Use this page to find the command family for a task. `cox --help` is the top-level index. Each command's usage output
+and implementation file under `cmd/cox/` own its exact flags, validation, and exit behavior.
 
-usage:
-  cox version
-  cox workspace init [--from-repos-md <path>] [--root <dir>]
-  cox epic new <project> <slug> --repo alias=ref ... [--no-push]
-  cox epic stories --epic <dir>
-  cox epic close --epic <dir> [--yes] [--force] [--stories-only]
-  cox epic arena --epic <dir> [--lite] [--reason <text>] [--leader claude|codex]
-  cox epic design --sign [--by <name>] | --amend --reason <why> --epic <dir>
-  cox arena check|collect|synth --epic <dir> [--round <n>] [--html]
-  cox epic design --html --epic <dir>
-  cox plan --html <plan-dir> --epic <dir>
-  cox plan compare --html <plan-dir> <architecture.html> --epic <dir>
-  cox artifact list --epic <dir>
-  cox review open <artifact> [--epic <dir>]
-  cox review poll <artifact> --epic <dir> [--max 25m]
-  cox review reply "<message>" <artifact> --epic <dir> [--max 25m]
-  cox review share <artifact> [--share] --epic <dir>
-  cox env up|down|refresh|smoke|status|snapshot|release <story> --epic <dir>
-  cox audit pr <story> --epic <dir> [--pr <n>] [--json]
-  cox ship facts --epic <dir> [--json] [--no-forge]
-  cox reply <story> qNNN "<answer>" --epic <dir> [--again]   (terminal plane)
-  cox reply <msg-id> "<text>" --epic <dir>                   (orchestration plane)
-  cox question wait qNNN --epic <dir> --story <id> [--max 25m]
-  cox state [<story>] --epic <dir> [--json] [--no-forge]
-  cox route --story <id> --epic <dir> [--json]
-  cox quota [--json] --epic <dir>
-  cox quota set <harness> <percent> --until <RFC3339> [--model m] --epic <dir>
-  cox quota unset <harness> --epic <dir>
-  cox board --epic <dir> (--out <file> | --serve :port) [--no-forge]
-  cox lab new|assign|report|retire <name> --epic <dir> [--rule <k> --metric <m> | --story <id> | --json]
-  cox scorecard --epic <dir> [--story <id>] [--json] [--no-forge]
-  cox baseline run --story <id> --epic <dir> --harness claude|codex --condition bare|v2 --before <sha> [--dry-run]
-  cox doctor [--epic <dir>] [--json]
-  cox migrate --epic <dir> [--apply]
-  cox steer <story> "<text>" --epic <dir> [--fyi] [--override <why>]
-  cox status <phase> "<note>" --epic <dir> --story <id>
-  cox control <story> interrupt|park|relaunch [--note <progress>] --epic <dir>
-  cox reconcile --epic <dir> [--apply] [--json]
-  cox story dispatch|done|park|resume <id> --epic <dir> [--harness claude|codex --model <id>]
-  cox story fail|cancel <id> --reason "<why>" --epic <dir> [--close-worktree] [--force]
-  cox story report status|done|stuck --epic <dir> --story <id> --note "<summary>" [--evidence k=v ...]
-  cox story report question --body "<question>" --epic <dir> --story <id>
-  cox checkpoint facts|inject --epic <dir> --story <id>
-  cox wake drain [--peek] | ack-through <gen> | wait [--max <dur>]  --epic <dir>
-  cox watch --epic <dir> [--once]
-  cox inbox ack <record-path>
-  cox hook prompt-drain|stop-rewake|precompact|session-start
-```
+## Setup and diagnosis
+
+| Task | Command family | Owner |
+|---|---|---|
+| Initialize workspace files | `cox workspace` | `cmd/cox/workspace.go` |
+| Check installation, drift, and epic health | `cox doctor` | `cmd/cox/doctor.go`, `internal/doctor/` |
+| Migrate a v1 epic | `cox migrate` | `cmd/cox/migrate.go`, `internal/migrate/` |
+
+## Design and decompose
+
+| Task | Command family | Owner |
+|---|---|---|
+| Create, sign, or close an epic | `cox epic` | `cmd/cox/epic.go`, `internal/epic/` |
+| Run adversarial design review | `cox epic arena`, `cox arena` | `cmd/cox/arena.go`, `internal/arena/` |
+| Render or compare plan artifacts | `cox plan`, `cox artifact` | `cmd/cox/plan.go`, `cmd/cox/artifact.go` |
+
+## Dispatch and supervise
+
+| Task | Command family | Owner |
+|---|---|---|
+| Dispatch, park, resume, or terminate a story | `cox story` | `cmd/cox/story.go` |
+| Send durable guidance | `cox steer` | `cmd/cox/steer.go`, `internal/protocol/inbox/` |
+| Apply a bounded control verb | `cox control` | `cmd/cox/control.go`, `internal/protocol/control/` |
+| Report progress or completion | `cox story report`, `cox status` | `cmd/cox/report.go`, `cmd/cox/status.go` |
+| Ask, wait, and reply | `cox question`, `cox reply` | `cmd/cox/question.go`, `cmd/cox/reply.go` |
+| Capture or inject resume context | `cox checkpoint` | `cmd/cox/checkpoint.go`, `internal/protocol/checkpoint/` |
+| Drain, acknowledge, or wait for wakes | `cox wake`, `cox watch` | `cmd/cox/wake.go`, `cmd/cox/watch.go` |
+
+## Observe and recover
+
+| Task | Command family | Owner |
+|---|---|---|
+| Resolve current story or fleet state | `cox state` | `cmd/cox/state.go`, `internal/state/resolve.go` |
+| Recover an unconfirmed transition | `cox reconcile` | `cmd/cox/reconcile.go`, `internal/reconcile/` |
+| Inspect captain dashboard | `cox board` | `cmd/cox/board.go` |
+| Inspect scorecard or baseline evidence | `cox scorecard`, `cox baseline` | `cmd/cox/scorecard.go`, `cmd/cox/baseline.go` |
+| Inspect quota or route a story | `cox quota`, `cox route` | `cmd/cox/quota.go`, `cmd/cox/route.go` |
+| Run a policy experiment | `cox lab` | `cmd/cox/lab.go`, `internal/lab/` |
+
+## Audit and release
+
+| Task | Command family | Owner |
+|---|---|---|
+| Audit a pull request | `cox audit` | `cmd/cox/audit.go`, `internal/verdict/` |
+| Gather release facts | `cox ship facts` | `cmd/cox/ship.go`, `internal/verdict/ship.go` |
+| Open or poll visual review | `cox review` | `cmd/cox/review.go`, `internal/adapter/review/` |
+| Manage story-owned services | `cox env` | `cmd/cox/env.go`, `internal/env/` |
+
+## Authority notes
+
+- Read-only fact commands may report `unknown`; they do not manufacture a pass.
+- Commands do not grant merge or release authority. The captain keeps those decisions.
+- Outward-facing review sharing and destructive cleanup require explicit confirmation at the owning command.
+- Do not hand-edit `.cox` records to imitate a command.
+
+Start with [Operations](../operations/index.md) for task sequencing or [Handoff](../handoff.md) for channel semantics.

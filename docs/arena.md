@@ -15,13 +15,14 @@ review is `none`.
 
 ## The three modes
 
-Headless is the default (captain ruling 2026-09-16): a specialist is a function call, not a worker.
+Headless is the default: a specialist is a function call, not a worker. The rationale and review conditions live in
+[ADR 0013](decisions/0013-arena-v3-evidence-tiers-verify-rounds.md).
 
 1. **Headless (default).** Each role runs as a read-only subprocess in the leader checkout (the epic's first repo):
    - claude: `claude -p --model <m> --permission-mode plan --output-format json --no-session-persistence` (prompt on stdin)
    - codex: `codex exec --json -s read-only -m <m> -` (prompt on stdin)
 
-   The prompt is the blinded pack plus the role template plus a directive to emit the report inside a fenced ```report
+   The prompt is the blinded pack plus the role template plus a directive to emit the report inside a fenced `report`
    block. cox parses the JSON, extracts the block, writes `reports/arena/round-N-<role>.md`, and records a `headless`
    event (attempt, kind, the leader-checkout HEAD sha). No worktree, no terminal, no watcher, no backend.
 
@@ -114,8 +115,12 @@ cox/internal/a.go` runs as `grep -n x internal/a.go`); an assertion keeps its `a
 carries one), auto-fills each claim's `tier` (from the report) and `verified` (from verify-round-N.json), and records the
 synthesis content sha under `.cox/arena/synthesis-<round>.sha`; the leader writes the six sections and every verdict:
 
-1. Adopted decision, 2. Decisive evidence, 3. Rejected alternatives, 4. Preserved locked decisions,
-5. Remaining uncertainty, 6. Verification gates.
+1. Adopted decision.
+2. Decisive evidence.
+3. Rejected alternatives.
+4. Preserved locked decisions.
+5. Remaining uncertainty.
+6. Verification gates.
 
 Verdict is `accepted | rejected | unresolved | captain_decision`. A rejected claim stays in the table with its reason;
 nothing is deleted. `captain_decision` marks a question evidence cannot settle - the captain answers by filling the
