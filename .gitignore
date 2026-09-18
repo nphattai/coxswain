@@ -7,6 +7,7 @@ __pycache__/
 # built cox binary (make build) and release artifacts
 /dist/cox
 /dist/
+/site/
 
 # per-epic control dirs (event log, wake queue, sessions)
 epics/*/.cox/
