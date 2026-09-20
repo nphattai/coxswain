@@ -31,14 +31,15 @@ func TestCard(t *testing.T) {
 	}
 }
 
-// Telemetry is Unknown (never 0) until the JSONL parser lands; a stubbed reading must not fabricate zero usage.
-func TestTelemetryUnknownStub(t *testing.T) {
-	ctx, err := New().Telemetry("/some/worktree")
+// Telemetry for a worktree with no Pi session is Unknown (never 0 usage, F11). Deeper telemetry parsing cases live in
+// telemetry_test.go.
+func TestTelemetryUnknownWhenNoSession(t *testing.T) {
+	ctx, err := (&Harness{Home: t.TempDir()}).Telemetry("/some/worktree")
 	if err != nil {
 		t.Fatalf("Telemetry err: %v", err)
 	}
 	if ctx.Known {
-		t.Errorf("Telemetry Known = true, want false (stub); ctx=%+v", ctx)
+		t.Errorf("Telemetry Known = true, want false (no session); ctx=%+v", ctx)
 	}
 }
 

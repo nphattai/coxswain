@@ -16,11 +16,20 @@ import (
 	"github.com/nphattai/coxswain/internal/adapter/harness"
 )
 
-// Harness is the Pi adapter.
-type Harness struct{}
+// Harness is the Pi adapter. Home overrides the base for the ~/.pi session dir in tests; empty uses $HOME.
+type Harness struct {
+	Home string
+}
 
 // New returns a Pi adapter.
 func New() *Harness { return &Harness{} }
+
+func (h *Harness) home() string {
+	if h.Home != "" {
+		return h.Home
+	}
+	return os.Getenv("HOME")
+}
 
 // Card is the Pi capability contract, mirrored exactly by docs/adapters/pi.md. Sandbox is false: Pi runs with the
 // user's permissions and provides no host-filesystem confinement, so an unsandboxed Pi worker dispatch requires
@@ -82,8 +91,9 @@ func (h *Harness) LaunchArgs(l harness.Launch) []string {
 // LaunchArgs), not a persisted registry, so there is nothing to pre-seed and cox never mutates user-level Pi config.
 func (h *Harness) PrepareWorktree(wt string) error { return nil }
 
-// Telemetry reports Pi token/turn usage from its session JSONL. The real parser, bound to a captured session file,
-// lands in telemetry.go; until then usage is Unknown, never 0 (F11).
+// Telemetry reports Pi token/turn usage from its session JSONL, bound to the worktree's session directory (see
+// telemetry.go). Missing, ambiguous (more than one session for the worktree), or unreadable telemetry returns
+// Known=false, never 0 (F11).
 func (h *Harness) Telemetry(session string) (harness.Context, error) {
-	return harness.Context{Known: false}, nil
+	return h.telemetry(session)
 }
