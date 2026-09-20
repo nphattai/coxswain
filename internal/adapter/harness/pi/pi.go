@@ -28,15 +28,16 @@ func New() *Harness { return &Harness{} }
 // packaged Pi extension.
 func (h *Harness) Card() harness.Capability {
 	return harness.Capability{
-		Name:         "pi",
-		Roles:        []harness.Role{harness.RoleLeader, harness.RoleWorker},
-		Wake:         harness.WakePush,
-		Checkpoint:   harness.CheckpointAuto,
-		Doorbell:     true,
-		Interrupt:    true,
-		Telemetry:    true,
-		Sandbox:      false,
-		Instructions: "AGENTS.md + Agent Skills",
+		Name:           "pi",
+		Roles:          []harness.Role{harness.RoleLeader, harness.RoleWorker},
+		Wake:           harness.WakePush,
+		Checkpoint:     harness.CheckpointAuto,
+		Doorbell:       true,
+		Interrupt:      true,
+		Telemetry:      true,
+		Sandbox:        false,
+		UnsandboxedAck: false, // Pi has no standing ack: an unsandboxed Pi worker dispatch requires --allow-unsandboxed every time until it passes its support gates
+		Instructions:   "AGENTS.md + Agent Skills",
 	}
 }
 

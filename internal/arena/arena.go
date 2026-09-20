@@ -220,7 +220,9 @@ func prepare(o Options) (*prepData, Result, error) {
 	seen := map[string]bool{}
 	for _, role := range active {
 		hn := resolved[role]
-		notices, err := registry.Notices(hn, harness.RoleWorker)
+		// Arena roles need no --allow-unsandboxed: an unsandboxed harness used in arena is authorized only by a standing
+		// card ack (claude); a harness that lacks it (pi) is refused here, matching arena's explicit no-substitution rule.
+		notices, _, err := registry.Notices(hn, harness.RoleWorker, false)
 		if err != nil {
 			return nil, Result{}, fmt.Errorf("arena role %s: %w", role, err)
 		}

@@ -21,6 +21,10 @@ import (
 	"github.com/nphattai/coxswain/internal/worktree"
 )
 
+// harnessOptions is the registry-derived "claude|codex|pi" list for harness-neutral CLI help and usage, so adding an
+// adapter updates the help without editing every command string.
+func harnessOptions() string { return strings.Join(registry.Names(), "|") }
+
 // cmdStory implements `cox story dispatch|park|resume`.
 func cmdStory(args []string) int {
 	if len(args) == 0 {
@@ -53,15 +57,16 @@ func storyDispatch(args []string) int {
 	fs := flag.NewFlagSet("story dispatch", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	epicDir := fs.String("epic", "", "epic directory")
-	harnessFlag := fs.String("harness", "", "harness (claude|codex); default from the story frontmatter")
+	harnessFlag := fs.String("harness", "", "harness ("+harnessOptions()+"); default from the story frontmatter")
 	model := fs.String("model", "", "model id or alias (opus -> claude-opus-4-8)")
 	forceModel := fs.Bool("force-model", false, "allow a model whose vendor does not match the harness")
 	forceQuota := fs.Bool("force-quota", false, "dispatch even when the chosen harness reads exhausted_now")
+	allowUnsandboxed := fs.Bool("allow-unsandboxed", false, "authorize dispatch of an unsandboxed harness (no host-filesystem confinement; not a sandbox)")
 	if err := fs.Parse(rest); err != nil {
 		return 2
 	}
 	if *epicDir == "" || story == "" {
-		return usageErr("cox story dispatch <id> --epic <dir> [--harness claude|codex --model <id>] [--force-quota]")
+		return usageErr("cox story dispatch <id> --epic <dir> [--harness " + harnessOptions() + " --model <id>] [--force-quota] [--allow-unsandboxed]")
 	}
 	meta := readStoryMeta(*epicDir, story)
 	// A story with `harness: auto` (and no --harness override) is routed: Decide picks the harness/model from policy,
@@ -77,9 +82,11 @@ func storyDispatch(args []string) int {
 		fmt.Printf("routed %s -> harness=%s (%s)\n", story, ch.Harness, strings.Join(ch.Reasons, "; "))
 	}
 	harnessName := nonEmpty(*harnessFlag, routedHarness(routeChoice, nonEmpty(meta.Harness, "claude")))
-	// Enforce the capability card before doing any work: a harness with no adapter (e.g. omp, opencode) is refused here,
-	// and a pull-wake or manual-checkpoint harness prints a reduced-mode notice and still dispatches (phase-07 item 4).
-	notices, err := registry.Notices(harnessName, harness.RoleWorker)
+	// Enforce the capability card before doing any work at the single card-notice gate: a harness with no adapter (e.g.
+	// omp, opencode) is refused here; a pull-wake or manual-checkpoint harness prints a reduced-mode notice and still
+	// dispatches; and an unsandboxed harness (sandbox: false) is refused unless authorized by a standing card ack or the
+	// --allow-unsandboxed flag (recorded in dispatch evidence).
+	notices, unsandboxedAuthority, err := registry.Notices(harnessName, harness.RoleWorker, *allowUnsandboxed)
 	if err != nil {
 		return fail("%v", err)
 	}
@@ -152,7 +159,16 @@ func storyDispatch(args []string) int {
 	}
 
 	attempt := currentAttempt(*epicDir, story)
-	if err := commitDispatch(b, *epicDir, slug, story, attempt, state.Leader, sess, wt.Path, routeEvidence(routeChoice), state.Submitted); err != nil {
+	// Record an explicit per-dispatch unsandboxed authorization in evidence (the standing-ack path records nothing, so an
+	// already-accepted harness's dispatch event is unchanged).
+	ev := routeEvidence(routeChoice)
+	if unsandboxedAuthority == "flag" {
+		if ev == nil {
+			ev = map[string]any{}
+		}
+		ev["unsandboxed"] = map[string]any{"authorized_by": "--allow-unsandboxed", "harness": harnessName}
+	}
+	if err := commitDispatch(b, *epicDir, slug, story, attempt, state.Leader, sess, wt.Path, ev, state.Submitted); err != nil {
 		return fail("%v", err)
 	}
 	if h := os.Getenv("ORCA_TERMINAL_HANDLE"); h != "" {

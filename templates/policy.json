@@ -27,8 +27,8 @@
     "review_when": "a project (e.g. pipo) declares style: pipo in its <project>/cox/policy.json: commits stay local, one final push, PR opened ready."
   },
   "harness": {
-    "leader": { "options": ["claude", "codex"], "default": "claude" },
-    "worker": { "options": ["claude", "codex"], "default": "claude", "model": "claude-opus-4-8", "models": { "claude": "claude-opus-4-8", "codex": "gpt-5.6-sol" } },
+    "leader": { "options": ["claude", "codex", "pi"], "default": "claude" },
+    "worker": { "options": ["claude", "codex", "pi"], "default": "claude", "model": "claude-opus-4-8", "models": { "claude": "claude-opus-4-8", "codex": "gpt-5.6-sol" } },
     "arena": {
       "adversary": { "rule": "not-leader", "default": "codex" },
       "reviewer": { "rule": "same-as-leader-new-session" }

@@ -7,6 +7,7 @@ package registry
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/nphattai/coxswain/internal/adapter/harness"
 	"github.com/nphattai/coxswain/internal/adapter/harness/claude"
@@ -57,18 +58,28 @@ func PrepareWorktree(name, wt string) error {
 	return h.PrepareWorktree(wt)
 }
 
-// Notices validates a harness against its capability card for a role and returns the reduced-mode notices to print. It
-// returns an error when the harness has no adapter or its card does not list the role. A pull wake or a manual
-// checkpoint is a notice, not a refusal: the dispatch proceeds (phase-07 item 4), and the notice tells the leader the
-// worker must run `cox wake wait` / write its own checkpoints.
-func Notices(name string, role harness.Role) (notices []string, err error) {
+// Notices is the single card-notice gate (the one place a capability card is inspected at dispatch). It validates a
+// harness against its card for a role and returns the reduced-mode notices to print plus the unsandboxed authority
+// source recorded in dispatch evidence. It errors when the harness has no adapter, its card does not list the role, or
+// an unsandboxed dispatch is unauthorized.
+//
+// A pull wake or a manual checkpoint is a notice, not a refusal: the dispatch proceeds and the notice tells the leader
+// the worker must run `cox wake wait` / write its own checkpoints.
+//
+// Unsandboxed gate (generic, config-driven, no harness-name branch): a harness with `Sandbox == false` runs with no
+// host-filesystem confinement, so its dispatch requires recorded authority from EITHER a standing card acknowledgment
+// (Capability.UnsandboxedAck, e.g. claude) OR the per-dispatch allowUnsandboxed flag (`cox story dispatch
+// --allow-unsandboxed`). With neither, dispatch fails before spawn. The standing ack authorizes silently (authority
+// "standing-ack", no new notice, so an already-accepted harness's dispatch is unchanged); the explicit flag authorizes
+// with a prominent reduced-mode warning (authority "flag"). authority is "" for a sandboxed harness.
+func Notices(name string, role harness.Role, allowUnsandboxed bool) (notices []string, authority string, err error) {
 	h, ok := Adapter(name)
 	if !ok {
-		return nil, fmt.Errorf("harness %q has no adapter (implemented: claude, codex); refusing to dispatch", name)
+		return nil, "", fmt.Errorf("harness %q has no adapter (implemented: %s); refusing to dispatch", name, strings.Join(Names(), ", "))
 	}
 	card := h.Card()
 	if !roleAllowed(card, role) {
-		return nil, fmt.Errorf("harness %q capability card does not allow role %q", name, role)
+		return nil, "", fmt.Errorf("harness %q capability card does not allow role %q", name, role)
 	}
 	if card.Wake == harness.WakePull {
 		notices = append(notices, "reduced mode: pull wake, worker must run cox wake wait")
@@ -76,7 +87,20 @@ func Notices(name string, role harness.Role) (notices []string, err error) {
 	if card.Checkpoint == harness.CheckpointManual {
 		notices = append(notices, "reduced mode: manual checkpoint, worker must write cox checkpoint facts at each phase boundary")
 	}
-	return notices, nil
+	if !card.Sandbox {
+		switch {
+		case card.UnsandboxedAck:
+			authority = "standing-ack"
+		case allowUnsandboxed:
+			authority = "flag"
+			notices = append(notices, fmt.Sprintf(
+				"reduced mode: UNSANDBOXED - harness %q has no host-filesystem confinement (authorized by --allow-unsandboxed); git-worktree isolation only, this is not a sandbox", name))
+		default:
+			return nil, "", fmt.Errorf(
+				"harness %q runs unsandboxed (sandbox: false) with no host-filesystem confinement; pass --allow-unsandboxed to cox story dispatch to authorize it (this authorizes, it is not a sandbox)", name)
+		}
+	}
+	return notices, authority, nil
 }
 
 func roleAllowed(card harness.Capability, role harness.Role) bool {

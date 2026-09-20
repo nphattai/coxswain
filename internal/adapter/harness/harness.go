@@ -34,15 +34,21 @@ const (
 // Capability is the observable contract of a harness. docs/adapters/<name>.md mirrors this exactly and a test reads
 // Card() and compares it to the doc, so the card never drifts from the documentation.
 type Capability struct {
-	Name         string   // "claude", "codex"
-	Roles        []Role   // roles this harness can play
-	Wake         WakeMode // push | pull
-	Checkpoint   CheckpointMode
-	Doorbell     bool   // backend Send can nudge a running session
-	Interrupt    bool   // the harness can be interrupted mid-turn
-	Telemetry    bool   // Telemetry() returns real token/turn counts (false => always Unknown)
-	Sandbox      bool   // the harness sandboxes tool execution by default
-	Instructions string // how Package() renders instructions for this harness
+	Name       string   // "claude", "codex"
+	Roles      []Role   // roles this harness can play
+	Wake       WakeMode // push | pull
+	Checkpoint CheckpointMode
+	Doorbell   bool // backend Send can nudge a running session
+	Interrupt  bool // the harness can be interrupted mid-turn
+	Telemetry  bool // Telemetry() returns real token/turn counts (false => always Unknown)
+	Sandbox    bool // the harness sandboxes tool execution by default
+	// UnsandboxedAck is a standing captain acknowledgment that this harness's unsandboxed dispatch is already accepted,
+	// so an unsandboxed dispatch (Sandbox==false) is authorized without the per-dispatch --allow-unsandboxed flag. It
+	// records an existing ruling (claude runs bypassPermissions autonomously, captain owns the risk), keeping the
+	// card-notice gate generic: it branches on "authorized?" (this field OR the flag), never on a harness name. It is
+	// authorization, never confinement - it does not mean the harness is sandboxed.
+	UnsandboxedAck bool
+	Instructions   string // how Package() renders instructions for this harness
 }
 
 // Brief is the launch payload for a worker or leader. StoryPath is the file the agent reads in full; ContextPath is

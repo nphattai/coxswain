@@ -35,26 +35,38 @@ func TestNames(t *testing.T) {
 	}
 }
 
-// Notices returns the reduced-mode lines from the card, and refuses an unadaptered harness clearly.
+// Notices returns the reduced-mode lines from the card, gates unsandboxed dispatch, and refuses an unadaptered harness.
 func TestNotices(t *testing.T) {
-	// codex is pull-wake + manual-checkpoint, so both reduced notices appear.
-	n, err := Notices("codex", harness.RoleWorker)
+	// codex is pull-wake + manual-checkpoint (and sandboxed), so both reduced notices appear and no sandbox gate fires.
+	n, auth, err := Notices("codex", harness.RoleWorker, false)
 	if err != nil {
 		t.Fatalf("codex Notices err: %v", err)
 	}
-	if !containsSub(n, "pull wake") {
-		t.Errorf("codex must print the pull-wake reduced notice, got %v", n)
+	if !containsSub(n, "pull wake") || !containsSub(n, "manual checkpoint") {
+		t.Errorf("codex must print the pull-wake + manual-checkpoint notices, got %v", n)
 	}
-	if !containsSub(n, "manual checkpoint") {
-		t.Errorf("codex must print the manual-checkpoint reduced notice, got %v", n)
+	if auth != "" {
+		t.Errorf("codex is sandboxed, authority must be empty, got %q", auth)
 	}
-	// claude is push + auto, so no reduced notices.
-	if n, err := Notices("claude", harness.RoleWorker); err != nil || len(n) != 0 {
-		t.Errorf("claude Notices = (%v, %v), want (nil, nil)", n, err)
+	// claude is push + auto and unsandboxed but carries a standing ack: it authorizes silently (no new notice, no flag),
+	// so its dispatch is unchanged.
+	if n, auth, err := Notices("claude", harness.RoleWorker, false); err != nil || len(n) != 0 || auth != "standing-ack" {
+		t.Errorf("claude Notices = (%v, %q, %v), want (nil, standing-ack, nil)", n, auth, err)
+	}
+	// pi is unsandboxed with no standing ack: refused without the flag.
+	if _, _, err := Notices("pi", harness.RoleWorker, false); err == nil || !strings.Contains(err.Error(), "unsandboxed") {
+		t.Errorf("pi Notices without --allow-unsandboxed must refuse, got %v", err)
+	}
+	// pi with the flag: authorized (authority=flag) with a prominent UNSANDBOXED warning.
+	n, auth, err = Notices("pi", harness.RoleWorker, true)
+	if err != nil || auth != "flag" {
+		t.Fatalf("pi Notices with flag = (%v, %q, %v), want authority=flag no err", n, auth, err)
+	}
+	if !containsSub(n, "UNSANDBOXED") {
+		t.Errorf("pi authorized-by-flag must print a prominent UNSANDBOXED warning, got %v", n)
 	}
 	// omp has no adapter -> refused, naming the gap.
-	_, err = Notices("omp", harness.RoleWorker)
-	if err == nil || !strings.Contains(err.Error(), "no adapter") {
+	if _, _, err := Notices("omp", harness.RoleWorker, false); err == nil || !strings.Contains(err.Error(), "no adapter") {
 		t.Errorf("omp Notices err = %v, want a 'no adapter' refusal", err)
 	}
 }

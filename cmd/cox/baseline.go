@@ -14,21 +14,21 @@ import (
 	"github.com/nphattai/coxswain/internal/worktree"
 )
 
-// cmdBaseline implements `cox baseline run --story <id> --epic <dir> --harness claude|codex --condition bare|v2
+// cmdBaseline implements `cox baseline run --story <id> --epic <dir> --harness <name> --condition bare|v2
 // --before <sha> [--dry-run] [--repo <path>]`. It replays a story from the repo state before its solution so a
 // harness's unassisted performance can be measured. It never fetches PR refs and refuses when the before sha already
 // contains the story's solution branch (LeakCheck). --dry-run validates and records the plan without a worktree or a
 // worker (the safe smoke path; a real spawn must run from the leader, since a worker cannot dispatch a sub-worker).
 func cmdBaseline(args []string) int {
 	if len(args) == 0 || args[0] != "run" {
-		fmt.Fprintln(os.Stderr, "usage: cox baseline run --story <id> --epic <dir> --harness claude|codex --condition bare|v2 --before <sha> [--dry-run]")
+		fmt.Fprintln(os.Stderr, "usage: cox baseline run --story <id> --epic <dir> --harness "+harnessOptions()+" --condition bare|v2 --before <sha> [--dry-run]")
 		return 2
 	}
 	fs := flag.NewFlagSet("baseline run", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	epicDir := fs.String("epic", "", "epic directory")
 	story := fs.String("story", "", "story id to replay")
-	harness := fs.String("harness", "", "harness (claude|codex)")
+	harness := fs.String("harness", "", "harness ("+harnessOptions()+")")
 	condition := fs.String("condition", "", "bare|v2")
 	before := fs.String("before", "", "sha to check out before the solution")
 	repoFlag := fs.String("repo", "", "repo path to replay in (default: the story's repo alias)")
@@ -37,7 +37,7 @@ func cmdBaseline(args []string) int {
 		return 2
 	}
 	if *epicDir == "" || *story == "" || *harness == "" || *condition == "" || *before == "" {
-		return usageErr("cox baseline run --story <id> --epic <dir> --harness claude|codex --condition bare|v2 --before <sha> [--dry-run]")
+		return usageErr("cox baseline run --story <id> --epic <dir> --harness " + harnessOptions() + " --condition bare|v2 --before <sha> [--dry-run]")
 	}
 	if *condition != baseline.ConditionBare && *condition != baseline.ConditionV2 {
 		return fail("condition must be %q or %q, got %q", baseline.ConditionBare, baseline.ConditionV2, *condition)
