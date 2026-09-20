@@ -77,6 +77,20 @@ func Attach(o AttachOptions) error {
 			}
 		}
 
+		link := filepath.Join(o.EpicDir, r.alias)
+		// Reuse a surviving clean worktree: when only .cox was discarded and the alias still points to a clean checkout on
+		// the epic branch, keep it. Asking the backend to create a second worktree for a branch that is already checked
+		// out is refused by git and Orca, so the reattach-after-discard scenario would otherwise fail.
+		if target, err := filepath.EvalSymlinks(link); err == nil {
+			if b, bErr := worktreeBranch(target); bErr == nil && b == branch {
+				if dirty, dErr := worktreeDirty(target); dErr == nil && !dirty {
+					fmt.Fprintf(o.warn(), "attach: reusing clean worktree %s for %s\n", target, r.alias)
+					trustWorktree(o.warn(), target)
+					continue
+				}
+			}
+		}
+
 		// Fetch the existing epic branch so a fresh clone has it locally; best-effort for a path checkout.
 		if strings.HasPrefix(ref, "/") {
 			if out, err := exec.Command("git", "-C", ref, "fetch", "origin", branch).CombinedOutput(); err != nil {
@@ -89,7 +103,6 @@ func Attach(o AttachOptions) error {
 		if err != nil {
 			return fmt.Errorf("attach worktree for %s: %w", r.alias, err)
 		}
-		link := filepath.Join(o.EpicDir, r.alias)
 		_ = os.Remove(link)
 		if err := os.Symlink(wt.Path, link); err != nil {
 			return fmt.Errorf("symlink %s -> %s: %w", r.alias, wt.Path, err)
@@ -135,6 +148,15 @@ func readEpicRepos(epicDir string) ([]epicRepo, error) {
 		out = append(out, r)
 	}
 	return out, nil
+}
+
+// worktreeBranch returns the checked-out branch at path, or an error when path is not a readable git worktree.
+func worktreeBranch(path string) (string, error) {
+	out, err := exec.Command("git", "-C", path, "branch", "--show-current").Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
 }
 
 // worktreeDirty reports whether a git worktree has uncommitted changes (staged, unstaged, or untracked).

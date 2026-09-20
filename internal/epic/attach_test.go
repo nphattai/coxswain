@@ -117,6 +117,36 @@ func TestAttachResolvesRefFromLocalWorkspace(t *testing.T) {
 	}
 }
 
+// When only .cox was discarded and a clean worktree still exists on the epic branch, attach reuses it rather than asking
+// the backend to create a second worktree on the same (already-checked-out) branch.
+func TestAttachReusesCleanWorktree(t *testing.T) {
+	repo := makeRepo(t)
+	wsRoot, ws := setupWorkspace(t, repo)
+	if _, err := New(NewOptions{Runtime: &gitBackend{t: t, repo: repo, wtBase: t.TempDir()}, Workspace: ws, WsRoot: wsRoot,
+		Project: "proj", Slug: "reuse", Repos: []string{"app"}, NoPush: true}); err != nil {
+		t.Fatal(err)
+	}
+	epicDir := filepath.Join(wsRoot, "proj", "epics", "reuse")
+	before, _ := filepath.EvalSymlinks(filepath.Join(epicDir, "app"))
+	// Discard ONLY .cox; the clean worktree and symlink survive.
+	if err := os.RemoveAll(filepath.Join(epicDir, ".cox")); err != nil {
+		t.Fatal(err)
+	}
+	be := &attachBackend{gitBackend: gitBackend{t: t, repo: repo, wtBase: t.TempDir()}}
+	if err := Attach(AttachOptions{Runtime: be, Workspace: ws, WsRoot: wsRoot, EpicDir: epicDir}); err != nil {
+		t.Fatalf("attach with a surviving clean worktree must succeed: %v", err)
+	}
+	if len(be.gotRepos) != 0 {
+		t.Errorf("attach must reuse the clean worktree, not create a new one (WorktreeCreate called %d time(s))", len(be.gotRepos))
+	}
+	if _, err := os.Stat(filepath.Join(epicDir, ".cox", "epic.json")); err != nil {
+		t.Errorf(".cox/epic.json not recreated: %v", err)
+	}
+	if after, _ := filepath.EvalSymlinks(filepath.Join(epicDir, "app")); after != before {
+		t.Errorf("symlink target changed: %q -> %q", before, after)
+	}
+}
+
 // Attach refuses when a still-present worktree is dirty (uncommitted work a re-checkout would risk).
 func TestAttachRefusesDirtyWorktree(t *testing.T) {
 	repo := makeRepo(t)

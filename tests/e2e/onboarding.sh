@@ -119,7 +119,15 @@ echo "$OUT" | grep -q "epic hello" && ok "epic listed" || no "epic not listed"
 echo "$OUT" | grep -q "watcher" && ok "watcher listed" || no "watcher not listed"
 echo "$OUT" | grep -q "hooks:" && ok "hooks listed" || no "hooks not listed"
 
-step "6. discard .cox, cox epic attach, doctor clean again"
+step "6. discard only .cox, cox epic attach reuses the surviving clean worktree"
+pkill -f "cox watch --epic $WS" 2>/dev/null || true
+REUSE_TGT="$(readlink "$EPIC/app")"
+rm -rf "$EPIC/.cox"
+"$COX" epic attach --epic "$EPIC" >/dev/null 2>&1 && ok "attach (reuse)" || no "attach reuse failed"
+[ -f "$EPIC/.cox/epic.json" ] && ok ".cox recreated (reuse)" || no ".cox not recreated (reuse)"
+[ "$(readlink "$EPIC/app")" = "$REUSE_TGT" ] && ok "reused the surviving worktree" || no "reuse changed the worktree symlink"
+
+step "7. discard .cox and the worktree (fresh clone), cox epic attach, doctor clean again"
 pkill -f "cox watch --epic $WS" 2>/dev/null || true
 BEFORE="$(git -C "$REPO" branch --format='%(refname:short)' | sort | tr '\n' ',')"
 # Simulate a fresh clone: remove the worktree(s) and .cox, keep the branches.
