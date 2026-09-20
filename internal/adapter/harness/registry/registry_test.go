@@ -7,9 +7,9 @@ import (
 	"github.com/nphattai/coxswain/internal/adapter/harness"
 )
 
-// A harness with no adapter (omp, opencode) is refused with a message that names the gap; claude and codex resolve.
+// A harness with no adapter (omp, opencode) is refused with a message that names the gap; claude, codex, and pi resolve.
 func TestAdapter(t *testing.T) {
-	for _, name := range []string{"claude", "codex"} {
+	for _, name := range []string{"claude", "codex", "pi"} {
 		if _, ok := Adapter(name); !ok {
 			t.Errorf("%s must have an adapter", name)
 		}
@@ -17,6 +17,20 @@ func TestAdapter(t *testing.T) {
 	for _, name := range []string{"omp", "opencode", ""} {
 		if _, ok := Adapter(name); ok {
 			t.Errorf("%s must not have an adapter", name)
+		}
+	}
+}
+
+// Names is the stable, deterministic adapter list doctor and docs iterate; pi is included.
+func TestNames(t *testing.T) {
+	got := Names()
+	want := []string{"claude", "codex", "pi"}
+	if len(got) != len(want) {
+		t.Fatalf("Names() = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("Names() = %v, want %v", got, want)
 		}
 	}
 }

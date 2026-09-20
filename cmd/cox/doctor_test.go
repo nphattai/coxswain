@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nphattai/coxswain/internal/adapter/harness/registry"
 	"github.com/nphattai/coxswain/internal/doctor"
 	"github.com/nphattai/coxswain/internal/state"
 	"github.com/nphattai/coxswain/internal/workspace"
@@ -126,11 +127,12 @@ func TestWorkspaceRepoIssues(t *testing.T) {
 	}
 }
 
-// doctor renders one capability card per implemented harness, each tagged adapter=yes, with the card's real fields.
+// doctor renders one capability card per implemented harness (registry-driven), each tagged adapter=yes, with the
+// card's real fields. The count tracks the registry so a new adapter (pi) is covered without editing this assertion.
 func TestDoctorHarnessCards(t *testing.T) {
 	cards := harnessCards(false)
-	if len(cards) != 2 {
-		t.Fatalf("got %d harness cards, want 2 (claude, codex)", len(cards))
+	if len(cards) != len(registry.Names()) {
+		t.Fatalf("got %d harness cards, want %d (one per registry adapter: %v)", len(cards), len(registry.Names()), registry.Names())
 	}
 	byName := map[string]harnessCard{}
 	for _, c := range cards {
@@ -144,6 +146,9 @@ func TestDoctorHarnessCards(t *testing.T) {
 	}
 	if byName["codex"].Wake != "pull" || byName["codex"].Checkpoint != "manual" || byName["codex"].Telemetry {
 		t.Errorf("codex card wrong: %+v", byName["codex"])
+	}
+	if byName["pi"].Wake != "push" || byName["pi"].Checkpoint != "auto" || !byName["pi"].Telemetry {
+		t.Errorf("pi card wrong: %+v", byName["pi"])
 	}
 }
 

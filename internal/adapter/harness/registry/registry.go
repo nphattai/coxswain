@@ -1,6 +1,6 @@
 // Package registry maps a harness name to its adapter and enforces the capability card at dispatch time. It is the one
-// place that knows which harnesses have adapters (claude, codex); a name that appears in a policy's options without an
-// adapter (omp, opencode) resolves to no adapter, so dispatch and arena refuse it with a clear message instead of
+// place that knows which harnesses have adapters (claude, codex, pi); a name that appears in a policy's options without
+// an adapter (omp, opencode) resolves to no adapter, so dispatch and arena refuse it with a clear message instead of
 // silently falling back to claude. It imports the concrete adapters, so only wiring code (cmd/cox, internal/arena)
 // imports it, never the core.
 package registry
@@ -11,21 +11,24 @@ import (
 	"github.com/nphattai/coxswain/internal/adapter/harness"
 	"github.com/nphattai/coxswain/internal/adapter/harness/claude"
 	"github.com/nphattai/coxswain/internal/adapter/harness/codex"
+	"github.com/nphattai/coxswain/internal/adapter/harness/pi"
 )
 
 // Default returns the default adapter (claude), for a control path whose harness was already validated at dispatch.
 func Default() harness.Harness { return claude.New() }
 
 // Names returns the implemented harness names in stable order, so doctor can render one card row per adapter.
-func Names() []string { return []string{"claude", "codex"} }
+func Names() []string { return []string{"claude", "codex", "pi"} }
 
-// Adapter returns the adapter for a harness name and whether one exists. Only claude and codex are implemented.
+// Adapter returns the adapter for a harness name and whether one exists. Only claude, codex, and pi are implemented.
 func Adapter(name string) (harness.Harness, bool) {
 	switch name {
 	case "claude":
 		return claude.New(), true
 	case "codex":
 		return codex.New(), true
+	case "pi":
+		return pi.New(), true
 	default:
 		return nil, false
 	}
