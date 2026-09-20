@@ -304,17 +304,37 @@ func coxHookGroups(harnessName string) (map[string][]any, error) {
 // waiters with different lock names).
 var legacyHookShimRe = regexp.MustCompile(`hook-[a-z0-9-]+\.sh`)
 
-// withoutCoxGroups returns the event's existing matcher-groups with every cox-installed group dropped - both the current
-// `cox hook ` commands and the legacy v1 `bin/hook-*.sh` shims - so a re-run (or an upgrade from v1) replaces cox's own
-// groups without disturbing anyone else's. A non-array or absent value yields an empty slice.
+// withoutCoxGroups strips cox's own hook entries - both the current `cox hook ` commands and the legacy v1 `bin/hook-*.sh`
+// shims - from the event's matcher-groups, so a re-run (or an upgrade from v1) replaces them without disturbing anyone
+// else's. It filters at the hook-entry level, not the group level: a group that mixes a cox command with a user command
+// keeps the user command (only the cox entry is removed); a group left with no hooks is dropped. A non-map item or a
+// group with no hooks array is kept untouched.
 func withoutCoxGroups(v any) []any {
 	arr, _ := v.([]any)
 	kept := make([]any, 0, len(arr))
 	for _, item := range arr {
-		if b, err := json.Marshal(item); err == nil && (bytes.Contains(b, []byte("cox hook ")) || legacyHookShimRe.Match(b)) {
+		g, ok := item.(map[string]any)
+		if !ok {
+			kept = append(kept, item)
 			continue
 		}
-		kept = append(kept, item)
+		hooks, hadHooks := g["hooks"].([]any)
+		if !hadHooks {
+			kept = append(kept, item)
+			continue
+		}
+		keptHooks := make([]any, 0, len(hooks))
+		for _, h := range hooks {
+			if b, err := json.Marshal(h); err == nil && (bytes.Contains(b, []byte("cox hook ")) || legacyHookShimRe.Match(b)) {
+				continue // a cox/legacy hook entry
+			}
+			keptHooks = append(keptHooks, h)
+		}
+		if len(keptHooks) == 0 {
+			continue // the group held only cox/legacy hooks
+		}
+		g["hooks"] = keptHooks
+		kept = append(kept, g)
 	}
 	return kept
 }

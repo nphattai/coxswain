@@ -105,6 +105,35 @@ func TestWorkspaceHooksReplacesLegacyV1Shims(t *testing.T) {
 	}
 }
 
+// A user command sharing a matcher group with a cox command survives: only the cox entry is stripped and re-added, the
+// user's hook is kept (PR#3 review round 2, finding 3).
+func TestWorkspaceHooksKeepsUserHookSharingACoxGroup(t *testing.T) {
+	root := t.TempDir()
+	settings := filepath.Join(root, ".claude", "settings.json")
+	mustWrite(t, settings, `{
+  "hooks": {
+    "UserPromptSubmit": [ { "hooks": [
+      { "type": "command", "command": "cox hook prompt-drain" },
+      { "type": "command", "command": "echo my-own-hook" }
+    ] } ]
+  }
+}`)
+	if code := cmdWorkspaceHooks([]string{"--root", root, "--harness", "claude"}); code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	got, _ := os.ReadFile(settings)
+	if !strings.Contains(string(got), "echo my-own-hook") {
+		t.Errorf("user hook sharing a cox group was dropped:\n%s", got)
+	}
+	if !strings.Contains(string(got), "cox hook prompt-drain") {
+		t.Errorf("cox hook not present after re-run:\n%s", got)
+	}
+	// Exactly one cox prompt-drain command (the old one stripped, one re-added), not two.
+	if n := strings.Count(string(got), "cox hook prompt-drain"); n != 1 {
+		t.Errorf("expected one cox hook prompt-drain, got %d:\n%s", n, got)
+	}
+}
+
 // The codex path writes a project-level .codex/hooks.json with the four leader hooks carrying --harness codex (and the
 // codex async key), no epic binding, preserving a pre-existing non-cox entry, and is idempotent.
 func TestWorkspaceHooksCodexCreatesAndIsIdempotent(t *testing.T) {
