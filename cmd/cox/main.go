@@ -14,8 +14,11 @@ const usage = `cox - coxswain CLI
 
 usage:
   cox version
-  cox workspace init [--from-repos-md <path>] [--root <dir>]
+  cox workspace init --repo alias=path[:production] ... [--from-repos-md <path>] [--root <dir>]
+  cox workspace hooks [--root <dir>] --harness claude|codex
+  cox workspace add-repo <alias>=<path>[:<production>] [--root <dir>]
   cox epic new <project> <slug> --repo alias=ref ... [--no-push]
+  cox epic attach --epic <dir>
   cox epic stories --epic <dir>
   cox epic close --epic <dir> [--yes] [--force] [--stories-only]
   cox epic arena --epic <dir> [--lite] [--reason <text>] [--leader claude|codex]

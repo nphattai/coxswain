@@ -21,6 +21,22 @@ jobs:
       - name: bash -n over v1 scripts
         run: for f in bin/*.sh; do bash -n "$f"; done
 
+  # Onboarding E2E (DESIGN §7): the setup journey from an empty folder to a dispatched story and back via attach, run
+  # hermetically with a fake orca and a fake harness (no network, no real Orca). Guards the one-command setup contract.
+  onboarding-e2e:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - run: make build
+      - run: bash tests/e2e/onboarding.sh
+
   # v1 kit test suite. It exercises macOS-native tooling (simulators, APFS `cp -c`, `stat -f`, `sed -i ''`), so it runs
   # on macOS only; ubuntu coverage of the scripts is the syntax check above (docs/decisions/0006: v1 is frozen).
   bash-suite:

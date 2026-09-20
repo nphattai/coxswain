@@ -125,9 +125,13 @@ func TestNewCreatesEpicLayout(t *testing.T) {
 	if !strings.Contains(string(design), "demo-epic - design") || strings.Contains(string(design), "{{slug}}") {
 		t.Errorf("DESIGN not rendered: %s", design)
 	}
+	// A docs/CLI-only epic (no --backend) carries EPIC and PROJECT only and allocates no ports (§4).
 	ee, _ := os.ReadFile(filepath.Join(epicDir, "epic.env"))
-	if !strings.Contains(string(ee), "API_PORT=3333") || !strings.Contains(string(ee), "STORY_PORT_BASE=3400") {
-		t.Errorf("epic.env ports wrong: %s", ee)
+	if !strings.Contains(string(ee), "EPIC=demo-epic") || !strings.Contains(string(ee), "PROJECT=proj") {
+		t.Errorf("epic.env missing EPIC/PROJECT: %s", ee)
+	}
+	if strings.Contains(string(ee), "API_PORT") || strings.Contains(string(ee), "STORY_PORT_BASE") {
+		t.Errorf("no-backend epic.env must allocate no ports: %s", ee)
 	}
 	target, err := filepath.EvalSymlinks(filepath.Join(epicDir, "app"))
 	if err != nil || target == "" {
@@ -135,6 +139,24 @@ func TestNewCreatesEpicLayout(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(epicDir, ".cox", "epic.json")); err != nil {
 		t.Errorf("epic.json missing: %v", err)
+	}
+}
+
+// An epic that declares a backend gets the full epic.env with an allocated port block.
+func TestNewBackendEpicAllocatesPorts(t *testing.T) {
+	repo := makeRepo(t)
+	wsRoot, ws := setupWorkspace(t, repo)
+	rt := &gitBackend{t: t, repo: repo, wtBase: t.TempDir()}
+	epicDir, err := New(NewOptions{
+		Runtime: rt, Workspace: ws, WsRoot: wsRoot, Project: "proj", Slug: "be-epic",
+		Repos: []string{"app"}, BackendAlias: "app", NoPush: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ee, _ := os.ReadFile(filepath.Join(epicDir, "epic.env"))
+	if !strings.Contains(string(ee), "BACKEND=app") || !strings.Contains(string(ee), "API_PORT=3333") || !strings.Contains(string(ee), "STORY_PORT_BASE=3400") {
+		t.Errorf("backend epic.env should carry BACKEND and a port block: %s", ee)
 	}
 }
 
