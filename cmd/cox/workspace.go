@@ -299,10 +299,12 @@ func coxHookGroups(harnessName string) (map[string][]any, error) {
 	return out, nil
 }
 
-// legacyHookShimRe matches a v1 cox hook shim command (bin/hook-<name>.sh). An upgraded workspace whose settings still
-// carry these must have them removed before the new `cox hook` groups are appended, or both fire (double drain, two stop
-// waiters with different lock names).
-var legacyHookShimRe = regexp.MustCompile(`hook-[a-z0-9-]+\.sh`)
+// legacyHookShimRe matches ONLY the known v1 cox hook shim commands (bin/hook-<name>.sh, with or without a
+// $CLAUDE_PROJECT_DIR prefix). An upgraded workspace whose settings still carry these must have them removed before the
+// new `cox hook` groups are appended, or both fire (double drain, two stop waiters with different lock names). It is
+// pinned to the four cox names (plus the historical session-compact) so a user script like ./scripts/hook-format.sh is
+// never mistaken for a cox shim and dropped.
+var legacyHookShimRe = regexp.MustCompile(`hook-(prompt-drain|stop-rewake|precompact|session-start|session-compact)\.sh`)
 
 // withoutCoxGroups strips cox's own hook entries - both the current `cox hook ` commands and the legacy v1 `bin/hook-*.sh`
 // shims - from the event's matcher-groups, so a re-run (or an upgrade from v1) replaces them without disturbing anyone

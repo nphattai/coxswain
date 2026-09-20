@@ -105,6 +105,25 @@ func TestWorkspaceHooksReplacesLegacyV1Shims(t *testing.T) {
 	}
 }
 
+// A user hook whose script name merely looks shim-like (./scripts/hook-format.sh) is NOT a cox v1 shim and must survive
+// (PR#3 review round 3, finding 2).
+func TestWorkspaceHooksKeepsUserShimLookalike(t *testing.T) {
+	root := t.TempDir()
+	settings := filepath.Join(root, ".claude", "settings.json")
+	mustWrite(t, settings, `{
+  "hooks": {
+    "PostToolUse": [ { "hooks": [ { "type": "command", "command": "./scripts/hook-format.sh" } ] } ]
+  }
+}`)
+	if code := cmdWorkspaceHooks([]string{"--root", root, "--harness", "claude"}); code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	got, _ := os.ReadFile(settings)
+	if !strings.Contains(string(got), "./scripts/hook-format.sh") {
+		t.Errorf("a user hook that merely looks shim-like was dropped:\n%s", got)
+	}
+}
+
 // A user command sharing a matcher group with a cox command survives: only the cox entry is stripped and re-added, the
 // user's hook is kept (PR#3 review round 2, finding 3).
 func TestWorkspaceHooksKeepsUserHookSharingACoxGroup(t *testing.T) {
