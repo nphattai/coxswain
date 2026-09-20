@@ -48,22 +48,30 @@ extra_javascript:
   - assets/javascripts/accessibility.js
 nav:
   - Home: index.md
-  - Start:
-    - Product model: getting-started/concepts.md
+  - Set up:
     - Install: getting-started/install.md
-    - Run your first epic: QUICKSTART.md
+    - Create a workspace: getting-started/workspace.md
+    - First epic: getting-started/first-epic.md
   - Operate:
     - Operating map: operations/index.md
     - Design and sign: arena.md
     - Dispatch, supervise, recover: handoff.md
     - Monitor an epic: board.md
-    - Review visual artifacts: review.md
-    - Quota: quota.md
-    - Worker routing: routing.md
-    - Policy experiments: lab.md
     - Troubleshooting: faq.md
-    - Migrate from v1: migrate.md
+    - Tuning and migration:
+      - Worker routing: routing.md
+      - Quota: quota.md
+      - Policy experiments: lab.md
+      - Review visual artifacts: review.md
+      - Migrate from v1: migrate.md
+  - Reference:
+    - CLI map: reference/cli.md
+    - workspace.json: reference/workspace-json.md
+    - policy.json: reference/policy-json.md
+    - Story frontmatter: reference/story-frontmatter.md
+    - Configuration: reference/configuration.md
   - Understand:
+    - Product model: getting-started/concepts.md
     - System architecture: ARCHITECTURE.md
     - Adapter model:
       - adapters/index.md
@@ -86,13 +94,7 @@ nav:
       - Checkpoint: protocol/checkpoint.v1.md
       - Wake queue: protocol/wake.v1.md
       - Quota reading: protocol/quota.v1.md
-  - Reference:
-    - CLI map: reference/cli.md
-    - Configuration: reference/configuration.md
-    - workspace.json: reference/workspace-json.md
-    - policy.json: reference/policy-json.md
-    - Story frontmatter: reference/story-frontmatter.md
-  - Build and extend:
+  - Extend:
     - Contributing: contributing.md
     - Author an adapter: contributing/adapters.md
   - Decisions and evidence:
