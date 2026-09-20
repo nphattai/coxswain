@@ -49,15 +49,23 @@ func (h *Harness) Package(role harness.Role, dst string) error {
 	return nil
 }
 
-// LaunchArgs returns the argv to start Pi: `pi --model <provider/model> <policy flags> <prompt>`. Pi's explicit
-// thinking level, trust/resource flags, and the packaged extension (-e) are added when the Pi launch config lands; the
-// model is spelled `--model` (verified against pi 0.85.1 --help) and never inferred from the harness name. A relaunch
-// asks the worker to inject its checkpoint first.
+// LaunchArgs returns the argv to start Pi: `pi --model <provider/model> [--thinking <level>] --approve <policy flags>
+// <prompt>`. The model is spelled `--model` (verified against pi 0.85.1 --help) and never inferred from the harness
+// name; the thinking level is typed only when set (else Pi uses its default). `--approve` is Pi's per-run trust marking
+// (verified: `--approve, -a  Trust project-local files for this run`): a dispatched worker cannot answer the
+// interactive trust dialog, so cox trusts the cox-created worktree at launch, which also loads the packaged extension
+// and AGENTS.md/skills. This is Pi's harness-specific trust mechanism (ADR 0002); cox never mutates user-level Pi
+// config. The packaged extension `-e` is added when extension packaging lands. A relaunch asks the worker to inject its
+// checkpoint first.
 func (h *Harness) LaunchArgs(l harness.Launch) []string {
 	args := []string{"pi"}
 	if l.Model != "" {
 		args = append(args, "--model", l.Model)
 	}
+	if l.Effort != "" {
+		args = append(args, "--thinking", l.Effort)
+	}
+	args = append(args, "--approve")
 	for _, f := range l.Flags {
 		if f != "" {
 			args = append(args, f)
@@ -68,6 +76,10 @@ func (h *Harness) LaunchArgs(l harness.Launch) []string {
 	}
 	return args
 }
+
+// PrepareWorktree is a no-op for Pi: Pi's per-directory trust is a per-run launch flag (--approve, emitted by
+// LaunchArgs), not a persisted registry, so there is nothing to pre-seed and cox never mutates user-level Pi config.
+func (h *Harness) PrepareWorktree(wt string) error { return nil }
 
 // Telemetry reports Pi token/turn usage from its session JSONL. The real parser, bound to a captured session file,
 // lands in telemetry.go; until then usage is Unknown, never 0 (F11).

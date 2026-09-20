@@ -5,6 +5,7 @@ package claude
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -60,6 +61,54 @@ func (h *Harness) LaunchArgs(l harness.Launch) []string {
 		args = append(args, prompt)
 	}
 	return args
+}
+
+// PrepareWorktree marks wt trusted for Claude Code by merging projects[<abspath>].hasTrustDialogAccepted=true into
+// ~/.claude.json (verified schema: per-directory, not inherited). A dispatched worker cannot answer the interactive
+// workspace-trust dialog, and --permission-mode bypassPermissions does not suppress it, so cox pre-seeds the trust for
+// this one directory. The merge preserves every other project entry and every top-level key (read-modify-write via a
+// temp file + rename); a missing file is created with just this entry. cox never touches any other user-level setting.
+func (h *Harness) PrepareWorktree(wt string) error {
+	abs, err := filepath.Abs(wt)
+	if err != nil {
+		return fmt.Errorf("claude PrepareWorktree: resolve %q: %w", wt, err)
+	}
+	path := filepath.Join(h.home(), ".claude.json")
+	root := map[string]any{}
+	if data, err := os.ReadFile(path); err == nil {
+		if err := json.Unmarshal(data, &root); err != nil {
+			return fmt.Errorf("claude PrepareWorktree: parse %s: %w", path, err)
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("claude PrepareWorktree: read %s: %w", path, err)
+	}
+	projects, ok := root["projects"].(map[string]any)
+	if !ok || projects == nil {
+		projects = map[string]any{}
+	}
+	entry, ok := projects[abs].(map[string]any)
+	if !ok || entry == nil {
+		entry = map[string]any{}
+	}
+	entry["hasTrustDialogAccepted"] = true
+	projects[abs] = entry
+	root["projects"] = projects
+
+	out, err := json.MarshalIndent(root, "", "  ")
+	if err != nil {
+		return fmt.Errorf("claude PrepareWorktree: encode %s: %w", path, err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("claude PrepareWorktree: mkdir: %w", err)
+	}
+	tmp := path + ".cox.tmp"
+	if err := os.WriteFile(tmp, out, 0o600); err != nil {
+		return fmt.Errorf("claude PrepareWorktree: write temp: %w", err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return fmt.Errorf("claude PrepareWorktree: replace %s: %w", path, err)
+	}
+	return nil
 }
 
 // Telemetry ports v1 inbox-lib.sh session_ctx: find the newest session log for the worktree path and sum the last

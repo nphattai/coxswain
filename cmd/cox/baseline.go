@@ -110,6 +110,9 @@ func cmdBaseline(args []string) int {
 		brief.StoryPath = filepath.Join(*epicDir, "stories", *story+".md")
 		hb = harnesspkg.Brief{StoryPath: brief.StoryPath}
 	}
+	if err := registry.PrepareWorktree(*harness, wt.Path); err != nil {
+		return fail("prepare worktree trust: %v", err)
+	}
 	argv, err := registry.LaunchArgs(*harness, harnesspkg.Launch{
 		Role: harnesspkg.RoleWorker, Worktree: wt.Path, Model: model, Flags: pol.LaunchFlags(*harness), Brief: hb,
 	})

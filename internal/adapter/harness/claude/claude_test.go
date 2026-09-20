@@ -1,6 +1,7 @@
 package claude
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -8,6 +9,64 @@ import (
 
 	"github.com/nphattai/coxswain/internal/adapter/harness"
 )
+
+// PrepareWorktree merges projects[<abspath>].hasTrustDialogAccepted=true into ~/.claude.json, creating the file when
+// absent and preserving every other project entry and top-level key.
+func TestPrepareWorktreeMergesTrust(t *testing.T) {
+	home := t.TempDir()
+	path := filepath.Join(home, ".claude.json")
+	// Pre-existing config with an unrelated project and a top-level key that must survive the merge.
+	seed := `{"numStartups":7,"projects":{"/other":{"hasTrustDialogAccepted":true,"allowedTools":["Bash"]}}}`
+	if err := os.WriteFile(path, []byte(seed), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h := &Harness{Home: home}
+	wt := filepath.Join(home, "worktrees", "story-x")
+	if err := h.PrepareWorktree(wt); err != nil {
+		t.Fatalf("PrepareWorktree: %v", err)
+	}
+	var root map[string]any
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(data, &root); err != nil {
+		t.Fatalf("re-parse: %v", err)
+	}
+	if root["numStartups"].(float64) != 7 {
+		t.Errorf("top-level key not preserved: %v", root["numStartups"])
+	}
+	projects := root["projects"].(map[string]any)
+	if other, ok := projects["/other"].(map[string]any); !ok || other["hasTrustDialogAccepted"] != true {
+		t.Errorf("unrelated project entry not preserved: %v", projects["/other"])
+	}
+	entry, ok := projects[wt].(map[string]any)
+	if !ok || entry["hasTrustDialogAccepted"] != true {
+		t.Fatalf("worktree trust not set: %v", projects[wt])
+	}
+}
+
+// PrepareWorktree creates ~/.claude.json when it does not exist yet, with just this worktree trusted.
+func TestPrepareWorktreeCreatesFile(t *testing.T) {
+	home := t.TempDir()
+	h := &Harness{Home: home}
+	wt := filepath.Join(home, "wt")
+	if err := h.PrepareWorktree(wt); err != nil {
+		t.Fatalf("PrepareWorktree: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(home, ".claude.json"))
+	if err != nil {
+		t.Fatalf("file not created: %v", err)
+	}
+	var root map[string]any
+	if err := json.Unmarshal(data, &root); err != nil {
+		t.Fatal(err)
+	}
+	entry := root["projects"].(map[string]any)[wt].(map[string]any)
+	if entry["hasTrustDialogAccepted"] != true {
+		t.Errorf("worktree trust not set in new file: %v", entry)
+	}
+}
 
 func TestTelemetryFromSessionLog(t *testing.T) {
 	home := t.TempDir()

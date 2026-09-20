@@ -96,8 +96,14 @@ func storyDispatch(args []string) int {
 		}
 	}
 	// The model resolves per harness: explicit/routed/frontmatter, else the policy default for this harness, else
-	// claude-opus-4-8 for claude only. A harness with no default resolves to "" and LaunchLine omits --model.
+	// claude-opus-4-8 for claude only. A harness with no default resolves to "" and LaunchArgs omits --model.
 	modelID := resolveWorkerModel(pol, harnessName, explicitModel)
+	// Pi-specific pre-spawn validation (DESIGN section 2): require provider/model syntax and a supported thinking level
+	// before spawn. effort is threaded from policy once Pi launch config lands; empty means Pi's default thinking.
+	effort := ""
+	if err := piPreSpawnValidate(harnessName, modelID, effort); err != nil {
+		return fail("%v", err)
+	}
 	// Quota gate (observe-only, ADR 0011): it never changes the harness, it only refuses to send work into an
 	// exhausted_now harness (overridable with --force-quota) and warns on a low-but-not-exhausted one. The reading is
 	// printed so the decision is auditable.
@@ -125,16 +131,22 @@ func storyDispatch(args []string) int {
 		return fail("build brief: %v", err)
 	}
 	storyPath := filepath.Join(*epicDir, "stories", story+".md")
+	// Mark the fresh worktree trusted for this harness before spawn, so a dispatched worker never stalls on an
+	// interactive workspace-trust dialog it cannot answer (steer 002 / DESIGN obs #2). Harness-specific, no user-config
+	// mutation beyond this per-directory trust; pi's trust is a launch flag so this is a no-op for pi.
+	if err := registry.PrepareWorktree(harnessName, wt.Path); err != nil {
+		return fail("prepare worktree trust: %v", err)
+	}
 	// Compose the adapter-owned argv and thread it as data into the spawn spec (launch seam, ADR 0002): the backend
 	// types this argv, it never rebuilds it or imports the harness layer.
 	argv, err := registry.LaunchArgs(harnessName, harness.Launch{
-		Role: harness.RoleWorker, Worktree: wt.Path, Model: modelID,
+		Role: harness.RoleWorker, Worktree: wt.Path, Model: modelID, Effort: effort,
 		Flags: pol.LaunchFlags(harnessName), Brief: harness.Brief{StoryPath: storyPath},
 	})
 	if err != nil {
 		return fail("compose launch argv: %v", err)
 	}
-	sess, err := b.Spawn(wt, backend.HarnessSpec{Name: harnessName, Model: modelID, LaunchFlags: pol.LaunchFlags(harnessName), Argv: argv}, backend.Brief{StoryPath: storyPath})
+	sess, err := b.Spawn(wt, backend.HarnessSpec{Name: harnessName, Model: modelID, Effort: effort, LaunchFlags: pol.LaunchFlags(harnessName), Argv: argv}, backend.Brief{StoryPath: storyPath})
 	if err != nil {
 		return fail("spawn: %v", err)
 	}
@@ -429,6 +441,12 @@ func storyControl(verb string, args []string) int {
 		// its prior autonomy), argv composed from the story path plus the progress note.
 		wtPath := readWorktree(*epicDir, story)
 		resumeStoryPath := filepath.Join(*epicDir, "stories", story+".md")
+		if err := piPreSpawnValidate(targetHarness, targetModel, ""); err != nil {
+			return fail("%v", err)
+		}
+		if err := registry.PrepareWorktree(targetHarness, wtPath); err != nil {
+			return fail("prepare worktree trust: %v", err)
+		}
 		argv, err := registry.LaunchArgs(targetHarness, harness.Launch{
 			Role: harness.RoleWorker, Worktree: wtPath, Model: targetModel,
 			Brief: harness.Brief{StoryPath: resumeStoryPath, Note: *note},

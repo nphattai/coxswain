@@ -1,6 +1,7 @@
 package codex
 
 import (
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -8,6 +9,64 @@ import (
 
 	"github.com/nphattai/coxswain/internal/adapter/harness"
 )
+
+// PrepareWorktree adds a `[projects."<abspath>"]` trust table with trust_level="trusted" to ~/.codex/config.toml,
+// preserving existing content, and is idempotent (a second call adds no duplicate table).
+func TestPrepareWorktreeTrust(t *testing.T) {
+	home := t.TempDir()
+	path := filepath.Join(home, ".codex", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Pre-existing config that must survive.
+	seed := "[projects.\"/other\"]\ntrust_level = \"trusted\"\n"
+	if err := os.WriteFile(path, []byte(seed), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h := &Harness{Home: home}
+	wt := filepath.Join(home, "wt")
+	if err := h.PrepareWorktree(wt); err != nil {
+		t.Fatalf("PrepareWorktree: %v", err)
+	}
+	got := readFile(t, path)
+	if !strings.Contains(got, "[projects.\"/other\"]") {
+		t.Errorf("existing table not preserved:\n%s", got)
+	}
+	header := "[projects.\"" + wt + "\"]"
+	if !strings.Contains(got, header) || !strings.Contains(got, "trust_level = \"trusted\"") {
+		t.Fatalf("worktree trust table not added:\n%s", got)
+	}
+	// Idempotent: a second call must not add a duplicate table (which would be invalid TOML).
+	if err := h.PrepareWorktree(wt); err != nil {
+		t.Fatalf("second PrepareWorktree: %v", err)
+	}
+	if n := strings.Count(readFile(t, path), header); n != 1 {
+		t.Errorf("expected exactly one trust table for the worktree, got %d", n)
+	}
+}
+
+// PrepareWorktree creates config.toml when it does not exist.
+func TestPrepareWorktreeCreatesConfig(t *testing.T) {
+	home := t.TempDir()
+	h := &Harness{Home: home}
+	wt := filepath.Join(home, "wt")
+	if err := h.PrepareWorktree(wt); err != nil {
+		t.Fatalf("PrepareWorktree: %v", err)
+	}
+	got := readFile(t, filepath.Join(home, ".codex", "config.toml"))
+	if !strings.Contains(got, "trust_level = \"trusted\"") {
+		t.Fatalf("new config missing trust table:\n%s", got)
+	}
+}
+
+func readFile(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
+}
 
 // indexOf returns the position of tok in argv, or -1.
 func indexOf(argv []string, tok string) int {

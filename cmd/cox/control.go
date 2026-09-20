@@ -80,6 +80,12 @@ func cmdControl(args []string) int {
 		model := resolveWorkerModel(pol, hname, meta.Model)
 		wtPath := readWorktree(*epicDir, story)
 		storyPath := filepath.Join(*epicDir, "stories", story+".md")
+		if err := piPreSpawnValidate(hname, model, ""); err != nil {
+			return fail("%v", err)
+		}
+		if err := registry.PrepareWorktree(hname, wtPath); err != nil {
+			return fail("prepare worktree trust: %v", err)
+		}
 		argv, err := registry.LaunchArgs(hname, harness.Launch{
 			Role: harness.RoleWorker, Worktree: wtPath, Model: model,
 			Flags: pol.LaunchFlags(hname), Brief: harness.Brief{StoryPath: storyPath, Note: *note},

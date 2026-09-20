@@ -84,6 +84,33 @@ func TestModelHarnessMismatch(t *testing.T) {
 	}
 }
 
+// piPreSpawnValidate rejects a bare/empty/provider-less pi model and an unsupported thinking level before spawn, and
+// applies no check to non-pi harnesses (or to a valid pi model/thinking).
+func TestPiPreSpawnValidate(t *testing.T) {
+	// Non-pi harnesses are never checked here (modelHarnessMismatch handles claude/codex).
+	if err := piPreSpawnValidate("claude", "", ""); err != nil {
+		t.Errorf("non-pi harness must not be checked: %v", err)
+	}
+	// Valid pi model + thinking passes.
+	if err := piPreSpawnValidate("pi", "anthropic/claude-opus-4-8", "high"); err != nil {
+		t.Errorf("valid pi model/thinking must pass: %v", err)
+	}
+	// Empty thinking passes (pi default).
+	if err := piPreSpawnValidate("pi", "anthropic/claude-opus-4-8", ""); err != nil {
+		t.Errorf("empty thinking must pass: %v", err)
+	}
+	// Bad models are rejected before spawn.
+	for _, model := range []string{"", "opus", "/opus", "anthropic/"} {
+		if err := piPreSpawnValidate("pi", model, ""); err == nil {
+			t.Errorf("pi model %q must be rejected pre-spawn", model)
+		}
+	}
+	// Unsupported thinking is rejected.
+	if err := piPreSpawnValidate("pi", "anthropic/claude-opus-4-8", "ultra"); err == nil {
+		t.Errorf("unsupported pi thinking must be rejected pre-spawn")
+	}
+}
+
 // currentAttempt bumps to N+1 only after a terminal canceled|failed state (a re-dispatch is a fresh attempt), and
 // leaves working/input_required untouched (a live report keeps writing for the current attempt).
 func TestCurrentAttemptAfterCancel(t *testing.T) {

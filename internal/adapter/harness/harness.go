@@ -106,6 +106,12 @@ type Harness interface {
 	// effort/thinking level, trust/resource flags, and the prompt. cmd/cox composes it and threads it to the backend
 	// as data, so the backend never imports this layer (ADR 0002).
 	LaunchArgs(l Launch) []string
+	// PrepareWorktree marks the worker's fresh worktree trusted in the harness's own per-directory trust registry
+	// before spawn, so a dispatched worker never stalls on an interactive workspace-trust dialog it cannot answer
+	// (bypassPermissions/-a-never do not suppress it). The mechanism is harness-specific (claude: ~/.claude.json;
+	// codex: ~/.codex/config.toml) and cox never mutates user-level config beyond adding this per-directory trust.
+	// Harnesses whose trust is a per-run launch flag (pi --approve) implement it as a no-op.
+	PrepareWorktree(wt string) error
 	// Telemetry reports token/turn usage for a session (identified by its worktree path). It returns Known=false,
 	// never 0, when the harness has no usable log (F11).
 	Telemetry(session string) (Context, error)

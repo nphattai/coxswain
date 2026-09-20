@@ -11,6 +11,7 @@ import (
 
 	"github.com/nphattai/coxswain/internal/adapter/backend"
 	"github.com/nphattai/coxswain/internal/adapter/backend/orca"
+	"github.com/nphattai/coxswain/internal/adapter/harness/pi"
 	"github.com/nphattai/coxswain/internal/state"
 	"github.com/nphattai/coxswain/internal/workspace"
 )
@@ -61,6 +62,20 @@ func modelVendor(model string) string {
 	default:
 		return ""
 	}
+}
+
+// piPreSpawnValidate runs Pi's provider/model and thinking validation before spawn (DESIGN section 2), alongside
+// modelHarnessMismatch (which applies no check to a pi model, since modelVendor returns "" for it). It requires an
+// explicit provider/model and rejects an unsupported thinking level; it applies only to the pi harness, so every other
+// harness passes unchanged.
+func piPreSpawnValidate(harnessName, model, effort string) error {
+	if harnessName != "pi" {
+		return nil
+	}
+	if err := pi.ValidateModel(model); err != nil {
+		return err
+	}
+	return pi.ValidateThinking(effort)
 }
 
 // modelHarnessMismatch reports whether `model` belongs to a different vendor than `harness` expects (a claude-family

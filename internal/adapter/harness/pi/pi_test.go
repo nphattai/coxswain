@@ -42,19 +42,55 @@ func TestTelemetryUnknownStub(t *testing.T) {
 	}
 }
 
-// A dispatched Pi worker's argv spells the provider/model as `--model <id>`, types the policy flags in order, then the
-// story-file prompt. Pi's explicit thinking level and packaged extension are added when the Pi launch config lands.
+// A dispatched Pi worker's argv spells the provider/model as `--model <id>`, types `--thinking <level>` when a level is
+// set, marks trust with `--approve` (Pi's per-run trust so a worker never stalls on the trust dialog), then the
+// story-file prompt.
 func TestLaunchArgsWorker(t *testing.T) {
 	argv := New().LaunchArgs(harness.Launch{
-		Role: harness.RoleWorker, Worktree: "/wt", Model: "anthropic/claude-opus-4-8",
-		Flags: []string{"--no-approve"}, Brief: harness.Brief{StoryPath: "/epics/v2/stories/s.md"},
+		Role: harness.RoleWorker, Worktree: "/wt", Model: "anthropic/claude-opus-4-8", Effort: "high",
+		Brief: harness.Brief{StoryPath: "/epics/v2/stories/s.md"},
 	})
 	want := []string{
-		"pi", "--model", "anthropic/claude-opus-4-8", "--no-approve",
+		"pi", "--model", "anthropic/claude-opus-4-8", "--thinking", "high", "--approve",
 		"Your task is the story file /epics/v2/stories/s.md - read it in full and follow its Working rules exactly.",
 	}
 	if strings.Join(argv, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("pi worker argv =\n  %v\nwant\n  %v", argv, want)
+	}
+}
+
+// With no thinking level set, Pi types no --thinking (it uses its default), but still marks trust with --approve.
+func TestLaunchArgsWorkerNoThinking(t *testing.T) {
+	argv := New().LaunchArgs(harness.Launch{
+		Role: harness.RoleWorker, Worktree: "/wt", Model: "anthropic/claude-opus-4-8",
+		Brief: harness.Brief{StoryPath: "/e/stories/s.md"},
+	})
+	joined := strings.Join(argv, " ")
+	if strings.Contains(joined, "--thinking") {
+		t.Errorf("no effort must type no --thinking: %v", argv)
+	}
+	if !strings.Contains(joined, "--approve") {
+		t.Errorf("pi worker must mark trust with --approve: %v", argv)
+	}
+}
+
+func TestValidateThinking(t *testing.T) {
+	for _, ok := range []string{"", "off", "minimal", "low", "medium", "high", "xhigh", "max"} {
+		if err := ValidateThinking(ok); err != nil {
+			t.Errorf("ValidateThinking(%q) = %v, want nil", ok, err)
+		}
+	}
+	for _, bad := range []string{"ultra", "none", "HIGH ", "verylow", "1"} {
+		if err := ValidateThinking(bad); err == nil {
+			t.Errorf("ValidateThinking(%q) = nil, want error", bad)
+		}
+	}
+}
+
+// Pi's trust is a launch flag (--approve), so PrepareWorktree pre-seeds nothing and never mutates user config.
+func TestPrepareWorktreeNoOp(t *testing.T) {
+	if err := New().PrepareWorktree("/any/worktree"); err != nil {
+		t.Errorf("pi PrepareWorktree must be a no-op, got %v", err)
 	}
 }
 

@@ -133,6 +133,12 @@ func Run(b backend.Backend, o Options) (Result, error) {
 			continue
 		}
 		arenaModel, _ := o.Policy.WorkerModel(hname, o.Model)
+		if err := registry.PrepareWorktree(hname, wt.Path); err != nil {
+			rr.Err = err
+			pending(o.EpicDir, slug, rr.Story, rr.Attempt, rr.From, err)
+			res.Roles = append(res.Roles, rr)
+			continue
+		}
 		// An arena role launches with the read-only arena flags (harness.launch.arena.<h>), never the worker's bypass
 		// flags: in terminal mode the role runs plan/read-only so it can only write its report (ADR 0013). Argv is
 		// adapter-owned and marked Arena so a sandboxed harness grants it no extra writable roots (ADR 0013).

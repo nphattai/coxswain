@@ -10,6 +10,7 @@ type Harness struct {
 	Ctx          harness.Context
 	Packaged     []string         // dsts passed to Package
 	LaunchedWith []harness.Launch // launches passed to LaunchArgs
+	Prepared     []string         // worktrees passed to PrepareWorktree
 }
 
 // New returns a fake with a minimal push card by default.
@@ -38,6 +39,11 @@ func (h *Harness) Package(role harness.Role, dst string) error {
 func (h *Harness) LaunchArgs(l harness.Launch) []string {
 	h.LaunchedWith = append(h.LaunchedWith, l)
 	return []string{h.Cap.Name, string(l.Role), l.Worktree, l.Brief.StoryPath}
+}
+
+func (h *Harness) PrepareWorktree(wt string) error {
+	h.Prepared = append(h.Prepared, wt)
+	return nil
 }
 
 func (h *Harness) Telemetry(session string) (harness.Context, error) {

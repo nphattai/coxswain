@@ -4,6 +4,7 @@
 package codex
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,11 +13,20 @@ import (
 	"github.com/nphattai/coxswain/internal/adapter/harness"
 )
 
-// Harness is the Codex adapter.
-type Harness struct{}
+// Harness is the Codex adapter. Home overrides the base for ~/.codex in tests; empty uses $HOME.
+type Harness struct {
+	Home string
+}
 
 // New returns a Codex adapter.
 func New() *Harness { return &Harness{} }
+
+func (h *Harness) home() string {
+	if h.Home != "" {
+		return h.Home
+	}
+	return os.Getenv("HOME")
+}
 
 func (h *Harness) Card() harness.Capability {
 	return harness.Capability{
@@ -74,6 +84,52 @@ func (h *Harness) LaunchArgs(l harness.Launch) []string {
 // Telemetry is always Unknown for Codex: it exposes no session log to read (F11: unknown, never 0).
 func (h *Harness) Telemetry(session string) (harness.Context, error) {
 	return harness.Context{Known: false}, nil
+}
+
+// PrepareWorktree marks wt trusted for Codex by ensuring a `[projects."<abspath>"]` table with `trust_level = "trusted"`
+// in ~/.codex/config.toml, so a dispatched worker never stalls on the interactive repository-trust prompt (DESIGN obs
+// #2). The repo depends only on the standard library (no TOML writer), so the table is appended when absent rather than
+// re-serializing the whole file: TOML tables are order-independent, and an existing table for this exact path is left
+// untouched (appending a duplicate would be a TOML error). cox never changes any other codex setting.
+func (h *Harness) PrepareWorktree(wt string) error {
+	abs, err := filepath.Abs(wt)
+	if err != nil {
+		return fmt.Errorf("codex PrepareWorktree: resolve %q: %w", wt, err)
+	}
+	path := filepath.Join(h.home(), ".codex", "config.toml")
+	header := fmt.Sprintf("[projects.%s]", tomlQuoteKey(abs))
+	existing, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("codex PrepareWorktree: read %s: %w", path, err)
+	}
+	if strings.Contains(string(existing), header) {
+		return nil // already has a trust table for this directory; leave it as-is
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("codex PrepareWorktree: mkdir: %w", err)
+	}
+	var b strings.Builder
+	b.Write(existing)
+	if len(existing) > 0 && !strings.HasSuffix(string(existing), "\n") {
+		b.WriteByte('\n')
+	}
+	fmt.Fprintf(&b, "\n%s\ntrust_level = \"trusted\"\n", header)
+	tmp := path + ".cox.tmp"
+	if err := os.WriteFile(tmp, []byte(b.String()), 0o600); err != nil {
+		return fmt.Errorf("codex PrepareWorktree: write temp: %w", err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return fmt.Errorf("codex PrepareWorktree: replace %s: %w", path, err)
+	}
+	return nil
+}
+
+// tomlQuoteKey renders an absolute path as a TOML basic-string quoted key, escaping backslashes and quotes so a path
+// with either stays a single valid key. Paths rarely contain them, but the escape keeps the emitted TOML valid.
+func tomlQuoteKey(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `"`, `\"`)
+	return `"` + s + `"`
 }
 
 // codexWorkspaceWrite reports whether this launch is a codex worker in the workspace-write sandbox (not read-only, not

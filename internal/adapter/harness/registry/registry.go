@@ -46,6 +46,17 @@ func LaunchArgs(name string, l harness.Launch) ([]string, error) {
 	return h.LaunchArgs(l), nil
 }
 
+// PrepareWorktree marks the worker's fresh worktree trusted via the named adapter's own trust mechanism before spawn,
+// so a dispatched worker never stalls on an interactive workspace-trust dialog (steer 002 / DESIGN obs #2). Wiring code
+// (cmd/cox, internal/arena) calls it right before Spawn. An unadaptered name errors.
+func PrepareWorktree(name, wt string) error {
+	h, ok := Adapter(name)
+	if !ok {
+		return fmt.Errorf("harness %q has no adapter; cannot prepare worktree trust", name)
+	}
+	return h.PrepareWorktree(wt)
+}
+
 // Notices validates a harness against its capability card for a role and returns the reduced-mode notices to print. It
 // returns an error when the harness has no adapter or its card does not list the role. A pull wake or a manual
 // checkpoint is a notice, not a refusal: the dispatch proceeds (phase-07 item 4), and the notice tells the leader the
