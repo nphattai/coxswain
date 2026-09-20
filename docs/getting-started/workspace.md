@@ -16,7 +16,7 @@ cox workspace init \
 checkout's default branch (`origin/HEAD`, else `main`). With no `--repo`, init refuses rather than write a placeholder
 you would have to hand-edit.
 
-Add a repo later with `cox workspace add-repo api=$HOME/Work/acme-api`; re-running `cox workspace init` is idempotent - it
+Add a repo later with `cox workspace add-repo api=$HOME/Work/acme-api --root $HOME/Work/acme-ops`; re-running `cox workspace init` is idempotent - it
 reports what already exists and creates only what is missing, and never rewrites `workspace.json`, `policy.json`, or an
 edited `AGENTS.md`.
 
