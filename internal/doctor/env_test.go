@@ -198,6 +198,31 @@ func TestInspectWorkspace(t *testing.T) {
 	}
 }
 
+// A valid workspace.json with a missing or invalid cox/policy.json is reported with a PolicyError (so doctor fails,
+// rather than silently skipping the policy-derived checks) - PR#3 review round 2, finding 5.
+func TestInspectWorkspacePolicyError(t *testing.T) {
+	// Valid workspace.json, no policy.json at all.
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "cox"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "cox", "workspace.json"),
+		[]byte(`{"repos":[{"alias":"a","path":"`+t.TempDir()+`","production":"main"}]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if rep := InspectWorkspace(root); !rep.Valid || rep.PolicyError == "" {
+		t.Fatalf("missing policy.json must set PolicyError on a valid workspace, got %+v", rep)
+	}
+
+	// An invalid policy.json (a section missing its why) also sets PolicyError.
+	if err := os.WriteFile(filepath.Join(root, "cox", "policy.json"), []byte(`{"delivery":{"style":"default"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if rep := InspectWorkspace(root); rep.PolicyError == "" {
+		t.Errorf("invalid policy.json must set PolicyError, got %+v", rep)
+	}
+}
+
 // An invalid workspace.json is reported Valid=false with a field-named error.
 func TestInspectWorkspaceInvalid(t *testing.T) {
 	root := t.TempDir()

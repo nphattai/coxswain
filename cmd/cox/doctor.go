@@ -194,6 +194,9 @@ func cmdDoctor(args []string) int {
 				hooks = append(hooks, fmt.Sprintf("%s=%s", h, yesNo(w.Hooks[h])))
 			}
 			fmt.Printf("workspace %s  (%d repo(s), hooks: %s)\n", w.Root, w.Repos, strings.Join(hooks, " "))
+			if w.PolicyError != "" {
+				fmt.Fprintf(os.Stderr, "ISSUE: workspace %s policy.json: %s\n", w.Root, w.PolicyError)
+			}
 			for _, ep := range w.Epics {
 				watch := "watcher dead"
 				if ep.WatcherAlive {
@@ -256,7 +259,7 @@ func cmdDoctor(args []string) int {
 	hasFail := len(rep.Issues) > 0 || len(watcherIssues) > 0 || len(wsWatcherIssues) > 0
 	hasUnknown := false
 	for _, w := range wsReports {
-		if !w.Valid {
+		if !w.Valid || w.PolicyError != "" {
 			hasFail = true
 		}
 	}

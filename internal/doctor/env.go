@@ -55,6 +55,7 @@ type WorkspaceReport struct {
 	Root         string          `json:"root"`
 	Valid        bool            `json:"valid"`
 	Error        string          `json:"error,omitempty"`
+	PolicyError  string          `json:"policy_error,omitempty"` // cox/policy.json missing, malformed, or invalid
 	Repos        int             `json:"repos"`
 	Hooks        map[string]bool `json:"hooks"` // leader harness -> hooks installed
 	Epics        []EpicReport    `json:"epics"`
@@ -237,8 +238,13 @@ func InspectWorkspace(wsRoot string) WorkspaceReport {
 	rep.Valid = true
 	rep.Repos = len(ws.Repos)
 
-	// Leader hooks per harness the policy allows (claude -> .claude/settings.json, codex -> .codex/hooks.json).
-	if pol, perr := workspace.LoadPolicy(wsRoot); perr == nil {
+	// The policy must load and validate: a missing, malformed, or invalid cox/policy.json is a failure (dispatch and
+	// other policy-dependent commands would fail), not something to skip silently past a "valid" workspace.
+	pol, perr := workspace.LoadPolicy(wsRoot)
+	if perr != nil {
+		rep.PolicyError = perr.Error()
+	} else {
+		// Leader hooks per harness the policy allows (claude -> .claude/settings.json, codex -> .codex/hooks.json).
 		for _, h := range pol.Harness.Leader.Options {
 			if target := hookTarget(wsRoot, h); target != "" {
 				rep.Hooks[h] = hooksComplete(target)
