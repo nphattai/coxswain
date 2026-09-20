@@ -88,7 +88,11 @@ func FindWorkspaces(roots, explicit []string) []string {
 	seen := map[string]bool{}
 	var out []string
 	add := func(dir string) {
-		if dir == "" || seen[dir] {
+		if dir == "" {
+			return
+		}
+		dir = filepath.Clean(dir) // normalise so /a//b and /a/b dedup to one
+		if seen[dir] {
 			return
 		}
 		if exists(filepath.Join(dir, workspace.ControlDir, "workspace.json")) {
