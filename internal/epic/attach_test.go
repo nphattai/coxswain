@@ -11,12 +11,15 @@ import (
 )
 
 // attachBackend checks out an EXISTING branch into a fresh worktree (no -b), which is what re-attach needs: the epic
-// branch already exists and must not be recreated. Every other method is the gitBackend stub.
+// branch already exists and must not be recreated. It records the repo refs it was handed so a test can assert attach
+// resolved them from the local workspace. Every other method is the gitBackend stub.
 type attachBackend struct {
 	gitBackend
+	gotRepos []string
 }
 
 func (a *attachBackend) WorktreeCreate(repo, branch, base string) (backend.Worktree, error) {
+	a.gotRepos = append(a.gotRepos, repo)
 	path := filepath.Join(a.wtBase, "wt-"+strings.ReplaceAll(branch, "/", "-"))
 	cmd := exec.Command("git", "-C", a.repo, "worktree", "add", path, branch)
 	if out, err := cmd.CombinedOutput(); err != nil {
@@ -65,7 +68,7 @@ func TestAttachRecreatesStateWithoutTouchingBranches(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := Attach(AttachOptions{Runtime: &attachBackend{gitBackend{t: t, repo: repo, wtBase: t.TempDir()}}, Workspace: ws, WsRoot: wsRoot, EpicDir: epicDir}); err != nil {
+	if err := Attach(AttachOptions{Runtime: &attachBackend{gitBackend: gitBackend{t: t, repo: repo, wtBase: t.TempDir()}}, Workspace: ws, WsRoot: wsRoot, EpicDir: epicDir}); err != nil {
 		t.Fatalf("attach: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(epicDir, ".cox", "epic.json")); err != nil {
@@ -79,8 +82,38 @@ func TestAttachRecreatesStateWithoutTouchingBranches(t *testing.T) {
 	}
 
 	// Refuse on an existing .cox/.
-	if err := Attach(AttachOptions{Runtime: &attachBackend{gitBackend{t: t, repo: repo, wtBase: t.TempDir()}}, Workspace: ws, WsRoot: wsRoot, EpicDir: epicDir}); err == nil {
+	if err := Attach(AttachOptions{Runtime: &attachBackend{gitBackend: gitBackend{t: t, repo: repo, wtBase: t.TempDir()}}, Workspace: ws, WsRoot: wsRoot, EpicDir: epicDir}); err == nil {
 		t.Error("attach must refuse when .cox already exists")
+	}
+}
+
+// Attach resolves each alias's ref from the LOCAL workspace.json, not the (possibly stale) absolute path recorded in
+// the tracked repos file - the captain's reinstall-on-another-machine case.
+func TestAttachResolvesRefFromLocalWorkspace(t *testing.T) {
+	repo := makeRepo(t)
+	wsRoot, ws := setupWorkspace(t, repo) // workspace registers app -> repo (the local checkout)
+	if _, err := New(NewOptions{Runtime: &gitBackend{t: t, repo: repo, wtBase: t.TempDir()}, Workspace: ws, WsRoot: wsRoot,
+		Project: "proj", Slug: "reinstall", Repos: []string{"app"}, NoPush: true}); err != nil {
+		t.Fatal(err)
+	}
+	epicDir := filepath.Join(wsRoot, "proj", "epics", "reinstall")
+	// Simulate a clone from another machine: the tracked repos file carries a stale absolute path.
+	if err := os.WriteFile(filepath.Join(epicDir, "repos"), []byte("app /stale/checkout/from/another/machine\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Fresh clone: worktree and .cox gone, branch kept.
+	link := filepath.Join(epicDir, "app")
+	target, _ := filepath.EvalSymlinks(link)
+	_, _ = exec.Command("git", "-C", repo, "worktree", "remove", "--force", target).CombinedOutput()
+	_ = os.Remove(link)
+	_ = os.RemoveAll(filepath.Join(epicDir, ".cox"))
+
+	be := &attachBackend{gitBackend: gitBackend{t: t, repo: repo, wtBase: t.TempDir()}}
+	if err := Attach(AttachOptions{Runtime: be, Workspace: ws, WsRoot: wsRoot, EpicDir: epicDir}); err != nil {
+		t.Fatalf("attach: %v", err)
+	}
+	if len(be.gotRepos) != 1 || be.gotRepos[0] != repo {
+		t.Fatalf("attach used ref %v, want the local workspace path %q (not the stale repos-file path)", be.gotRepos, repo)
 	}
 }
 
@@ -104,7 +137,7 @@ func TestAttachRefusesDirtyWorktree(t *testing.T) {
 	if err := os.RemoveAll(filepath.Join(epicDir, ".cox")); err != nil {
 		t.Fatal(err)
 	}
-	if err := Attach(AttachOptions{Runtime: &attachBackend{gitBackend{t: t, repo: repo, wtBase: t.TempDir()}}, Workspace: ws, WsRoot: wsRoot, EpicDir: epicDir}); err == nil {
+	if err := Attach(AttachOptions{Runtime: &attachBackend{gitBackend: gitBackend{t: t, repo: repo, wtBase: t.TempDir()}}, Workspace: ws, WsRoot: wsRoot, EpicDir: epicDir}); err == nil {
 		t.Error("attach must refuse a dirty worktree")
 	}
 }

@@ -67,15 +67,25 @@ func Attach(o AttachOptions) error {
 	var aliases []string
 	for _, r := range repos {
 		aliases = append(aliases, r.alias)
+		// Resolve the ref from the LOCAL workspace.json, not the ref recorded in the tracked repos file: a fresh clone on
+		// another machine has a different checkout path, so the tracked absolute path is stale (this is exactly the
+		// captain's reinstall test). Fall back to the file ref only for an alias the local workspace does not register.
+		ref := r.ref
+		if o.Workspace != nil {
+			if repo, ok := o.Workspace.Repo(r.alias); ok {
+				ref = repo.Ref()
+			}
+		}
+
 		// Fetch the existing epic branch so a fresh clone has it locally; best-effort for a path checkout.
-		if strings.HasPrefix(r.ref, "/") {
-			if out, err := exec.Command("git", "-C", r.ref, "fetch", "origin", branch).CombinedOutput(); err != nil {
+		if strings.HasPrefix(ref, "/") {
+			if out, err := exec.Command("git", "-C", ref, "fetch", "origin", branch).CombinedOutput(); err != nil {
 				fmt.Fprintf(o.warn(), "warn: fetch %s for %s: %v: %s\n", branch, r.alias, err, strings.TrimSpace(string(out)))
 			}
 		}
 		// Check out the EXISTING branch at its own tip (base = the branch itself, so it is never reset to production and
 		// no branch is created or deleted).
-		wt, err := worktree.Ensure(o.Runtime, r.ref, branch, branch)
+		wt, err := worktree.Ensure(o.Runtime, ref, branch, branch)
 		if err != nil {
 			return fmt.Errorf("attach worktree for %s: %w", r.alias, err)
 		}
