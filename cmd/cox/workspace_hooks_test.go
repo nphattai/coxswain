@@ -71,6 +71,40 @@ func TestWorkspaceHooksMergesUserEntries(t *testing.T) {
 	}
 }
 
+// An upgraded v1 workspace whose settings still carry bin/hook-*.sh shims has them replaced, not doubled, so prompt-drain
+// and stop-rewake never run twice.
+func TestWorkspaceHooksReplacesLegacyV1Shims(t *testing.T) {
+	root := t.TempDir()
+	settings := filepath.Join(root, ".claude", "settings.json")
+	mustWrite(t, settings, `{
+  "hooks": {
+    "UserPromptSubmit": [ { "hooks": [ { "type": "command", "command": "\"$CLAUDE_PROJECT_DIR\"/bin/hook-prompt-drain.sh", "timeout": 20 } ] } ],
+    "Stop": [ { "hooks": [ { "type": "command", "command": "\"$CLAUDE_PROJECT_DIR\"/bin/hook-stop-rewake.sh", "asyncRewake": true, "timeout": 3600 } ] } ]
+  }
+}`)
+	if code := cmdWorkspaceHooks([]string{"--root", root, "--harness", "claude"}); code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	b, _ := os.ReadFile(settings)
+	got := string(b)
+	if strings.Contains(got, "bin/hook-") || strings.Contains(got, "CLAUDE_PROJECT_DIR") {
+		t.Errorf("legacy v1 hook shims survived:\n%s", got)
+	}
+	var doc struct {
+		Hooks map[string][]any `json:"hooks"`
+	}
+	if err := json.Unmarshal(b, &doc); err != nil {
+		t.Fatal(err)
+	}
+	// Exactly one group per event: the cox one, not the cox one plus the surviving v1 shim.
+	if len(doc.Hooks["UserPromptSubmit"]) != 1 || len(doc.Hooks["Stop"]) != 1 {
+		t.Errorf("v1 shim was not replaced (duplicate groups): %s", got)
+	}
+	if !strings.Contains(got, "cox hook prompt-drain") {
+		t.Errorf("new cox hooks not written:\n%s", got)
+	}
+}
+
 // The codex path writes a project-level .codex/hooks.json with the four leader hooks carrying --harness codex (and the
 // codex async key), no epic binding, preserving a pre-existing non-cox entry, and is idempotent.
 func TestWorkspaceHooksCodexCreatesAndIsIdempotent(t *testing.T) {

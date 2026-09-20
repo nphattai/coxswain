@@ -299,14 +299,19 @@ func coxHookGroups(harnessName string) (map[string][]any, error) {
 	return out, nil
 }
 
-// withoutCoxGroups returns the event's existing matcher-groups with every cox-installed group (a command containing
-// "cox hook ") dropped, so a re-run replaces cox's own groups without disturbing anyone else's. A non-array or absent
-// value yields an empty slice.
+// legacyHookShimRe matches a v1 cox hook shim command (bin/hook-<name>.sh). An upgraded workspace whose settings still
+// carry these must have them removed before the new `cox hook` groups are appended, or both fire (double drain, two stop
+// waiters with different lock names).
+var legacyHookShimRe = regexp.MustCompile(`hook-[a-z0-9-]+\.sh`)
+
+// withoutCoxGroups returns the event's existing matcher-groups with every cox-installed group dropped - both the current
+// `cox hook ` commands and the legacy v1 `bin/hook-*.sh` shims - so a re-run (or an upgrade from v1) replaces cox's own
+// groups without disturbing anyone else's. A non-array or absent value yields an empty slice.
 func withoutCoxGroups(v any) []any {
 	arr, _ := v.([]any)
 	kept := make([]any, 0, len(arr))
 	for _, item := range arr {
-		if b, err := json.Marshal(item); err == nil && bytes.Contains(b, []byte("cox hook ")) {
+		if b, err := json.Marshal(item); err == nil && (bytes.Contains(b, []byte("cox hook ")) || legacyHookShimRe.Match(b)) {
 			continue
 		}
 		kept = append(kept, item)
