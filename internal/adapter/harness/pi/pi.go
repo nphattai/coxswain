@@ -49,19 +49,21 @@ func (h *Harness) Package(role harness.Role, dst string) error {
 	return nil
 }
 
-// LaunchArgs returns the argv to start Pi in wt. The full production argv (explicit provider/model, thinking level,
-// trust/resource flags, and the packaged extension) is composed by the adapter-owned launch seam; this returns the
-// worker's story-file prompt so the seam has a stable base. A relaunch asks the worker to inject its checkpoint first.
-func (h *Harness) LaunchArgs(role harness.Role, wt string, b harness.Brief) []string {
+// LaunchArgs returns the argv to start Pi: `pi --model <provider/model> <policy flags> <prompt>`. Pi's explicit
+// thinking level, trust/resource flags, and the packaged extension (-e) are added when the Pi launch config lands; the
+// model is spelled `--model` (verified against pi 0.85.1 --help) and never inferred from the harness name. A relaunch
+// asks the worker to inject its checkpoint first.
+func (h *Harness) LaunchArgs(l harness.Launch) []string {
 	args := []string{"pi"}
-	if role == harness.RoleWorker && b.StoryPath != "" {
-		prompt := "Your task is the story file " + b.StoryPath + " - read it in full and follow its Working rules exactly."
-		if b.InjectCheckpoint {
-			prompt = "Read your checkpoint with `cox checkpoint inject` first, then continue from Next action. " + prompt
+	if l.Model != "" {
+		args = append(args, "--model", l.Model)
+	}
+	for _, f := range l.Flags {
+		if f != "" {
+			args = append(args, f)
 		}
-		if b.Note != "" {
-			prompt += " Progress note from your previous attempt: " + b.Note
-		}
+	}
+	if prompt := harness.WorkerPrompt(l.Role, l.Brief); prompt != "" {
 		args = append(args, prompt)
 	}
 	return args

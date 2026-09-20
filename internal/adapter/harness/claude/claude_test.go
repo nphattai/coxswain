@@ -63,9 +63,33 @@ func TestCardIsPush(t *testing.T) {
 }
 
 func TestLaunchArgsRelaunchInjectsCheckpoint(t *testing.T) {
-	args := New().LaunchArgs(harness.RoleWorker, "/wt", harness.Brief{StoryPath: "stories/x.md", InjectCheckpoint: true, Note: "phase 2 half done"})
+	args := New().LaunchArgs(harness.Launch{
+		Role: harness.RoleWorker, Worktree: "/wt",
+		Brief: harness.Brief{StoryPath: "stories/x.md", InjectCheckpoint: true, Note: "phase 2 half done"},
+	})
 	joined := strings.Join(args, " ")
 	if !strings.Contains(joined, "cox checkpoint inject") || !strings.Contains(joined, "phase 2 half done") {
 		t.Fatalf("relaunch args missing checkpoint/note: %q", joined)
+	}
+}
+
+// A dispatched claude worker's argv is exactly `claude --model <id> <policy flags> <prompt>` - the model spelled
+// --model, the flags in order, then the story-file prompt. Claude has no writable-root/network sandbox flags.
+func TestLaunchArgsWorkerGolden(t *testing.T) {
+	argv := New().LaunchArgs(harness.Launch{
+		Role: harness.RoleWorker, Worktree: "/wt", Model: "claude-opus-4-8",
+		Flags: []string{"--permission-mode", "bypassPermissions"},
+		Brief: harness.Brief{StoryPath: "/epics/v2/stories/m10.md"},
+	})
+	want := []string{
+		"claude", "--model", "claude-opus-4-8", "--permission-mode", "bypassPermissions",
+		"Your task is the story file /epics/v2/stories/m10.md - read it in full and follow its Working rules exactly.",
+	}
+	if strings.Join(argv, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("claude worker argv =\n  %v\nwant\n  %v", argv, want)
+	}
+	// No sandbox roots/network for claude.
+	if strings.Contains(strings.Join(argv, " "), "--add-dir") {
+		t.Fatalf("claude must not type --add-dir: %v", argv)
 	}
 }

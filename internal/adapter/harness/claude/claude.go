@@ -42,18 +42,21 @@ func (h *Harness) Package(role harness.Role, dst string) error {
 	return linkAgentsAsClaude(dst)
 }
 
-// LaunchArgs returns the argv to start Claude Code in wt. The worker's brief is the story file (read in full);
-// a relaunch asks it to inject the checkpoint first. Wake is push, so no idle-wait arg is needed.
-func (h *Harness) LaunchArgs(role harness.Role, wt string, b harness.Brief) []string {
+// LaunchArgs returns the full argv to start Claude Code: `claude --model <id> <policy flags> <prompt>`. The model is
+// spelled `--model <id>` (the caller resolves a non-empty id from policy); the approval/autonomy flags come from policy
+// (harness.launch.claude); the worker's prompt is the story file (read in full), and a relaunch asks it to inject the
+// checkpoint first. Wake is push, so no idle-wait arg is needed. Claude has no launch-time effort flag today.
+func (h *Harness) LaunchArgs(l harness.Launch) []string {
 	args := []string{"claude"}
-	if role == harness.RoleWorker && b.StoryPath != "" {
-		prompt := "Your task is the story file " + b.StoryPath + " - read it in full and follow its Working rules exactly."
-		if b.InjectCheckpoint {
-			prompt = "Read your checkpoint with `cox checkpoint inject` first, then continue from Next action. " + prompt
+	if l.Model != "" {
+		args = append(args, "--model", l.Model)
+	}
+	for _, f := range l.Flags {
+		if f != "" {
+			args = append(args, f)
 		}
-		if b.Note != "" {
-			prompt += " Progress note from your previous attempt: " + b.Note
-		}
+	}
+	if prompt := harness.WorkerPrompt(l.Role, l.Brief); prompt != "" {
 		args = append(args, prompt)
 	}
 	return args

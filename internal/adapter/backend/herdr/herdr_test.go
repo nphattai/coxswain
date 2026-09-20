@@ -93,7 +93,8 @@ func TestSpawnTypesLaunchIntoPane(t *testing.T) {
 	var calls []string
 	c := New("sess")
 	c.run = fakeHerdr(&calls)
-	sess, err := c.Spawn(backend.Worktree{Path: "/wt/m10"}, backend.HarnessSpec{Name: "claude"},
+	sess, err := c.Spawn(backend.Worktree{Path: "/wt/m10"},
+		backend.HarnessSpec{Name: "claude", Argv: []string{"claude", "Your task is the story file /epics/v2/stories/m10.md - read it in full and follow its Working rules exactly."}},
 		backend.Brief{StoryPath: "/epics/v2/stories/m10.md"})
 	if err != nil {
 		t.Fatal(err)
@@ -106,7 +107,7 @@ func TestSpawnTypesLaunchIntoPane(t *testing.T) {
 		"--session sess workspace create --cwd /wt/m10 --label m10 --no-focus",
 		"--session sess pane list --workspace ws_1",
 		"pane send-text pane_1 COX_EPIC=",
-		"COX_PLANE=terminal claude ",
+		"COX_PLANE=terminal 'claude'",
 		"pane send-keys pane_1 Enter",
 	} {
 		if !strings.Contains(joined, want) {

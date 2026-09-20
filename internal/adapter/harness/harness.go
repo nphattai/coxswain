@@ -55,6 +55,39 @@ type Brief struct {
 	InjectCheckpoint bool
 }
 
+// Launch is the input an adapter needs to compose the full production argv (decision 0002 / ADR launch seam). Model,
+// Effort, and Flags are resolved from policy by the caller (cmd/cox); the adapter owns their spelling, the executable
+// name, trust/resource flags, and the prompt. Worktree is the worker's checkout, which a harness may need to compose a
+// resource flag (e.g. codex's writable roots for a linked worktree). The backend receives the resulting []string as
+// data and never imports this layer.
+type Launch struct {
+	Role     Role
+	Worktree string
+	Model    string
+	Effort   string
+	Flags    []string
+	Arena    bool // an arena-role launch (read-only report writer); a sandboxed harness grants it no extra writable roots
+	Brief    Brief
+}
+
+// WorkerPrompt renders the single prompt argument a dispatched worker harness receives, shared by every adapter so the
+// wording never drifts between harnesses. The story file is the task (read in full); an inline Note is appended as a
+// progress note (relaunch); InjectCheckpoint prepends a checkpoint-first instruction for a harness with no SessionStart
+// hook to do it automatically. With no story path it falls back to the Note alone.
+func WorkerPrompt(role Role, b Brief) string {
+	if role != RoleWorker || b.StoryPath == "" {
+		return b.Note
+	}
+	p := "Your task is the story file " + b.StoryPath + " - read it in full and follow its Working rules exactly."
+	if b.InjectCheckpoint {
+		p = "Read your checkpoint with `cox checkpoint inject` first, then continue from Next action. " + p
+	}
+	if b.Note != "" {
+		p += " Progress note from your previous attempt: " + b.Note
+	}
+	return p
+}
+
 // Context is a telemetry reading. Known is false when the harness cannot report usage; callers must render that as
 // "unknown", never as 0 tokens (F11).
 type Context struct {
@@ -69,8 +102,10 @@ type Harness interface {
 	Card() Capability
 	// Package renders this harness's instructions (from AGENTS.md + skills) into dst for the given role.
 	Package(role Role, dst string) error
-	// LaunchArgs returns the argv a backend uses to start this harness in worktree wt with the brief.
-	LaunchArgs(role Role, wt string, b Brief) []string
+	// LaunchArgs returns the full production argv to start this harness: executable name, model/provider syntax,
+	// effort/thinking level, trust/resource flags, and the prompt. cmd/cox composes it and threads it to the backend
+	// as data, so the backend never imports this layer (ADR 0002).
+	LaunchArgs(l Launch) []string
 	// Telemetry reports token/turn usage for a session (identified by its worktree path). It returns Known=false,
 	// never 0, when the harness has no usable log (F11).
 	Telemetry(session string) (Context, error)

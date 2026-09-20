@@ -59,6 +59,23 @@ func TestNotices(t *testing.T) {
 	}
 }
 
+// LaunchArgs is the single production entry point for adapter-owned argv: it delegates to the named adapter and errors
+// (never launches a bare command) for an unadaptered name.
+func TestLaunchArgs(t *testing.T) {
+	argv, err := LaunchArgs("claude", harness.Launch{
+		Role: harness.RoleWorker, Model: "claude-opus-4-8", Brief: harness.Brief{StoryPath: "/e/stories/s.md"},
+	})
+	if err != nil {
+		t.Fatalf("LaunchArgs claude err: %v", err)
+	}
+	if len(argv) == 0 || argv[0] != "claude" {
+		t.Fatalf("LaunchArgs claude argv = %v, want it to start with claude", argv)
+	}
+	if _, err := LaunchArgs("omp", harness.Launch{Role: harness.RoleWorker}); err == nil {
+		t.Errorf("LaunchArgs for an unadaptered harness must error")
+	}
+}
+
 func containsSub(lines []string, sub string) bool {
 	for _, l := range lines {
 		if strings.Contains(l, sub) {

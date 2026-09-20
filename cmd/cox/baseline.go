@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/nphattai/coxswain/internal/adapter/backend"
+	harnesspkg "github.com/nphattai/coxswain/internal/adapter/harness"
+	"github.com/nphattai/coxswain/internal/adapter/harness/registry"
 	"github.com/nphattai/coxswain/internal/baseline"
 	"github.com/nphattai/coxswain/internal/worktree"
 )
@@ -97,14 +99,24 @@ func cmdBaseline(args []string) int {
 	}
 
 	pol := loadPolicyQuiet(*epicDir)
-	spec := backend.HarnessSpec{Name: *harness, Model: resolveWorkerModel(pol, *harness, readStoryMeta(*epicDir, *story).Model), LaunchFlags: pol.LaunchFlags(*harness)}
+	model := resolveWorkerModel(pol, *harness, readStoryMeta(*epicDir, *story).Model)
 	brief := backend.Brief{}
+	var hb harnesspkg.Brief
 	if *condition == baseline.ConditionBare {
 		// bare: the story text only, no cox AGENTS.md / hooks injected via the story path.
 		brief.Text = readStoryText(*epicDir, *story)
+		hb = harnesspkg.Brief{Note: brief.Text}
 	} else {
 		brief.StoryPath = filepath.Join(*epicDir, "stories", *story+".md")
+		hb = harnesspkg.Brief{StoryPath: brief.StoryPath}
 	}
+	argv, err := registry.LaunchArgs(*harness, harnesspkg.Launch{
+		Role: harnesspkg.RoleWorker, Worktree: wt.Path, Model: model, Flags: pol.LaunchFlags(*harness), Brief: hb,
+	})
+	if err != nil {
+		return fail("compose launch argv: %v", err)
+	}
+	spec := backend.HarnessSpec{Name: *harness, Model: model, LaunchFlags: pol.LaunchFlags(*harness), Argv: argv}
 	sess, err := b.Spawn(wt, spec, brief)
 	if err != nil {
 		return fail("spawn baseline worker: %v", err)

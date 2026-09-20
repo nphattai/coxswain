@@ -1,6 +1,7 @@
 package pi
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/nphattai/coxswain/internal/adapter/harness"
@@ -38,6 +39,22 @@ func TestTelemetryUnknownStub(t *testing.T) {
 	}
 	if ctx.Known {
 		t.Errorf("Telemetry Known = true, want false (stub); ctx=%+v", ctx)
+	}
+}
+
+// A dispatched Pi worker's argv spells the provider/model as `--model <id>`, types the policy flags in order, then the
+// story-file prompt. Pi's explicit thinking level and packaged extension are added when the Pi launch config lands.
+func TestLaunchArgsWorker(t *testing.T) {
+	argv := New().LaunchArgs(harness.Launch{
+		Role: harness.RoleWorker, Worktree: "/wt", Model: "anthropic/claude-opus-4-8",
+		Flags: []string{"--no-approve"}, Brief: harness.Brief{StoryPath: "/epics/v2/stories/s.md"},
+	})
+	want := []string{
+		"pi", "--model", "anthropic/claude-opus-4-8", "--no-approve",
+		"Your task is the story file /epics/v2/stories/s.md - read it in full and follow its Working rules exactly.",
+	}
+	if strings.Join(argv, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("pi worker argv =\n  %v\nwant\n  %v", argv, want)
 	}
 }
 

@@ -125,7 +125,16 @@ func storyDispatch(args []string) int {
 		return fail("build brief: %v", err)
 	}
 	storyPath := filepath.Join(*epicDir, "stories", story+".md")
-	sess, err := b.Spawn(wt, backend.HarnessSpec{Name: harnessName, Model: modelID, LaunchFlags: pol.LaunchFlags(harnessName)}, backend.Brief{StoryPath: storyPath})
+	// Compose the adapter-owned argv and thread it as data into the spawn spec (launch seam, ADR 0002): the backend
+	// types this argv, it never rebuilds it or imports the harness layer.
+	argv, err := registry.LaunchArgs(harnessName, harness.Launch{
+		Role: harness.RoleWorker, Worktree: wt.Path, Model: modelID,
+		Flags: pol.LaunchFlags(harnessName), Brief: harness.Brief{StoryPath: storyPath},
+	})
+	if err != nil {
+		return fail("compose launch argv: %v", err)
+	}
+	sess, err := b.Spawn(wt, backend.HarnessSpec{Name: harnessName, Model: modelID, LaunchFlags: pol.LaunchFlags(harnessName), Argv: argv}, backend.Brief{StoryPath: storyPath})
 	if err != nil {
 		return fail("spawn: %v", err)
 	}
@@ -416,9 +425,20 @@ func storyControl(verb string, args []string) int {
 		if rerouting {
 			extra = map[string]any{"reroute": map[string]any{"from": curHarness, "to": targetHarness, "reason": *note}}
 		}
-		spec := backend.HarnessSpec{Name: targetHarness, Model: targetModel}
+		// Resume preserves its historical launch shape: model only, no policy launch flags (the resumed harness keeps
+		// its prior autonomy), argv composed from the story path plus the progress note.
+		wtPath := readWorktree(*epicDir, story)
+		resumeStoryPath := filepath.Join(*epicDir, "stories", story+".md")
+		argv, err := registry.LaunchArgs(targetHarness, harness.Launch{
+			Role: harness.RoleWorker, Worktree: wtPath, Model: targetModel,
+			Brief: harness.Brief{StoryPath: resumeStoryPath, Note: *note},
+		})
+		if err != nil {
+			return fail("compose launch argv: %v", err)
+		}
+		spec := backend.HarnessSpec{Name: targetHarness, Model: targetModel, Argv: argv}
 		prior, _ := loadSession(*epicDir, story) // previous attempt's terminal, closed before the new spawn (zero value when none)
-		sess, err := ctl.Relaunch(story, readWorktree(*epicDir, story), *note, prior, spec, extra)
+		sess, err := ctl.Relaunch(story, wtPath, *note, prior, spec, extra)
 		if err != nil {
 			return fail("%v", err)
 		}

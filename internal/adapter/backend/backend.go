@@ -26,10 +26,15 @@ type Worktree struct {
 // flags policy chose for this harness (e.g. claude --permission-mode bypassPermissions), typed after the model and
 // before the prompt; the caller resolves them from policy so the backend stays harness-agnostic.
 type HarnessSpec struct {
-	Name        string   // e.g. "claude", "codex"
-	Model       string   // optional, e.g. "claude-opus-4-8"
+	Name        string   // e.g. "claude", "codex", "pi"
+	Model       string   // optional, e.g. "claude-opus-4-8" (used by the orchestration plane)
 	Effort      string   // optional, harness-specific
 	LaunchFlags []string // optional, policy approval flags (harness.launch.<name>)
+	// Argv is the adapter-owned harness argv for the terminal plane, composed by cmd/cox/internal-arena via
+	// registry.LaunchArgs and threaded here as data (the launch seam). LaunchLine quotes and env-prefixes it; the
+	// backend never rebuilds it or imports the harness layer (ADR 0002). Empty on the orchestration plane, which
+	// hands a prompt to Orca instead.
+	Argv []string
 }
 
 // Brief is the instruction payload delivered to a worker on Spawn. StoryPath is the file the worker reads in full;

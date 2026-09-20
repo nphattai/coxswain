@@ -34,6 +34,18 @@ func Adapter(name string) (harness.Harness, bool) {
 	}
 }
 
+// LaunchArgs composes the full production argv for a launch via the named adapter. It is the single production entry
+// point for adapter-owned argv (the launch seam): wiring code (cmd/cox, internal/arena) calls it and threads the
+// resulting []string into the backend spawn spec as data, so the backend never imports the harness layer (ADR 0002).
+// An unadaptered name errors rather than launching a bare command.
+func LaunchArgs(name string, l harness.Launch) ([]string, error) {
+	h, ok := Adapter(name)
+	if !ok {
+		return nil, fmt.Errorf("harness %q has no adapter; cannot compose launch argv", name)
+	}
+	return h.LaunchArgs(l), nil
+}
+
 // Notices validates a harness against its capability card for a role and returns the reduced-mode notices to print. It
 // returns an error when the harness has no adapter or its card does not list the role. A pull wake or a manual
 // checkpoint is a notice, not a refusal: the dispatch proceeds (phase-07 item 4), and the notice tells the leader the

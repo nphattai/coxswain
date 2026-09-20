@@ -77,9 +77,19 @@ func cmdControl(args []string) int {
 	case "relaunch":
 		pol := loadPolicyQuiet(*epicDir)
 		hname := nonEmpty(meta.Harness, "claude")
-		spec := backend.HarnessSpec{Name: hname, Model: resolveWorkerModel(pol, hname, meta.Model), LaunchFlags: pol.LaunchFlags(hname)}
+		model := resolveWorkerModel(pol, hname, meta.Model)
+		wtPath := readWorktree(*epicDir, story)
+		storyPath := filepath.Join(*epicDir, "stories", story+".md")
+		argv, err := registry.LaunchArgs(hname, harness.Launch{
+			Role: harness.RoleWorker, Worktree: wtPath, Model: model,
+			Flags: pol.LaunchFlags(hname), Brief: harness.Brief{StoryPath: storyPath, Note: *note},
+		})
+		if err != nil {
+			return fail("compose launch argv: %v", err)
+		}
+		spec := backend.HarnessSpec{Name: hname, Model: model, LaunchFlags: pol.LaunchFlags(hname), Argv: argv}
 		prior, _ := loadSession(*epicDir, story) // previous attempt's terminal, closed before the new spawn (zero value when none)
-		sess, err := ctl.Relaunch(story, readWorktree(*epicDir, story), *note, prior, spec, nil)
+		sess, err := ctl.Relaunch(story, wtPath, *note, prior, spec, nil)
 		if err != nil {
 			return fail("%v", err)
 		}

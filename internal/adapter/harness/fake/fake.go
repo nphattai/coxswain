@@ -8,8 +8,8 @@ import "github.com/nphattai/coxswain/internal/adapter/harness"
 type Harness struct {
 	Cap          harness.Capability
 	Ctx          harness.Context
-	Packaged     []string // dsts passed to Package
-	LaunchedWith []harness.Brief
+	Packaged     []string         // dsts passed to Package
+	LaunchedWith []harness.Launch // launches passed to LaunchArgs
 }
 
 // New returns a fake with a minimal push card by default.
@@ -35,9 +35,9 @@ func (h *Harness) Package(role harness.Role, dst string) error {
 	return nil
 }
 
-func (h *Harness) LaunchArgs(role harness.Role, wt string, b harness.Brief) []string {
-	h.LaunchedWith = append(h.LaunchedWith, b)
-	return []string{string(h.Cap.Name), string(role), wt, b.StoryPath}
+func (h *Harness) LaunchArgs(l harness.Launch) []string {
+	h.LaunchedWith = append(h.LaunchedWith, l)
+	return []string{h.Cap.Name, string(l.Role), l.Worktree, l.Brief.StoryPath}
 }
 
 func (h *Harness) Telemetry(session string) (harness.Context, error) {
