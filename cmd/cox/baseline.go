@@ -43,6 +43,11 @@ func cmdBaseline(args []string) int {
 	if *condition != baseline.ConditionBare && *condition != baseline.ConditionV2 {
 		return fail("condition must be %q or %q, got %q", baseline.ConditionBare, baseline.ConditionV2, *condition)
 	}
+	// Validate the pi model + thinking before any spawn (or dry-run record), like dispatch/relaunch: a bare/empty or
+	// provider-less pi model must fail here, not record an unknown run after the terminal exists.
+	if err := piPreSpawnValidate(*harness, resolveWorkerModel(loadPolicyQuiet(*epicDir), *harness, readStoryMeta(*epicDir, *story).Model), ""); err != nil {
+		return fail("%v", err)
+	}
 
 	repo := *repoFlag
 	if repo == "" {
@@ -103,7 +108,8 @@ func cmdBaseline(args []string) int {
 	model := resolveWorkerModel(pol, *harness, readStoryMeta(*epicDir, *story).Model)
 	brief := backend.Brief{}
 	var hb harnesspkg.Brief
-	if *condition == baseline.ConditionBare {
+	bare := *condition == baseline.ConditionBare
+	if bare {
 		// bare: the story text only, no cox AGENTS.md / hooks injected via the story path.
 		brief.Text = readStoryText(*epicDir, *story)
 		hb = harnesspkg.Brief{Note: brief.Text}
@@ -111,9 +117,10 @@ func cmdBaseline(args []string) int {
 		brief.StoryPath = filepath.Join(*epicDir, "stories", *story+".md")
 		hb = harnesspkg.Brief{StoryPath: brief.StoryPath}
 	}
-	// Same authorization + extension flow as story dispatch: a baseline run of an unsandboxed harness is refused without
-	// --allow-unsandboxed, and a pi baseline gets its verified extension (or a pull/manual downgrade via notice).
-	extension, notices, _, err := authorizeWorker(*harness, *epicDir, *story, *allowUnsandboxed)
+	// Same authorization + extension flow as story dispatch, EXCEPT bare installs no extension: bare promises no cox
+	// hooks, and a pi extension there would infer leader, start wake supervision, and use the _leader checkpoint,
+	// contaminating the measurement.
+	extension, notices, _, err := authorizeWorker(*harness, *epicDir, *story, *allowUnsandboxed, !bare)
 	if err != nil {
 		return fail("%v", err)
 	}
@@ -134,6 +141,9 @@ func cmdBaseline(args []string) int {
 	sess, err := b.Spawn(wt, spec, brief)
 	if err != nil {
 		return fail("spawn baseline worker: %v", err)
+	}
+	if _, notice := confirmPiActivation(*harness, extension, piExtDir(*epicDir, *story)); notice != "" {
+		fmt.Println(notice)
 	}
 	fmt.Printf("baseline %s/%s spawned on %s -> %s\n", *story, *condition, wt.Path, sess.ID)
 	path, err := baseline.Record(baselinesDir, date, baseline.Row{

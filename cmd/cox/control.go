@@ -86,7 +86,7 @@ func cmdControl(args []string) int {
 		}
 		// Same authorization + extension flow as dispatch: an unsandboxed relaunch is refused without
 		// --allow-unsandboxed, and a pi relaunch keeps push/auto via its verified extension (or downgrades via notice).
-		extension, notices, _, err := authorizeWorker(hname, *epicDir, story, *allowUnsandboxed)
+		extension, notices, authority, err := authorizeWorker(hname, *epicDir, story, *allowUnsandboxed, true)
 		if err != nil {
 			return fail("%v", err)
 		}
@@ -103,11 +103,18 @@ func cmdControl(args []string) int {
 		if err != nil {
 			return fail("compose launch argv: %v", err)
 		}
+		var extra map[string]any
+		if authority == "flag" {
+			extra = map[string]any{"unsandboxed": map[string]any{"authorized_by": "--allow-unsandboxed", "harness": hname}}
+		}
 		spec := backend.HarnessSpec{Name: hname, Model: model, LaunchFlags: pol.LaunchFlags(hname), Argv: argv}
 		prior, _ := loadSession(*epicDir, story) // previous attempt's terminal, closed before the new spawn (zero value when none)
-		sess, err := ctl.Relaunch(story, wtPath, *note, prior, spec, nil)
+		sess, err := ctl.Relaunch(story, wtPath, *note, prior, spec, extra)
 		if err != nil {
 			return fail("%v", err)
+		}
+		if _, notice := confirmPiActivation(hname, extension, piExtDir(*epicDir, story)); notice != "" {
+			fmt.Println(notice)
 		}
 		if err := saveSession(*epicDir, story, sess); err != nil {
 			return fail("save session: %v", err)

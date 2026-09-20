@@ -105,20 +105,69 @@ func (h *Harness) PrepareWorktree(wt string) error {
 		if err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("codex PrepareWorktree: read %s: %w", path, err)
 		}
-		if strings.Contains(string(existing), header) {
-			return nil // already has a trust table for this directory; leave it as-is
+		updated, changed := ensureCodexTrusted(string(existing), header)
+		if !changed {
+			return nil // the project table already reads trust_level = "trusted"
 		}
-		var b strings.Builder
-		b.Write(existing)
-		if len(existing) > 0 && !strings.HasSuffix(string(existing), "\n") {
-			b.WriteByte('\n')
-		}
-		fmt.Fprintf(&b, "\n%s\ntrust_level = \"trusted\"\n", header)
-		if err := harness.AtomicWriteFile(path, []byte(b.String()), 0o600); err != nil {
+		if err := harness.AtomicWriteFile(path, []byte(updated), 0o600); err != nil {
 			return fmt.Errorf("codex PrepareWorktree: write %s: %w", path, err)
 		}
 		return nil
 	})
+}
+
+// ensureCodexTrusted returns content with the project table `header` set to trust_level = "trusted", and whether it
+// changed. It appends the table when absent, sets trust_level when the table exists without it, and REWRITES an existing
+// trust_level whose value is not "trusted" (e.g. "untrusted") - it never treats a matching header as trusted on sight.
+func ensureCodexTrusted(content, header string) (string, bool) {
+	lines := strings.Split(content, "\n")
+	hi := -1
+	for i, l := range lines {
+		if strings.TrimSpace(l) == header {
+			hi = i
+			break
+		}
+	}
+	if hi == -1 {
+		var b strings.Builder
+		b.WriteString(content)
+		if len(content) > 0 && !strings.HasSuffix(content, "\n") {
+			b.WriteByte('\n')
+		}
+		fmt.Fprintf(&b, "\n%s\ntrust_level = \"trusted\"\n", header)
+		return b.String(), true
+	}
+	// Scan the table body (until the next table header or EOF) for a trust_level key.
+	end := len(lines)
+	for i := hi + 1; i < len(lines); i++ {
+		if strings.HasPrefix(strings.TrimSpace(lines[i]), "[") {
+			end = i
+			break
+		}
+	}
+	for i := hi + 1; i < end; i++ {
+		if strings.HasPrefix(strings.TrimSpace(lines[i]), "trust_level") {
+			if tomlStringValue(lines[i]) == "trusted" {
+				return content, false // already trusted
+			}
+			lines[i] = "trust_level = \"trusted\"" // rewrite an untrusted/other value
+			return strings.Join(lines, "\n"), true
+		}
+	}
+	// Table exists but has no trust_level: insert it right after the header.
+	out := append([]string{}, lines[:hi+1]...)
+	out = append(out, "trust_level = \"trusted\"")
+	out = append(out, lines[hi+1:]...)
+	return strings.Join(out, "\n"), true
+}
+
+// tomlStringValue extracts the unquoted value of a `key = "value"` line, or "" when it cannot.
+func tomlStringValue(line string) string {
+	_, rhs, ok := strings.Cut(line, "=")
+	if !ok {
+		return ""
+	}
+	return strings.Trim(strings.TrimSpace(rhs), `"`)
 }
 
 // tomlQuoteKey renders an absolute path as a TOML basic-string quoted key, escaping backslashes and quotes so a path

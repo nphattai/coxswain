@@ -10,7 +10,7 @@
 // reported as an automatic checkpoint success.
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { spawn, execFile, type ChildProcess } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Supervisor, TurnEndLatch } from "./cox-supervisor.ts";
 import { coxArgs, resolveEpic } from "./cox-commands.ts";
@@ -18,6 +18,7 @@ import { coxArgs, resolveEpic } from "./cox-commands.ts";
 const WAIT_MAX = "25m"; // ponytail: fixed wait window matching the terminal-plane `cox wake wait` default; tune in dogfood
 const WAKE_NUDGE = "A Coxswain watcher wake arrived. Run `cox wake drain --epic $COX_EPIC`, handle each wake, then ack.";
 const EPIC_MARKER = "cox-pi.epic"; // written next to the extension by `cox workspace hooks --harness pi --epic <dir>`
+const ACTIVATED_MARKER = ".cox-pi.activated"; // written on session_start so cox can confirm Pi actually loaded this extension
 
 // readEpicMarker reads the epic binding persisted next to this module, or "" when absent/unreadable.
 function readEpicMarker(): string {
@@ -25,6 +26,16 @@ function readEpicMarker(): string {
     return readFileSync(join(import.meta.dirname, EPIC_MARKER), "utf8");
   } catch {
     return "";
+  }
+}
+
+// markActivated signals to cox that Pi loaded and ran this extension (the startup handshake). cox's dispatch waits for
+// this marker and downgrades the effective card to pull/manual if it never appears (a load/version/API failure).
+function markActivated(): void {
+  try {
+    writeFileSync(join(import.meta.dirname, ACTIVATED_MARKER), new Date().toISOString());
+  } catch {
+    /* best-effort: an unwritable extension dir leaves cox to downgrade, which is the safe direction */
   }
 }
 
@@ -97,6 +108,7 @@ export default function (pi: ExtensionAPI): void {
   // begin waiting for wakes. A fresh generation makes any callback from a prior session stale (one live generation
   // across /new, /resume, /fork, reload, quit).
   pi.on("session_start", async (_event, ctx) => {
+    markActivated(); // startup handshake: confirm to cox that Pi loaded this extension
     injectCheckpoint(ctx);
     if (isLeader) sup.sessionStart();
   });
@@ -137,10 +149,12 @@ export default function (pi: ExtensionAPI): void {
   // session starts from the saved state. Absence/failure is visible (a notify), never a silent success.
   function injectCheckpoint(ctx: ExtensionContext): void {
     if (!epic) return; // no epic binding: nothing to inject
-    execFile(cox, coxArgs.checkpointInject(epic, identity), (err, stdout) => {
+    // Inject through `cox hook session-start` so the current git HEAD (from the worktree) drives the CHECKPOINT STALE
+    // freshness check; a stale checkpoint exits non-zero with the warning on stderr, which we surface.
+    execFile(cox, coxArgs.sessionStart(epic, identity, ctx.cwd), (err, stdout, stderr) => {
       const text = (stdout || "").trim();
       if (err) {
-        ctx.ui?.notify?.(`cox checkpoint inject failed: ${String(err)}`, "warn");
+        ctx.ui?.notify?.(`cox hook session-start: ${String(stderr || err).trim()}`, "warn");
         return;
       }
       if (text) void pi.sendUserMessage(text, { deliverAs: "followUp" });

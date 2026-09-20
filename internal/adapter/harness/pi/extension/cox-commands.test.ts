@@ -12,9 +12,13 @@ test("precompact persists via `cox hook precompact`, not `cox checkpoint facts`"
   assert.notDeepEqual(args.slice(0, 2), ["checkpoint", "facts"]);
 });
 
-test("wakeWait and checkpointInject carry the epic and story", () => {
+test("wakeWait carries epic; sessionStart routes injection through the hook with the worktree (for HEAD freshness)", () => {
   assert.deepEqual(coxArgs.wakeWait("/e", "25m"), ["wake", "wait", "--max", "25m", "--epic", "/e"]);
-  assert.deepEqual(coxArgs.checkpointInject("/e", "s1"), ["checkpoint", "inject", "--epic", "/e", "--story", "s1"]);
+  const inj = coxArgs.sessionStart("/e", "s1", "/wt");
+  // The fix: inject via `cox hook session-start` (computes HEAD -> CHECKPOINT STALE works), not `cox checkpoint inject`.
+  assert.deepEqual(inj.slice(0, 2), ["hook", "session-start"]);
+  assert.ok(inj.includes("--worktree") && inj[inj.indexOf("--worktree") + 1] === "/wt");
+  assert.notDeepEqual(inj.slice(0, 2), ["checkpoint", "inject"]);
 });
 
 test("resolveEpic prefers COX_EPIC, falls back to the installed marker, else empty", () => {

@@ -19,14 +19,18 @@ export const coxArgs = {
     worktree,
   ],
 
-  // checkpointInject prints the saved checkpoint (recovery context) for injection on session start.
-  checkpointInject: (epic: string, story: string): string[] => [
-    "checkpoint",
-    "inject",
+  // sessionStart injects the saved checkpoint on session start THROUGH the hook, which computes the current git HEAD from
+  // the worktree so the CHECKPOINT STALE freshness check runs. `cox checkpoint inject` without --head has an empty HEAD
+  // and silently suppresses that warning.
+  sessionStart: (epic: string, story: string, worktree: string): string[] => [
+    "hook",
+    "session-start",
     "--epic",
     epic,
     "--story",
     story,
+    "--worktree",
+    worktree,
   ],
 };
 

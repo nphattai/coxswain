@@ -88,7 +88,7 @@ func storyDispatch(args []string) int {
 	// unless authorized by a standing card ack or --allow-unsandboxed (recorded in evidence); and a pi extension that
 	// cannot be verified downgrades the effective card to pull/manual. Extension install is out-of-tree, so this runs
 	// before the worktree is created.
-	extension, notices, unsandboxedAuthority, err := authorizeWorker(harnessName, *epicDir, story, *allowUnsandboxed)
+	extension, notices, unsandboxedAuthority, err := authorizeWorker(harnessName, *epicDir, story, *allowUnsandboxed, true)
 	if err != nil {
 		return fail("%v", err)
 	}
@@ -169,6 +169,15 @@ func storyDispatch(args []string) int {
 			ev = map[string]any{}
 		}
 		ev["unsandboxed"] = map[string]any{"authorized_by": "--allow-unsandboxed", "harness": harnessName}
+	}
+	// Confirm the pi extension actually loaded (startup handshake). An unconfirmed activation downgrades the effective
+	// card to pull/manual through the notice path and is recorded, so a load failure never leaves a silent push/auto.
+	if confirmed, notice := confirmPiActivation(harnessName, extension, piExtDir(*epicDir, story)); !confirmed {
+		fmt.Println(notice)
+		if ev == nil {
+			ev = map[string]any{}
+		}
+		ev["pi_extension"] = map[string]any{"activation": "unconfirmed", "effective_card": "pull/manual"}
 	}
 	if err := commitDispatch(b, *epicDir, slug, story, attempt, state.Leader, sess, wt.Path, ev, state.Submitted); err != nil {
 		return fail("%v", err)
@@ -463,12 +472,19 @@ func storyControl(verb string, args []string) int {
 		if err := piPreSpawnValidate(targetHarness, targetModel, ""); err != nil {
 			return fail("%v", err)
 		}
-		extension, notices, _, err := authorizeWorker(targetHarness, *epicDir, story, *allowUnsandboxed)
+		extension, notices, authority, err := authorizeWorker(targetHarness, *epicDir, story, *allowUnsandboxed, true)
 		if err != nil {
 			return fail("%v", err)
 		}
 		for _, n := range notices {
 			fmt.Println(n)
+		}
+		// Record the explicit unsandboxed authorization in the relaunch event, the same evidence initial dispatch writes.
+		if authority == "flag" {
+			if extra == nil {
+				extra = map[string]any{}
+			}
+			extra["unsandboxed"] = map[string]any{"authorized_by": "--allow-unsandboxed", "harness": targetHarness}
 		}
 		wtPath := readWorktree(*epicDir, story)
 		resumeStoryPath := filepath.Join(*epicDir, "stories", story+".md")
@@ -487,6 +503,9 @@ func storyControl(verb string, args []string) int {
 		sess, err := ctl.Relaunch(story, wtPath, *note, prior, spec, extra)
 		if err != nil {
 			return fail("%v", err)
+		}
+		if _, notice := confirmPiActivation(targetHarness, extension, piExtDir(*epicDir, story)); notice != "" {
+			fmt.Println(notice)
 		}
 		if err := saveSession(*epicDir, story, sess); err != nil {
 			return fail("save session: %v", err)

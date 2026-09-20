@@ -45,6 +45,63 @@ func TestPrepareWorktreeTrust(t *testing.T) {
 	}
 }
 
+// An existing project table with trust_level="untrusted" (or any non-trusted value) must be REWRITTEN to trusted, not
+// left as-is on a header-presence check.
+func TestPrepareWorktreeReplacesUntrusted(t *testing.T) {
+	home := t.TempDir()
+	path := filepath.Join(home, ".codex", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	wt := filepath.Join(home, "wt")
+	header := "[projects.\"" + wt + "\"]"
+	seed := header + "\ntrust_level = \"untrusted\"\n"
+	if err := os.WriteFile(path, []byte(seed), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := (&Harness{Home: home}).PrepareWorktree(wt); err != nil {
+		t.Fatalf("PrepareWorktree: %v", err)
+	}
+	got := readFile(t, path)
+	if strings.Contains(got, "trust_level = \"untrusted\"") {
+		t.Errorf("untrusted trust_level must be replaced:\n%s", got)
+	}
+	if !strings.Contains(got, "trust_level = \"trusted\"") {
+		t.Errorf("table must now be trusted:\n%s", got)
+	}
+}
+
+// ensureCodexTrusted: append when absent, no-op when already trusted, rewrite when untrusted, insert when the table has
+// no trust_level.
+func TestEnsureCodexTrusted(t *testing.T) {
+	h := "[projects.\"/wt\"]"
+	// absent -> append
+	out, changed := ensureCodexTrusted("", h)
+	if !changed || !strings.Contains(out, h) || !strings.Contains(out, "trust_level = \"trusted\"") {
+		t.Fatalf("append case: changed=%v out=%q", changed, out)
+	}
+	// already trusted -> no change
+	if _, changed := ensureCodexTrusted(h+"\ntrust_level = \"trusted\"\n", h); changed {
+		t.Errorf("already-trusted must not change")
+	}
+	// untrusted -> rewrite
+	out, changed = ensureCodexTrusted(h+"\ntrust_level = \"untrusted\"\n", h)
+	if !changed || strings.Contains(out, "untrusted") {
+		t.Errorf("untrusted must be rewritten: %q", out)
+	}
+	// table without trust_level -> insert
+	out, changed = ensureCodexTrusted(h+"\nsome_other = 1\n", h)
+	if !changed || !strings.Contains(out, "trust_level = \"trusted\"") {
+		t.Errorf("insert case: %q", out)
+	}
+	// a DIFFERENT project's trusted table must not satisfy this project
+	other := "[projects.\"/other\"]\ntrust_level = \"trusted\"\n"
+	out, changed = ensureCodexTrusted(other, h)
+	if !changed || !strings.Contains(out, h) {
+		t.Errorf("must add this project's table alongside another: %q", out)
+	}
+}
+
 // PrepareWorktree creates config.toml when it does not exist.
 func TestPrepareWorktreeCreatesConfig(t *testing.T) {
 	home := t.TempDir()

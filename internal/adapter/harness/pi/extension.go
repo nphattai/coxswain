@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"time"
 )
 
 // extensionFS embeds the Coxswain Pi extension sources so the cox binary carries them with no runtime file lookup:
@@ -25,8 +26,9 @@ const (
 	ExtensionEntry   = "cox-pi.ts"      // the -e entry file
 	extensionSupport = "cox-supervisor.ts"
 	extensionCmds    = "cox-commands.ts"
-	extensionMarker  = ".cox-pi.hash" // load/hash marker written by cox
-	extensionEpic    = "cox-pi.epic"  // epic binding the extension reads when COX_EPIC is absent (leader install)
+	extensionMarker  = ".cox-pi.hash"      // load/hash marker written by cox
+	extensionEpic    = "cox-pi.epic"       // epic binding the extension reads when COX_EPIC is absent (leader install)
+	extensionActive  = ".cox-pi.activated" // runtime handshake: the extension writes this on session_start when Pi loads it
 )
 
 // extensionSources returns the embedded {basename: content} the extension is made of, in a stable order.
@@ -93,6 +95,43 @@ func InstallExtension(root, epic string) (entryPath string, err error) {
 		return "", fmt.Errorf("pi InstallExtension: resolve entry: %w", err)
 	}
 	return abs, nil
+}
+
+// activationPath is the runtime activation marker the extension writes when Pi loads it at session_start.
+func activationPath(root string) string {
+	return filepath.Join(root, ExtensionRelDir, extensionActive)
+}
+
+// ClearActivation removes any stale activation marker before a spawn, so a prior run's marker cannot falsely confirm
+// this launch. A missing marker is not an error.
+func ClearActivation(root string) error {
+	if err := os.Remove(activationPath(root)); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+// ExtensionActivated reports whether the extension has confirmed it loaded at runtime (the marker exists). Byte-level
+// VerifyExtension proves the install is intact; ExtensionActivated proves Pi actually loaded and ran it, which a
+// version/API/load failure would leave false.
+func ExtensionActivated(root string) bool {
+	_, err := os.Stat(activationPath(root))
+	return err == nil
+}
+
+// WaitActivation polls for the activation marker up to timeout, returning true as soon as the extension confirms it
+// loaded. It is the startup handshake dispatch uses to decide whether Pi's push/auto card holds or must downgrade.
+func WaitActivation(root string, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for {
+		if ExtensionActivated(root) {
+			return true
+		}
+		if !time.Now().Before(deadline) {
+			return false
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
 }
 
 // VerifyExtension reports whether the extension installed under root is present and byte-identical to the embedded

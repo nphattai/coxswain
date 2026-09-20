@@ -14,13 +14,14 @@ import (
 // authorizes pi only with --allow-unsandboxed (installing its extension out-of-tree under the epic .cox), authorizes
 // claude silently via its standing ack, and leaves codex (sandboxed) ungated.
 func TestAuthorizeWorker(t *testing.T) {
+	t.Setenv("COX_PLANE", "terminal") // pi is gated to the terminal plane
 	epic := t.TempDir()
 	// pi without the flag is refused at the gate.
-	if _, _, _, err := authorizeWorker("pi", epic, "s1", false); err == nil || !strings.Contains(err.Error(), "unsandboxed") {
+	if _, _, _, err := authorizeWorker("pi", epic, "s1", false, true); err == nil || !strings.Contains(err.Error(), "unsandboxed") {
 		t.Fatalf("pi without --allow-unsandboxed must be refused, got %v", err)
 	}
 	// pi with the flag: authorized (authority=flag), extension installed out-of-tree under the epic .cox.
-	ext, _, auth, err := authorizeWorker("pi", epic, "s1", true)
+	ext, _, auth, err := authorizeWorker("pi", epic, "s1", true, true)
 	if err != nil {
 		t.Fatalf("pi with flag: %v", err)
 	}
@@ -30,13 +31,31 @@ func TestAuthorizeWorker(t *testing.T) {
 	if !strings.HasPrefix(ext, filepath.Join(epic, ".cox", "pi-ext")) {
 		t.Errorf("pi extension must be out-of-tree under the epic .cox, got %q", ext)
 	}
+	// pi with installExtension=false (bare baseline): authorized but NO extension is installed or passed.
+	if ext4, _, _, err := authorizeWorker("pi", epic, "s2", true, false); err != nil || ext4 != "" {
+		t.Fatalf("bare pi authorizeWorker = (ext=%q err=%v), want no extension", ext4, err)
+	}
 	// claude authorizes silently via the standing ack: no flag, no extension, authority standing-ack.
-	if ext2, _, auth2, err := authorizeWorker("claude", epic, "s1", false); err != nil || ext2 != "" || auth2 != "standing-ack" {
+	if ext2, _, auth2, err := authorizeWorker("claude", epic, "s1", false, true); err != nil || ext2 != "" || auth2 != "standing-ack" {
 		t.Fatalf("claude authorizeWorker = (ext=%q auth=%q err=%v), want (\"\", standing-ack, nil)", ext2, auth2, err)
 	}
 	// codex is sandboxed: no extension, empty authority, no error.
-	if _, _, auth3, err := authorizeWorker("codex", epic, "s1", false); err != nil || auth3 != "" {
+	if _, _, auth3, err := authorizeWorker("codex", epic, "s1", false, true); err != nil || auth3 != "" {
 		t.Fatalf("codex authorizeWorker auth=%q err=%v, want empty authority no error", auth3, err)
+	}
+}
+
+// pi is gated to the terminal plane: on the orchestration plane Orca's Spawn drops the adapter-owned argv, so
+// authorizeWorker refuses a pi launch there (even with --allow-unsandboxed).
+func TestAuthorizeWorkerPiRefusedOffTerminalPlane(t *testing.T) {
+	t.Setenv("COX_PLANE", "orchestration")
+	epic := t.TempDir()
+	if _, _, _, err := authorizeWorker("pi", epic, "s1", true, true); err == nil || !strings.Contains(err.Error(), "terminal plane") {
+		t.Fatalf("pi on the orchestration plane must be refused, got %v", err)
+	}
+	// claude is unaffected by the plane gate.
+	if _, _, _, err := authorizeWorker("claude", epic, "s1", false, true); err != nil {
+		t.Fatalf("claude must not be plane-gated, got %v", err)
 	}
 }
 
