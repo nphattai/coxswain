@@ -11,11 +11,17 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
 // ControlDir is the workspace-level cox directory that holds workspace.json, policy.json, and services/.
 const ControlDir = "cox"
+
+// aliasRe restricts a repo alias to a single path-safe component. An alias is joined into paths (filepath.Join(epicDir,
+// alias) for the worktree symlink), so a value like "..", "a/b", or "" would escape the epic dir; only [A-Za-z0-9._-]
+// (and not "." or "..") is allowed.
+var aliasRe = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 
 // Repo is one repository the workspace tracks. Name is the backend-registered name (Orca) and Path is an absolute
 // checkout path; a repo may carry either or both, and dispatch addresses it by whichever is set (an absolute path wins,
@@ -103,6 +109,8 @@ func (w *Workspace) Validate() error {
 		switch {
 		case strings.TrimSpace(r.Alias) == "":
 			return fmt.Errorf("%s: alias is required", where)
+		case r.Alias == "." || r.Alias == ".." || !aliasRe.MatchString(r.Alias):
+			return fmt.Errorf("%s: alias must be a single path-safe component ([A-Za-z0-9._-], not '.', '..', or containing a separator)", where)
 		case seen[r.Alias]:
 			return fmt.Errorf("%s: duplicate alias", where)
 		case r.Path == "" && r.Name == "":

@@ -138,6 +138,20 @@ func TestValidateFieldNamed(t *testing.T) {
 	}
 }
 
+// Validate rejects a repo alias that is not a single path-safe component (it is joined into the epic dir, so "..", a
+// separator, or a space would escape it) - PR#3 review round 3, finding 1.
+func TestValidateRejectsUnsafeAlias(t *testing.T) {
+	for _, bad := range []string{"..", ".", "a/b", "../evil", "a b", "sub/../x"} {
+		ws := &Workspace{Repos: []Repo{{Alias: bad, Path: "/x", Production: "main"}}}
+		if err := ws.Validate(); err == nil {
+			t.Errorf("unsafe alias %q must be rejected", bad)
+		}
+	}
+	if err := (&Workspace{Repos: []Repo{{Alias: "app-1.web_2", Path: "/x", Production: "main"}}}).Validate(); err != nil {
+		t.Errorf("a safe alias must pass: %v", err)
+	}
+}
+
 // DetectProduction reads a checkout's origin/HEAD, falling back to main for a non-git or remote-less path.
 func TestDetectProduction(t *testing.T) {
 	if got := DetectProduction(t.TempDir()); got != "main" {
