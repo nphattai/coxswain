@@ -77,16 +77,28 @@ func leaderEpics(epicDir string) (epics []string, inWorkspace bool) {
 // process. A dead or absent watcher means no wakes are being delivered there, so the leader hooks skip it.
 func activeEpics(wsRoot string) []string {
 	var out []string
-	matches, _ := filepath.Glob(filepath.Join(wsRoot, "*", "epics", "*"))
-	sort.Strings(matches)
-	for _, ep := range matches {
-		if info, err := os.Stat(ep); err != nil || !info.IsDir() {
-			continue
-		}
-		if pid := readPid(watchPidPath(ep)); pid > 0 && processAlive(pid) {
-			out = append(out, ep)
+	seen := map[string]bool{}
+	// Both the one-level (<ws>/<project>/epics/<slug>) and the two-level nested-project (<ws>/apps/foo/epics/<slug>)
+	// layouts, matching cox epic new and allocatePorts; a one-level-only glob leaves nested projects with no hooks.
+	for _, pat := range []string{
+		filepath.Join(wsRoot, "*", "epics", "*"),
+		filepath.Join(wsRoot, "*", "*", "epics", "*"),
+	} {
+		matches, _ := filepath.Glob(pat)
+		for _, ep := range matches {
+			if seen[ep] {
+				continue
+			}
+			if info, err := os.Stat(ep); err != nil || !info.IsDir() {
+				continue
+			}
+			if pid := readPid(watchPidPath(ep)); pid > 0 && processAlive(pid) {
+				seen[ep] = true
+				out = append(out, ep)
+			}
 		}
 	}
+	sort.Strings(out)
 	return out
 }
 

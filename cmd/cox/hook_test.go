@@ -260,6 +260,28 @@ func TestLeaderEpicsNarrowAndActive(t *testing.T) {
 	}
 }
 
+// activeEpics also finds epics under the two-level nested-project layout (<ws>/apps/foo/epics/<slug>), so nested
+// projects still get leader hooks (PR#3 review finding 4).
+func TestActiveEpicsNestedProject(t *testing.T) {
+	ws := t.TempDir()
+	mustWrite(t, filepath.Join(ws, "cox", "workspace.json"), `{"repos":[{"alias":"a","path":"/x","production":"main"}]}`)
+	nested := filepath.Join(ws, "apps", "foo", "epics", "e")
+	if err := os.MkdirAll(filepath.Join(nested, ".cox"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(nested, ".cox", "watch.pid"), strconv.Itoa(os.Getpid()))
+	got := activeEpics(ws)
+	found := false
+	for _, e := range got {
+		if e == nested {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("activeEpics did not find the nested-project epic: %v", got)
+	}
+}
+
 // Outside a workspace, hook resolution reports not-in-workspace and outsideWorkspace exits 0 (AC 4).
 func TestLeaderEpicsOutsideWorkspace(t *testing.T) {
 	t.Chdir(t.TempDir())

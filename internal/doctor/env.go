@@ -245,10 +245,23 @@ func InspectWorkspace(wsRoot string) WorkspaceReport {
 		}
 	}
 
-	// Epics at <ws>/<project>/epics/<slug>.
-	matches, _ := filepath.Glob(filepath.Join(wsRoot, "*", "epics", "*"))
-	sort.Strings(matches)
-	for _, ep := range matches {
+	// Epics at <ws>/<project>/epics/<slug> and the nested <ws>/apps/foo/epics/<slug> layout (matching cox epic new).
+	seenEpic := map[string]bool{}
+	var epicDirs []string
+	for _, pat := range []string{
+		filepath.Join(wsRoot, "*", "epics", "*"),
+		filepath.Join(wsRoot, "*", "*", "epics", "*"),
+	} {
+		m, _ := filepath.Glob(pat)
+		for _, ep := range m {
+			if !seenEpic[ep] {
+				seenEpic[ep] = true
+				epicDirs = append(epicDirs, ep)
+			}
+		}
+	}
+	sort.Strings(epicDirs)
+	for _, ep := range epicDirs {
 		if fi, err := os.Stat(ep); err != nil || !fi.IsDir() {
 			continue
 		}
