@@ -139,6 +139,22 @@ AFTER="$(git -C "$REPO" branch --format='%(refname:short)' | sort | tr '\n' ',')
 [ "$BEFORE" = "$AFTER" ] && ok "branch set unchanged" || no "branch set changed ($BEFORE -> $AFTER)"
 "$COX" doctor --root "$WS" --epic "$EPIC" >/dev/null 2>&1 && ok "doctor exit 0 after attach" || no "doctor non-zero after attach"
 
+step "8. true fresh clone: epic branch only on origin, cox epic attach fetches and creates the local branch"
+pkill -f "cox watch --epic $WS" 2>/dev/null || true
+BARE="$TMP/origin.git"
+git init -q --bare "$BARE"
+git -C "$REPO" remote add origin "$BARE" 2>/dev/null || git -C "$REPO" remote set-url origin "$BARE"
+git -C "$REPO" push -q origin epic/hello
+# Remove the worktree + symlink first (so the branch can be deleted), then drop the LOCAL branch and .cox: now epic/hello
+# exists only on origin, like a machine that has never checked it out.
+t="$(readlink "$EPIC/app" 2>/dev/null)"; [ -n "$t" ] && git -C "$REPO" worktree remove --force "$t" 2>/dev/null
+rm -f "$EPIC/app"; rm -rf "$EPIC/.cox"
+git -C "$REPO" branch -D epic/hello >/dev/null 2>&1
+if git -C "$REPO" show-ref --verify --quiet refs/heads/epic/hello; then no "precondition: local epic/hello should be gone"; else ok "local epic/hello removed (only on origin)"; fi
+"$COX" epic attach --epic "$EPIC" >/dev/null 2>&1 && ok "attach (fresh clone)" || no "fresh-clone attach failed"
+git -C "$REPO" show-ref --verify --quiet refs/heads/epic/hello && ok "local epic/hello recreated from origin" || no "local epic/hello not recreated from origin"
+"$COX" doctor --root "$WS" --epic "$EPIC" >/dev/null 2>&1 && ok "doctor exit 0 after fresh-clone attach" || no "doctor non-zero after fresh-clone attach"
+
 echo
 echo "RESULT: $pass passed, $fail failed"
 [ $fail -eq 0 ]

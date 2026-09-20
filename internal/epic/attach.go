@@ -91,15 +91,21 @@ func Attach(o AttachOptions) error {
 			}
 		}
 
-		// Fetch the existing epic branch so a fresh clone has it locally; best-effort for a path checkout.
+		// On a true fresh clone epic/<slug> exists only on origin: git fetch brings origin/<slug> but not the local
+		// refs/heads/<slug>, so basing the worktree on the (missing) local branch fails. Fetch the epic branch, then base
+		// the worktree on the local branch when it exists (never reset it) or on the fetched origin/<branch> when it does
+		// not (git creates the local tracking branch from it; nothing is deleted). Only a path checkout can be inspected;
+		// a name ref is left to the backend.
+		base := branch
 		if strings.HasPrefix(ref, "/") {
 			if out, err := exec.Command("git", "-C", ref, "fetch", "origin", branch).CombinedOutput(); err != nil {
 				fmt.Fprintf(o.warn(), "warn: fetch %s for %s: %v: %s\n", branch, r.alias, err, strings.TrimSpace(string(out)))
 			}
+			if !localBranchExists(ref, branch) {
+				base = "origin/" + branch
+			}
 		}
-		// Check out the EXISTING branch at its own tip (base = the branch itself, so it is never reset to production and
-		// no branch is created or deleted).
-		wt, err := worktree.Ensure(o.Runtime, ref, branch, branch)
+		wt, err := worktree.Ensure(o.Runtime, ref, branch, base)
 		if err != nil {
 			return fmt.Errorf("attach worktree for %s: %w", r.alias, err)
 		}
@@ -148,6 +154,11 @@ func readEpicRepos(epicDir string) ([]epicRepo, error) {
 		out = append(out, r)
 	}
 	return out, nil
+}
+
+// localBranchExists reports whether refs/heads/<branch> exists in the checkout at repoPath.
+func localBranchExists(repoPath, branch string) bool {
+	return exec.Command("git", "-C", repoPath, "show-ref", "--verify", "--quiet", "refs/heads/"+branch).Run() == nil
 }
 
 // worktreeBranch returns the checked-out branch at path, or an error when path is not a readable git worktree.

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/nphattai/coxswain/internal/adapter/backend"
+	"github.com/nphattai/coxswain/internal/workspace"
 )
 
 // attachBackend checks out an EXISTING branch into a fresh worktree (no -b), which is what re-attach needs: the epic
@@ -21,7 +22,14 @@ type attachBackend struct {
 func (a *attachBackend) WorktreeCreate(repo, branch, base string) (backend.Worktree, error) {
 	a.gotRepos = append(a.gotRepos, repo)
 	path := filepath.Join(a.wtBase, "wt-"+strings.ReplaceAll(branch, "/", "-"))
-	cmd := exec.Command("git", "-C", a.repo, "worktree", "add", path, branch)
+	// Mirror orca/git: an existing local branch is checked out as-is; a missing one is created from the base ref (which
+	// attach sets to origin/<branch> on a fresh clone).
+	var cmd *exec.Cmd
+	if localBranchExists(a.repo, branch) {
+		cmd = exec.Command("git", "-C", a.repo, "worktree", "add", path, branch)
+	} else {
+		cmd = exec.Command("git", "-C", a.repo, "worktree", "add", "-b", branch, path, base)
+	}
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return backend.Worktree{}, &execErr{string(out), err}
 	}
@@ -144,6 +152,64 @@ func TestAttachReusesCleanWorktree(t *testing.T) {
 	}
 	if after, _ := filepath.EvalSymlinks(filepath.Join(epicDir, "app")); after != before {
 		t.Errorf("symlink target changed: %q -> %q", before, after)
+	}
+}
+
+// On a true fresh clone the epic branch exists only on origin (no local refs/heads/<slug>). Attach fetches it and bases
+// the worktree on the fetched origin/<slug>, creating the local tracking branch - it must not fail on the missing local
+// branch (PR#3 review round 2, finding 2).
+func TestAttachFreshCloneCreatesLocalBranchFromOrigin(t *testing.T) {
+	// A seed repo with main + epic/fresh, pushed to a bare origin.
+	seed := makeRepo(t)
+	origin := t.TempDir()
+	git := func(dir string, args ...string) {
+		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	git("", "init", "-q", "--bare", origin)
+	git(seed, "checkout", "-q", "-b", "epic/fresh")
+	git(seed, "commit", "-q", "--allow-empty", "-m", "epic work")
+	git(seed, "checkout", "-q", "main")
+	git(seed, "remote", "add", "origin", origin)
+	git(seed, "push", "-q", "origin", "main", "epic/fresh")
+
+	// The clone this machine works from: origin/epic/fresh exists, local epic/fresh does not.
+	clone := t.TempDir()
+	git("", "clone", "-q", origin, clone)
+	if localBranchExists(clone, "epic/fresh") {
+		t.Fatal("precondition: clone must not have a local epic/fresh branch")
+	}
+
+	wsRoot := t.TempDir()
+	t.Setenv("HOME", t.TempDir())
+	seedWs := &workspace.Workspace{Repos: []workspace.Repo{{Alias: "app", Path: clone, Production: "main"}}}
+	if _, err := workspace.Init(wsRoot, seedWs); err != nil {
+		t.Fatal(err)
+	}
+	ws, _ := workspace.Load(wsRoot)
+	// A cloned epic dir with no .cox, its repos file, and a DESIGN.md.
+	epicDir := filepath.Join(wsRoot, "proj", "epics", "fresh")
+	if err := os.MkdirAll(epicDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range map[string]string{"DESIGN.md": "# fresh\n", "repos": "app " + clone + "\n"} {
+		if err := os.WriteFile(filepath.Join(epicDir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	be := &attachBackend{gitBackend: gitBackend{t: t, repo: clone, wtBase: t.TempDir()}}
+	if err := Attach(AttachOptions{Runtime: be, Workspace: ws, WsRoot: wsRoot, EpicDir: epicDir}); err != nil {
+		t.Fatalf("fresh-clone attach failed: %v", err)
+	}
+	if !localBranchExists(clone, "epic/fresh") {
+		t.Error("attach must create the local epic/fresh branch from origin/epic/fresh")
+	}
+	if _, err := os.Stat(filepath.Join(epicDir, ".cox", "epic.json")); err != nil {
+		t.Errorf(".cox/epic.json not recreated: %v", err)
 	}
 }
 
