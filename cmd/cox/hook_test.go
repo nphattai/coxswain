@@ -39,7 +39,7 @@ func TestPromptDrainSuppressesEmptyDoorbell(t *testing.T) {
 	epic := t.TempDir()
 	var out, errW bytes.Buffer
 	in := promptJSON("You have 3 orchestration messages. Run `orca orchestration check --run r` to read them.")
-	code := runPromptDrain(epic, "claude", in, &out, &errW)
+	code := runPromptDrainAll([]string{epic}, "claude", in, &out, &errW)
 	if code != 2 {
 		t.Fatalf("empty doorbell must exit 2, got %d", code)
 	}
@@ -56,7 +56,7 @@ func TestPromptDrainSuppressesDoorbellWithLeadingNewline(t *testing.T) {
 	epic := t.TempDir()
 	var out, errW bytes.Buffer
 	in := promptJSON("\nYou have 1 orchestration message. Run `orca orchestration check --run r` to read them.")
-	code := runPromptDrain(epic, "claude", in, &out, &errW)
+	code := runPromptDrainAll([]string{epic}, "claude", in, &out, &errW)
 	if code != 2 {
 		t.Fatalf("leading-newline doorbell must exit 2, got %d", code)
 	}
@@ -71,7 +71,7 @@ func TestPromptDrainDoorbellWithWakePassesThrough(t *testing.T) {
 	seedWake(t, epic, wake.KindWorkerDone)
 	var out, errW bytes.Buffer
 	in := promptJSON("You have 1 orchestration message. Run `orca orchestration check` to read it.")
-	code := runPromptDrain(epic, "claude", in, &out, &errW)
+	code := runPromptDrainAll([]string{epic}, "claude", in, &out, &errW)
 	if code != 0 {
 		t.Fatalf("doorbell with a wake must not block, got %d", code)
 	}
@@ -84,7 +84,7 @@ func TestPromptDrainDoorbellWithWakePassesThrough(t *testing.T) {
 func TestPromptDrainNormalPromptNoWake(t *testing.T) {
 	epic := t.TempDir()
 	var out, errW bytes.Buffer
-	code := runPromptDrain(epic, "claude", promptJSON("fix the failing test"), &out, &errW)
+	code := runPromptDrainAll([]string{epic}, "claude", promptJSON("fix the failing test"), &out, &errW)
 	if code != 0 || out.Len() != 0 || errW.Len() != 0 {
 		t.Fatalf("normal prompt must be silent exit 0, got code=%d out=%q err=%q", code, out.String(), errW.String())
 	}
@@ -95,7 +95,7 @@ func TestStopRewakeParkedNoTick(t *testing.T) {
 	epic := t.TempDir()
 	seedEvent(t, epic, state.Working, state.Parked)
 	var out bytes.Buffer
-	code := runStopRewake(rewakeCfg{epicDir: epic, maxWait: 0, batchMax: time.Second, poll: time.Second, out: &out, sleep: noSleep})
+	code := runStopRewake(rewakeCfg{epics: []string{epic}, maxWait: 0, batchMax: time.Second, poll: time.Second, out: &out, sleep: noSleep})
 	if code != 0 {
 		t.Fatalf("parked story must not tick, got exit %d (%q)", code, out.String())
 	}
@@ -106,7 +106,7 @@ func TestStopRewakeWorkingTicks(t *testing.T) {
 	epic := t.TempDir()
 	seedEvent(t, epic, state.Submitted, state.Working)
 	var out bytes.Buffer
-	code := runStopRewake(rewakeCfg{epicDir: epic, maxWait: 0, batchMax: time.Second, poll: time.Second, out: &out, sleep: noSleep})
+	code := runStopRewake(rewakeCfg{epics: []string{epic}, maxWait: 0, batchMax: time.Second, poll: time.Second, out: &out, sleep: noSleep})
 	if code != 2 {
 		t.Fatalf("working story must tick, got exit %d", code)
 	}
@@ -121,7 +121,7 @@ func TestStopRewakeUrgentExitsAtOnce(t *testing.T) {
 	seedWake(t, epic, wake.KindWorkerDone)
 	slept := 0
 	var out bytes.Buffer
-	code := runStopRewake(rewakeCfg{epicDir: epic, maxWait: time.Second, batchMax: time.Hour, poll: time.Second, out: &out, sleep: func(time.Duration) { slept++ }})
+	code := runStopRewake(rewakeCfg{epics: []string{epic}, maxWait: time.Second, batchMax: time.Hour, poll: time.Second, out: &out, sleep: func(time.Duration) { slept++ }})
 	if code != 2 {
 		t.Fatalf("urgent wake must exit 2, got %d", code)
 	}
@@ -136,7 +136,7 @@ func TestStopRewakeRoutineBatches(t *testing.T) {
 	seedWake(t, epic, wake.KindStatus)
 	var out bytes.Buffer
 	// poll 1s, batchMax 2s: iters accumulate batch 0 ->1 ->2, third iter (batch>=2) rewakes.
-	code := runStopRewake(rewakeCfg{epicDir: epic, maxWait: time.Minute, batchMax: 2 * time.Second, poll: time.Second, out: &out, sleep: noSleep})
+	code := runStopRewake(rewakeCfg{epics: []string{epic}, maxWait: time.Minute, batchMax: 2 * time.Second, poll: time.Second, out: &out, sleep: noSleep})
 	if code != 2 {
 		t.Fatalf("batched routine wake must eventually rewake, got %d", code)
 	}
@@ -152,7 +152,7 @@ func TestPromptDrainCodexPayloadPassesThrough(t *testing.T) {
 	seedWake(t, epic, wake.KindWorkerDone)
 	codexIn := strings.NewReader(`{"session_id":"s1","turn_id":"t1","cwd":"/w","model":"gpt-5.6-sol","hook_event_name":"UserPromptSubmit","prompt":"continue"}`)
 	var out, errW bytes.Buffer
-	if code := runPromptDrain(epic, "codex", codexIn, &out, &errW); code != 0 {
+	if code := runPromptDrainAll([]string{epic}, "codex", codexIn, &out, &errW); code != 0 {
 		t.Fatalf("codex prompt with a wake must exit 0, got %d", code)
 	}
 	if !bytes.Contains(out.Bytes(), []byte("Watcher wakes")) {
@@ -165,7 +165,7 @@ func TestPromptDrainCodexSuppressesDoorbellWithBlockDecision(t *testing.T) {
 	epic := t.TempDir()
 	in := promptJSON("You have 2 orchestration messages. Run `orca orchestration check` to read them.")
 	var out, errW bytes.Buffer
-	if code := runPromptDrain(epic, "codex", in, &out, &errW); code != 0 {
+	if code := runPromptDrainAll([]string{epic}, "codex", in, &out, &errW); code != 0 {
 		t.Fatalf("codex suppression must exit 0 (block via stdout), got %d", code)
 	}
 	var dec map[string]string
@@ -182,7 +182,7 @@ func TestStopRewakeCodexReopensWithBlockDecision(t *testing.T) {
 	epic := t.TempDir()
 	seedWake(t, epic, wake.KindWorkerDone)
 	var stderrOut, stdout bytes.Buffer
-	code := runStopRewake(rewakeCfg{epicDir: epic, harness: "codex", maxWait: time.Second, batchMax: time.Hour, poll: time.Second, out: &stderrOut, stdout: &stdout, sleep: noSleep})
+	code := runStopRewake(rewakeCfg{epics: []string{epic}, harness: "codex", maxWait: time.Second, batchMax: time.Hour, poll: time.Second, out: &stderrOut, stdout: &stdout, sleep: noSleep})
 	if code != 0 {
 		t.Fatalf("codex reopen must exit 0, got %d", code)
 	}
@@ -212,6 +212,62 @@ func TestRefreshFacts(t *testing.T) {
 	twice := refreshFacts(once, "## Facts (máy tính)\n- head: bbb\n", "2026-09-16T11:00:00Z")
 	if strings.Count(twice, factsHeading) != 1 || !strings.Contains(twice, "head: bbb") || strings.Contains(twice, "head: aaa") {
 		t.Fatalf("second refresh stacked or kept stale facts:\n%s", twice)
+	}
+}
+
+// prompt-drain attaches the wakes of every active epic, each under its own epic name (AC 4: two-epic drain).
+func TestPromptDrainAllAcrossEpics(t *testing.T) {
+	e1 := t.TempDir()
+	e2 := t.TempDir()
+	seedWake(t, e1, wake.KindWorkerDone)
+	seedWake(t, e2, wake.KindStatus)
+	var out, errW bytes.Buffer
+	if code := runPromptDrainAll([]string{e1, e2}, "claude", promptJSON("continue"), &out, &errW); code != 0 {
+		t.Fatalf("multi-epic drain exit %d", code)
+	}
+	s := out.String()
+	if !strings.Contains(s, filepath.Base(e1)) || !strings.Contains(s, filepath.Base(e2)) {
+		t.Fatalf("expected both epic names in drain output:\n%s", s)
+	}
+}
+
+// leaderEpics narrows to an explicit --epic, and otherwise returns only the epics with a live watcher under the
+// workspace found by walking up from the cwd (AC 4: narrowing --epic, active-epic discovery).
+func TestLeaderEpicsNarrowAndActive(t *testing.T) {
+	eps, in := leaderEpics("/x/proj/epics/foo")
+	if !in || len(eps) != 1 || eps[0] != "/x/proj/epics/foo" {
+		t.Fatalf("narrowing: got %v,%v", eps, in)
+	}
+
+	ws := t.TempDir()
+	mustWrite(t, filepath.Join(ws, "cox", "workspace.json"), `{"repos":[{"alias":"a","path":"/x","production":"main"}]}`)
+	live := filepath.Join(ws, "proj", "epics", "live")
+	dead := filepath.Join(ws, "proj", "epics", "dead")
+	if err := os.MkdirAll(filepath.Join(live, ".cox"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dead, ".cox"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(live, ".cox", "watch.pid"), strconv.Itoa(os.Getpid()))
+	mustWrite(t, filepath.Join(dead, ".cox", "watch.pid"), "999999")
+	got := activeEpics(ws)
+	if len(got) == 1 && got[0] == dead {
+		t.Skip("pid 999999 happens to be alive on this host")
+	}
+	if len(got) != 1 || got[0] != live {
+		t.Fatalf("activeEpics = %v, want [%s]", got, live)
+	}
+}
+
+// Outside a workspace, hook resolution reports not-in-workspace and outsideWorkspace exits 0 (AC 4).
+func TestLeaderEpicsOutsideWorkspace(t *testing.T) {
+	t.Chdir(t.TempDir())
+	if _, in := leaderEpics(""); in {
+		t.Error("a temp dir with no cox/workspace.json above it must not resolve as inside a workspace")
+	}
+	if code := outsideWorkspace("prompt-drain"); code != 0 {
+		t.Errorf("outsideWorkspace exit %d, want 0", code)
 	}
 }
 

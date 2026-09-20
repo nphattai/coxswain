@@ -38,12 +38,44 @@ type policyOption struct {
 }
 
 // doctorOutput wraps the installation report with the harness card table (and, when --epic resolves a policy, the
-// per-option adapter column), so `cox doctor --json` carries both.
+// per-option adapter column), the recognised v2 workspaces, and the environment checks, so `cox doctor --json` carries
+// the whole setup picture.
 type doctorOutput struct {
 	doctor.Report
-	Harnesses     []harnessCard  `json:"harnesses"`
-	PolicyOptions []policyOption `json:"policy_options,omitempty"`
-	Quota         quotaDoctor    `json:"quota"`
+	Harnesses     []harnessCard            `json:"harnesses"`
+	PolicyOptions []policyOption           `json:"policy_options,omitempty"`
+	Quota         quotaDoctor              `json:"quota"`
+	Workspaces    []doctor.WorkspaceReport `json:"workspaces"`
+	Checks        []doctor.Check           `json:"checks"`
+}
+
+// adapteredHarness reports whether a harness name has a registered adapter, injected into internal/doctor so that
+// package stays free of the harness registry.
+func adapteredHarness(name string) bool {
+	_, ok := registry.Adapter(name)
+	return ok
+}
+
+// environmentChecks builds the setup checks: exactly one cox on PATH, orca present and (when present) `orca status`
+// reachable, the policy's harness binaries, and the optional review/quota binaries only when policy names them.
+func environmentChecks(pol *workspace.Policy) []doctor.Check {
+	var checks []doctor.Check
+	checks = append(checks, doctor.SingleOnPATH("cox"))
+	orca := doctor.Present("orca", "install Orca and put it on PATH")
+	checks = append(checks, orca)
+	if orca.Status == doctor.StatusPass {
+		checks = append(checks, doctor.Reachable("orca", []string{"status"}, 10*time.Second))
+	}
+	checks = append(checks, doctor.HarnessBinaries(pol, adapteredHarness)...)
+	if pol != nil {
+		if c := doctor.OptionalBinary("review", pol.Review.Binary); c != nil {
+			checks = append(checks, *c)
+		}
+		if c := doctor.OptionalBinary("quota", pol.Quota.Binary); c != nil {
+			checks = append(checks, *c)
+		}
+	}
+	return checks
 }
 
 // quotaDoctor is the doctor view of the quota-axi adapter and any manual readings in effect: whether the binary is
@@ -62,17 +94,49 @@ type quotaDoctor struct {
 // harness declared in that epic's resolved policy options, then exits 1 if any installation issue was found (version
 // divergence, or a live v1 .run beside a v2 .cox), 0 otherwise.
 func cmdDoctor(args []string) int {
+	var rootFlags repoList
 	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	asJSON := fs.Bool("json", false, "emit JSON")
 	epicDir := fs.String("epic", "", "epic directory (optional; adds an adapter column for its policy harness options)")
+	fs.Var(&rootFlags, "root", "extra root to scan for workspaces (repeatable; adds to $HOME/Work, $ORCA_WORKSPACES, $COX_ROOTS)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 
 	now := time.Now().UTC()
 	rep := doctor.Run(doctor.DefaultRoots())
-	out := doctorOutput{Report: rep, Harnesses: harnessCards(codexCoxHooksInstalled(".")), PolicyOptions: policyOptions(*epicDir), Quota: quotaReport(*epicDir)}
+
+	// Recognise every v2 workspace under the roots, always including the workspace that contains --epic or the cwd.
+	roots := doctor.Roots(rootFlags)
+	target := *epicDir
+	if target == "" {
+		target = "."
+	}
+	var explicit []string
+	if wsRoot, err := findWorkspaceRoot(target); err == nil {
+		explicit = []string{wsRoot}
+	}
+	wsDirs := doctor.FindWorkspaces(roots, explicit)
+	wsReports := make([]doctor.WorkspaceReport, 0, len(wsDirs))
+	for _, d := range wsDirs {
+		wsReports = append(wsReports, doctor.InspectWorkspace(d))
+	}
+
+	// The primary policy for the environment checks: the workspace of --epic/cwd, else the first workspace found.
+	primaryWs := ""
+	if len(explicit) > 0 {
+		primaryWs = explicit[0]
+	} else if len(wsDirs) > 0 {
+		primaryWs = wsDirs[0]
+	}
+	var pol *workspace.Policy
+	if primaryWs != "" {
+		pol, _ = workspace.LoadPolicy(primaryWs)
+	}
+	checks := environmentChecks(pol)
+
+	out := doctorOutput{Report: rep, Harnesses: harnessCards(codexCoxHooksInstalled(".")), PolicyOptions: policyOptions(*epicDir), Quota: quotaReport(*epicDir), Workspaces: wsReports, Checks: checks}
 	var watcherIssues []string
 
 	if *asJSON {
@@ -114,6 +178,45 @@ func cmdDoctor(args []string) int {
 				}
 			}
 		}
+		if len(wsReports) == 0 {
+			fmt.Println("no cox workspaces found (looked under", strings.Join(roots, ", ")+")")
+		}
+		for _, w := range wsReports {
+			if !w.Valid {
+				fmt.Printf("workspace %s  INVALID: %s\n", w.Root, w.Error)
+				continue
+			}
+			hooks := make([]string, 0, len(w.Hooks))
+			for _, h := range sortedKeys(w.Hooks) {
+				hooks = append(hooks, fmt.Sprintf("%s=%s", h, yesNo(w.Hooks[h])))
+			}
+			fmt.Printf("workspace %s  (%d repo(s), hooks: %s)\n", w.Root, w.Repos, strings.Join(hooks, " "))
+			for _, ep := range w.Epics {
+				watch := "watcher dead"
+				if ep.WatcherAlive {
+					watch = "watcher alive"
+				}
+				status := ep.Status
+				if status == "" {
+					status = "no Status:"
+				}
+				fmt.Printf("    epic %s  [%s]  %s\n", ep.Slug, status, watch)
+			}
+			for _, alias := range w.PolicyInRepo {
+				fmt.Fprintf(os.Stderr, "WARN: repo %q checkout carries cox/policy.json; nothing reads it and it drifts from the workspace policy - delete it\n", alias)
+			}
+		}
+		fmt.Println("checks:")
+		for _, c := range checks {
+			line := fmt.Sprintf("  %-22s %s", c.Name, c.Status)
+			if c.Detail != "" {
+				line += "  " + c.Detail
+			}
+			if c.Fix != "" {
+				line += "  (fix: " + c.Fix + ")"
+			}
+			fmt.Println(line)
+		}
 		fmt.Println("harness cards:")
 		for _, c := range out.Harnesses {
 			fmt.Printf("  %-8s roles=%-13s wake=%-4s checkpoint=%-6s doorbell=%-5t interrupt=%-5t telemetry=%-5t adapter=%s\n",
@@ -141,10 +244,47 @@ func cmdDoctor(args []string) int {
 			fmt.Fprintln(os.Stderr, "ISSUE:", iss)
 		}
 	}
-	if len(rep.Issues) > 0 || len(watcherIssues) > 0 {
-		return 1
+
+	// Exit code: any fail (an install issue, a dead watcher with open stories, an invalid workspace, or a failed check)
+	// is 1; any unknown with no fail (e.g. orca present but `orca status` unreachable) is 3; otherwise 0.
+	hasFail := len(rep.Issues) > 0 || len(watcherIssues) > 0
+	hasUnknown := false
+	for _, w := range wsReports {
+		if !w.Valid {
+			hasFail = true
+		}
 	}
-	return 0
+	for _, c := range checks {
+		switch c.Status {
+		case doctor.StatusFail:
+			hasFail = true
+		case doctor.StatusUnknown:
+			hasUnknown = true
+		}
+	}
+	return doctorExit(hasFail, hasUnknown)
+}
+
+// doctorExit maps the aggregate check outcome to an exit code: any fail is 1, any unknown with no fail is 3, else 0.
+func doctorExit(hasFail, hasUnknown bool) int {
+	switch {
+	case hasFail:
+		return 1
+	case hasUnknown:
+		return 3
+	default:
+		return 0
+	}
+}
+
+// sortedKeys returns a map's keys sorted, for stable doctor output.
+func sortedKeys(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // policyDriftFor lists the template policy keys the epic's workspace policy is missing (drift), or nil when the

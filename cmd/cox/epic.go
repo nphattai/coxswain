@@ -16,12 +16,14 @@ import (
 // cmdEpic implements `cox epic new|stories|close`.
 func cmdEpic(args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: cox epic new|stories|close|arena|design ...")
+		fmt.Fprintln(os.Stderr, "usage: cox epic new|attach|stories|close|arena|design ...")
 		return 2
 	}
 	switch args[0] {
 	case "new":
 		return epicNew(args[1:])
+	case "attach":
+		return epicAttach(args[1:])
 	case "stories":
 		return epicStories(args[1:])
 	case "close":
@@ -68,6 +70,28 @@ func epicNew(args []string) int {
 	if err != nil {
 		return fail("%v", err)
 	}
+	// An ad-hoc alias=ref persists into workspace.json through the same path add-repo uses, instead of living only in
+	// memory for this one epic (AC 4). Then reload so the epic reads the registered repo.
+	for _, rf := range repos {
+		alias, _, hasRef := strings.Cut(rf, "=")
+		if !hasRef {
+			continue
+		}
+		if _, ok := ws.Repo(alias); ok {
+			continue
+		}
+		r, perr := parseRepoFlag(rf)
+		if perr != nil {
+			return fail("%v", perr)
+		}
+		if perr := workspace.AddRepo(wsRoot, r); perr != nil {
+			return fail("%v", perr)
+		}
+	}
+	ws, err = workspace.Load(wsRoot)
+	if err != nil {
+		return fail("%v", err)
+	}
 	aliases, err := resolveRepoAliases(ws, repos)
 	if err != nil {
 		return fail("%v", err)
@@ -84,22 +108,46 @@ func epicNew(args []string) int {
 	return 0
 }
 
-// resolveRepoAliases turns the --repo values into aliases, registering any alias=ref pair into the in-memory workspace.
+// epicAttach re-attaches an existing epic dir (fresh clone / discarded .cox) via internal/epic.Attach: it recreates
+// .cox/epic.json, the worktrees on the existing epic/<slug> branch, the alias symlinks and the trust entries, without
+// touching branches. It refuses on an existing .cox/ or a dirty worktree.
+func epicAttach(args []string) int {
+	fs := flag.NewFlagSet("epic attach", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	epicDir := fs.String("epic", "", "epic directory to re-attach")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if *epicDir == "" {
+		return usageErr("cox epic attach --epic <dir>")
+	}
+	abs, err := filepath.Abs(*epicDir)
+	if err != nil {
+		return fail("%v", err)
+	}
+	wsRoot, err := findWorkspaceRoot(abs)
+	if err != nil {
+		return fail("%v", err)
+	}
+	ws, err := workspace.Load(wsRoot)
+	if err != nil {
+		return fail("%v", err)
+	}
+	rt := orca.New(os.Getenv("ORCA_RUN_ID"))
+	if err := epic.Attach(epic.AttachOptions{Runtime: rt, Workspace: ws, WsRoot: wsRoot, EpicDir: abs}); err != nil {
+		return fail("%v", err)
+	}
+	fmt.Printf("attached epic %s\n", abs)
+	return 0
+}
+
+// resolveRepoAliases turns the --repo values into aliases, requiring each to be registered in workspace.json (an
+// alias=ref pair is persisted by the caller before this runs, so by here every alias must resolve).
 func resolveRepoAliases(ws *workspace.Workspace, repos repoList) ([]string, error) {
 	var aliases []string
 	for _, r := range repos {
-		alias, ref, hasRef := strings.Cut(r, "=")
-		if hasRef {
-			if _, ok := ws.Repo(alias); !ok {
-				repo := workspace.Repo{Alias: alias, Production: "main"}
-				if strings.HasPrefix(ref, "/") {
-					repo.Path = ref
-				} else {
-					repo.Name = ref
-				}
-				ws.Repos = append(ws.Repos, repo)
-			}
-		} else if _, ok := ws.Repo(alias); !ok {
+		alias, _, _ := strings.Cut(r, "=")
+		if _, ok := ws.Repo(alias); !ok {
 			return nil, fmt.Errorf("repo alias %q not in workspace.json (use alias=ref to register)", alias)
 		}
 		aliases = append(aliases, alias)

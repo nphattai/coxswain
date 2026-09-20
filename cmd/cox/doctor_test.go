@@ -62,8 +62,9 @@ func TestDoctorCodexWakePushWhenHooksInstalled(t *testing.T) {
 	}
 }
 
-// The policy-options column marks each declared harness adapter yes|no: the template policy lists omp and opencode,
-// which have no adapter, alongside claude and codex, which do.
+// The policy-options column marks each declared harness adapter yes|no. The seed template lists only adaptered
+// harnesses (claude, codex) so a minimal install passes doctor clean (arena round 1, adversary claim 1, accepted); a
+// non-adaptered option, when a user adds one, still resolves as adapter=false.
 func TestDoctorPolicyOptions(t *testing.T) {
 	pol, err := workspace.LoadPolicyFile(filepath.Join("..", "..", "templates", "policy.json"))
 	if err != nil {
@@ -73,10 +74,22 @@ func TestDoctorPolicyOptions(t *testing.T) {
 	for _, o := range policyOptionsFrom(pol) {
 		got[o.Name] = o.Adapter
 	}
-	for name, want := range map[string]bool{"claude": true, "codex": true, "omp": false, "opencode": false} {
+	for name, want := range map[string]bool{"claude": true, "codex": true} {
 		if got[name] != want {
 			t.Errorf("option %q adapter=%v, want %v", name, got[name], want)
 		}
+	}
+	if _, ok := got["omp"]; ok {
+		t.Errorf("seed template must list only adaptered harnesses in worker.options, got %v", got)
+	}
+	// A user-added non-adaptered option still resolves as adapter=false.
+	pol.Harness.Worker.Options = append(pol.Harness.Worker.Options, "omp")
+	adapters := map[string]bool{}
+	for _, o := range policyOptionsFrom(pol) {
+		adapters[o.Name] = o.Adapter
+	}
+	if adapters["omp"] {
+		t.Errorf("omp must resolve adapter=false")
 	}
 }
 

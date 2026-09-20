@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -34,8 +35,8 @@ func cmdHook(args []string) int {
 	name := args[0]
 	fs := flag.NewFlagSet("hook "+name, flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	epicDir := fs.String("epic", os.Getenv("COX_EPIC"), "epic directory")
-	story := fs.String("story", os.Getenv("COX_STORY"), "story id")
+	epicDir := fs.String("epic", "", "epic directory (optional; narrows to one epic instead of every active epic in the workspace)")
+	story := fs.String("story", "", "story id (optional; the workspace path uses the leader checkpoint)")
 	worktree := fs.String("worktree", ".", "worktree path")
 	harnessName := fs.String("harness", "claude", "invoking harness: claude | codex (controls the block/continue signal)")
 	if err := fs.Parse(args[1:]); err != nil {
@@ -48,13 +49,81 @@ func cmdHook(args []string) int {
 	case "stop-rewake":
 		return hookStopRewake(*epicDir, *harnessName)
 	case "precompact":
-		return hookPreCompact(*epicDir, *story, *worktree)
+		return hookLeaderCheckpoint("precompact", *epicDir, *story, *worktree, hookPreCompact)
 	case "session-start":
-		return hookSessionStart(*epicDir, *story, *worktree)
+		return hookLeaderCheckpoint("session-start", *epicDir, *story, *worktree, hookSessionStart)
 	default:
 		fmt.Fprintf(os.Stderr, "cox hook: unknown hook %q\n", name)
 		return 2
 	}
+}
+
+// leaderStory-scoped hooks and the wake hooks resolve the epics they act on the same way: an explicit --epic narrows to
+// one, otherwise they walk up from the cwd to the workspace and act on every epic whose watcher is alive. This is the
+// onboarding rule (DESIGN §3): leader hooks belong to the workspace, not to an epic, so a `cox hook` invocation reads no
+// per-terminal epic env var. Returns the epic dirs and whether the cwd is inside a workspace at all.
+func leaderEpics(epicDir string) (epics []string, inWorkspace bool) {
+	if epicDir != "" {
+		return []string{epicDir}, true
+	}
+	wsRoot, err := findWorkspaceRoot(".")
+	if err != nil {
+		return nil, false
+	}
+	return activeEpics(wsRoot), true
+}
+
+// activeEpics returns the epic dirs under a workspace (<ws>/<project>/epics/<slug>) whose .cox/watch.pid names a live
+// process. A dead or absent watcher means no wakes are being delivered there, so the leader hooks skip it.
+func activeEpics(wsRoot string) []string {
+	var out []string
+	matches, _ := filepath.Glob(filepath.Join(wsRoot, "*", "epics", "*"))
+	sort.Strings(matches)
+	for _, ep := range matches {
+		if info, err := os.Stat(ep); err != nil || !info.IsDir() {
+			continue
+		}
+		if pid := readPid(watchPidPath(ep)); pid > 0 && processAlive(pid) {
+			out = append(out, ep)
+		}
+	}
+	return out
+}
+
+// outsideWorkspace prints one line to stderr and returns exit 0: a hook fired in a terminal that leads nothing must be
+// silent-but-visible, never crash the session (DESIGN §3).
+func outsideWorkspace(hook string) int {
+	fmt.Fprintf(os.Stderr, "cox hook %s: not inside a cox workspace (no cox/workspace.json above %s); nothing to do\n", hook, mustCwd())
+	return 0
+}
+
+func mustCwd() string {
+	if d, err := os.Getwd(); err == nil {
+		return d
+	}
+	return "."
+}
+
+// hookLeaderCheckpoint runs a checkpoint hook (precompact or session-start). An explicit --epic with an explicit --story
+// narrows to that one checkpoint. Otherwise it resolves the workspace and runs the hook for the leader checkpoint
+// (_leader) of every active epic, best-effort: one epic's checkpoint failure must not crash the leader's turn. Outside a
+// workspace it prints one line and exits 0.
+func hookLeaderCheckpoint(name, epicDir, story, worktree string, fn func(epicDir, story, worktree string) int) int {
+	if epicDir != "" && story != "" {
+		return fn(epicDir, story, worktree)
+	}
+	epics, in := leaderEpics(epicDir)
+	if !in {
+		return outsideWorkspace(name)
+	}
+	st := story
+	if st == "" {
+		st = leaderStory
+	}
+	for _, ep := range filterLeaderEpics(epics) {
+		_ = fn(ep, st, worktree)
+	}
+	return 0
 }
 
 // orcaDoorbellRe matches Orca's terminal doorbell prompt ("You have N orchestration messages. Run `orca orchestration
@@ -62,15 +131,29 @@ func cmdHook(args []string) int {
 // acked by the watcher, so the doorbell is stale and there is nothing for the leader to do.
 var orcaDoorbellRe = regexp.MustCompile(`^You have [0-9]+ orchestration messages?\. Run .orca orchestration check`)
 
-// hookPromptDrain (UserPromptSubmit): attach the unacked wakes of the led epic to the leader's turn as context. stdout
-// becomes context; it never acks (the leader's turn drains explicitly). When there are no wakes and the submitted prompt
-// is Orca's empty doorbell, it exits 2 to block the prompt (a UserPromptSubmit exit 2 erases the prompt and starts no
-// turn; stderr is shown to the user) so the stale bell does not cost the leader a turn.
+// hookPromptDrain (UserPromptSubmit): attach the unacked wakes of every active epic in the workspace to the leader's
+// turn as context. stdout becomes context; it never acks (the leader's turn drains explicitly). When no epic has a wake
+// and the submitted prompt is Orca's empty doorbell, it exits 2 to block the prompt (a UserPromptSubmit exit 2 erases
+// the prompt and starts no turn; stderr is shown to the user) so the stale bell does not cost the leader a turn.
+// Outside a workspace it prints one line and exits 0.
 func hookPromptDrain(epicDir, harnessName string) int {
-	if epicDir != "" && notLeaderTerminal(epicDir) {
-		return 0 // a non-leader terminal must not drain the leader's wake queue
+	epics, in := leaderEpics(epicDir)
+	if !in {
+		return outsideWorkspace("prompt-drain")
 	}
-	return runPromptDrain(epicDir, harnessName, os.Stdin, os.Stdout, os.Stderr)
+	return runPromptDrainAll(filterLeaderEpics(epics), harnessName, os.Stdin, os.Stdout, os.Stderr)
+}
+
+// filterLeaderEpics drops any epic this terminal is demonstrably not the leader of, so a worker worktree that happens to
+// carry the leader epic's settings never drains the leader's wake queue.
+func filterLeaderEpics(epics []string) []string {
+	out := make([]string, 0, len(epics))
+	for _, ep := range epics {
+		if !notLeaderTerminal(ep) {
+			out = append(out, ep)
+		}
+	}
+	return out
 }
 
 // codexBlock emits codex's stdout block decision, which continues/reopens a turn (Stop) or discards a stale prompt
@@ -92,16 +175,28 @@ func notLeaderTerminal(epicDir string) bool {
 	return strings.TrimSpace(os.Getenv("ORCA_TERMINAL_HANDLE")) != leader
 }
 
-func runPromptDrain(epicDir, harnessName string, in io.Reader, out, errW io.Writer) int {
-	prompt := hookPrompt(in)
-	if epicDir == "" {
-		return 0 // this terminal leads nothing; silent
-	}
+// runPromptDrain drains one epic's unacked wakes and attaches them as context; it is the single-epic core. It never
+// acks (peek) and returns the wakes it printed so the caller can decide the empty-doorbell suppression across all epics.
+func runPromptDrain(epicDir string, out io.Writer) int {
 	wakes, err := wake.Drain(epicDir, true)
-	if err != nil {
+	if err != nil || len(wakes) == 0 {
 		return 0
 	}
-	if len(wakes) == 0 {
+	fmt.Fprintf(out, "Watcher wakes for %s since your last turn:\n", filepath.Base(epicDir))
+	printWakesTo(out, wakes)
+	return len(wakes)
+}
+
+// runPromptDrainAll attaches the unacked wakes of every epic to the leader's turn. When no epic has a wake and the
+// submitted prompt is Orca's stale doorbell, it suppresses the prompt (exit 2 for claude, a stdout block decision for
+// codex) so the bell costs no turn; every other empty prompt is a silent exit 0.
+func runPromptDrainAll(epics []string, harnessName string, in io.Reader, out, errW io.Writer) int {
+	prompt := hookPrompt(in)
+	total := 0
+	for _, ep := range epics {
+		total += runPromptDrain(ep, out)
+	}
+	if total == 0 {
 		// Orca types its doorbell with a leading newline ("\nYou have 1 orchestration message. Run ..."), so the ^-anchored
 		// regex never matches the raw prompt; trim first (A12) or every stale bell costs the leader a turn.
 		if orcaDoorbellRe.MatchString(strings.TrimSpace(prompt)) {
@@ -113,10 +208,7 @@ func runPromptDrain(epicDir, harnessName string, in io.Reader, out, errW io.Writ
 			fmt.Fprintln(errW, "cox: "+reason)
 			return 2
 		}
-		return 0
 	}
-	fmt.Fprintf(out, "Watcher wakes for %s since your last turn:\n", filepath.Base(epicDir))
-	printWakesTo(out, wakes)
 	return 0
 }
 
@@ -145,11 +237,13 @@ func hookPrompt(in io.Reader) string {
 // WAKE_BATCH so several cost one turn; on MAX_WAIT with no wake, a still-open dispatched story ticks (exit 2) so the
 // next turn re-arms the waiter, otherwise the leader stays idle (exit 0).
 func hookStopRewake(epicDir, harnessName string) int {
-	if epicDir == "" {
-		return 0
+	epics, in := leaderEpics(epicDir)
+	if !in {
+		return outsideWorkspace("stop-rewake")
 	}
-	if notLeaderTerminal(epicDir) {
-		return 0 // a non-leader terminal must not rewake on the leader's wake queue
+	epics = filterLeaderEpics(epics)
+	if len(epics) == 0 {
+		return 0 // nothing active to wait on
 	}
 	if handle := os.Getenv("ORCA_TERMINAL_HANDLE"); handle != "" {
 		lock := filepath.Join(tmpDir(), "cox-rewake-"+handle+".lock")
@@ -161,7 +255,7 @@ func hookStopRewake(epicDir, harnessName string) int {
 		}
 	}
 	return runStopRewake(rewakeCfg{
-		epicDir:  epicDir,
+		epics:    epics,
 		harness:  harnessName,
 		maxWait:  envSeconds("REWAKE_MAX_WAIT", 3300),
 		batchMax: envSeconds("WAKE_BATCH", 300),
@@ -173,9 +267,9 @@ func hookStopRewake(epicDir, harnessName string) int {
 }
 
 // rewakeCfg is the stop-rewake loop's inputs, injected so the loop is unit-tested without real waiting (sleep is a
-// no-op in tests; maxWait/batchMax/poll are durations, not env reads).
+// no-op in tests; maxWait/batchMax/poll are durations, not env reads). epics is every active epic the leader waits on.
 type rewakeCfg struct {
-	epicDir  string
+	epics    []string
 	harness  string // "codex" reopens via a stdout block decision; anything else (claude) reopens via exit 2
 	maxWait  time.Duration
 	batchMax time.Duration
@@ -196,7 +290,7 @@ func (cfg rewakeCfg) reopen(msg string) int {
 	return 2
 }
 
-// runStopRewake is the testable core: peek the wake queue every poll up to maxWait, then decide the tick.
+// runStopRewake is the testable core: peek every led epic's wake queue each poll up to maxWait, then decide the tick.
 func runStopRewake(cfg rewakeCfg) int {
 	poll := cfg.poll
 	if poll <= 0 {
@@ -204,13 +298,10 @@ func runStopRewake(cfg rewakeCfg) int {
 	}
 	batch := time.Duration(0)
 	for elapsed := time.Duration(0); elapsed < cfg.maxWait; elapsed += poll {
-		wakes, err := wake.Drain(cfg.epicDir, true)
-		if err != nil {
-			return 0
-		}
+		wakes := drainAll(cfg.epics)
 		if len(wakes) > 0 {
 			if anyUrgent(wakes) || batch >= cfg.batchMax {
-				msg := fmt.Sprintf("Watcher wake while idle. Run `cox wake drain --epic %s`, handle them, then ack-through:\n", cfg.epicDir) + wakesText(wakes)
+				msg := "Watcher wake while idle. Run `" + drainHint(cfg.epics) + "`, handle them, then ack-through:\n" + wakesText(wakes)
 				return cfg.reopen(msg)
 			}
 			batch += poll
@@ -222,15 +313,42 @@ func runStopRewake(cfg rewakeCfg) int {
 	// MAX_WAIT reached with no rewake. A Stop hook cannot outlive its timeout, so while any led story is still
 	// dispatched (working or input_required) start a minimal turn (exit 2) whose Stop re-arms a fresh waiter; with
 	// nothing open, stay silent (exit 0) so there is no idle churn between epics.
-	open, err := watch.OpenStories(cfg.epicDir)
-	if err != nil {
-		return 0
+	open := 0
+	for _, ep := range cfg.epics {
+		if o, err := watch.OpenStories(ep); err == nil {
+			open += len(o)
+		}
 	}
-	if len(open) > 0 {
-		msg := fmt.Sprintf("Rewake tick: no watcher wake in %s and %d dispatched story(ies) still open. Nothing to handle - end this turn with one line and no tool calls so the Stop hook re-arms the waiter.\n", cfg.maxWait, len(open))
+	if open > 0 {
+		msg := fmt.Sprintf("Rewake tick: no watcher wake in %s and %d dispatched story(ies) still open. Nothing to handle - end this turn with one line and no tool calls so the Stop hook re-arms the waiter.\n", cfg.maxWait, open)
 		return cfg.reopen(msg)
 	}
 	return 0
+}
+
+// drainAll peeks every epic's unacked wakes and returns them merged (each wake carries its own epic name). A per-epic
+// read error is skipped so one broken queue does not stop the leader waiting on the others.
+func drainAll(epics []string) []wake.Wake {
+	var all []wake.Wake
+	for _, ep := range epics {
+		if w, err := wake.Drain(ep, true); err == nil {
+			all = append(all, w...)
+		}
+	}
+	return all
+}
+
+// drainHint renders the `cox wake drain` command the reopen message points at: the exact --epic form for a single led
+// epic, or a bare `cox wake drain --epic <each>` list when several are active.
+func drainHint(epics []string) string {
+	if len(epics) == 1 {
+		return "cox wake drain --epic " + epics[0]
+	}
+	parts := make([]string, len(epics))
+	for i, ep := range epics {
+		parts[i] = "cox wake drain --epic " + ep
+	}
+	return strings.Join(parts, "; ")
 }
 
 func anyUrgent(wakes []wake.Wake) bool {
