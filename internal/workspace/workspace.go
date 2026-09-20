@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // ControlDir is the workspace-level cox directory that holds workspace.json, policy.json, and services/.
@@ -69,8 +70,10 @@ func Load(wsRoot string) (*Workspace, error) {
 	return LoadFile(filepath.Join(wsRoot, ControlDir, "workspace.json"))
 }
 
-// LoadFile parses a workspace.json at an explicit path. A parse error is a real error; a missing file is reported as
-// such rather than an empty workspace, so a caller never proceeds against a registry that was silently absent.
+// LoadFile parses a workspace.json at an explicit path and validates it. A parse error is a real error; a missing file
+// is reported as such rather than an empty workspace, so a caller never proceeds against a registry that was silently
+// absent. Validation (unique alias, path-or-name present, absolute path, non-empty production) names the field and the
+// file so a hand-edited registry fails with a fixable message.
 func LoadFile(path string) (*Workspace, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -80,7 +83,38 @@ func LoadFile(path string) (*Workspace, error) {
 	if err := json.Unmarshal(b, &w); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
+	if err := w.Validate(); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
 	return &w, nil
+}
+
+// Validate reports the first structural problem in the repos[] registry, naming the field: an empty or duplicate alias,
+// a repo with neither path nor name, a non-absolute path, or an empty production branch. It is pure (no filesystem I/O);
+// the "path is a real git checkout" check is a `cox doctor` concern, not a load-time one, so a registry loads on a
+// machine that has not cloned the repos yet.
+func (w *Workspace) Validate() error {
+	seen := map[string]bool{}
+	for i, r := range w.Repos {
+		where := fmt.Sprintf("repos[%d]", i)
+		if r.Alias != "" {
+			where = fmt.Sprintf("repo %q", r.Alias)
+		}
+		switch {
+		case strings.TrimSpace(r.Alias) == "":
+			return fmt.Errorf("%s: alias is required", where)
+		case seen[r.Alias]:
+			return fmt.Errorf("%s: duplicate alias", where)
+		case r.Path == "" && r.Name == "":
+			return fmt.Errorf("%s: needs path or name", where)
+		case r.Path != "" && !filepath.IsAbs(r.Path):
+			return fmt.Errorf("%s: path %q must be absolute", where, r.Path)
+		case strings.TrimSpace(r.Production) == "":
+			return fmt.Errorf("%s: production branch is required", where)
+		}
+		seen[r.Alias] = true
+	}
+	return nil
 }
 
 // Repo returns the repo with the given alias, or false.
