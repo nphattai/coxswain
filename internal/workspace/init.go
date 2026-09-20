@@ -85,7 +85,9 @@ func Scaffold(wsRoot string, repos []Repo) (ScaffoldReport, error) {
 		if len(repos) == 0 {
 			return rep, fmt.Errorf("no repos to write into %s (pass --repo alias=path)", wsPath)
 		}
-		seed = &Workspace{Repos: repos, Hosts: []Host{{Name: "local"}}}
+		// Empty (not nil) projects/services so the JSON emits [] rather than null (a null trips strict readers and reads
+		// as a broken registry).
+		seed = &Workspace{Projects: []Project{}, Repos: repos, Services: []Service{}, Hosts: []Host{{Name: "local"}}}
 	}
 	created, err := Init(wsRoot, seed)
 	if err != nil {

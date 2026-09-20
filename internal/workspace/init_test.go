@@ -39,6 +39,11 @@ func TestScaffoldWritesEverythingAndIsIdempotent(t *testing.T) {
 	if len(rep.Created) == 0 {
 		t.Error("first scaffold should report created files")
 	}
+	// The registry must not carry null projects/services (PR#3 review finding 7).
+	wsBytes, _ := os.ReadFile(filepath.Join(root, "cox", "workspace.json"))
+	if strings.Contains(string(wsBytes), "null") {
+		t.Errorf("workspace.json must emit [] not null:\n%s", wsBytes)
+	}
 
 	// Re-run: nothing created, everything present, files unchanged.
 	wsBefore, _ := os.ReadFile(filepath.Join(root, "cox", "workspace.json"))
