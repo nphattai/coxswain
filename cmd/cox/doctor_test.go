@@ -8,9 +8,36 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nphattai/coxswain/internal/doctor"
 	"github.com/nphattai/coxswain/internal/state"
 	"github.com/nphattai/coxswain/internal/workspace"
 )
+
+// A workspace discovered via --root/epic whose epic has a dead watcher and an active story yields a watcher issue, so
+// doctor's exit reflects it (PR#3 review finding 5). An alive watcher, or no open story, yields none.
+func TestWatcherIssuesForWorkspaces(t *testing.T) {
+	epic := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(epic, controlDir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(watchPidPath(epic), []byte("999999"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if watcherInfo(epic).Alive {
+		t.Skip("pid 999999 happens to be alive on this host")
+	}
+	seedEvent(t, epic, state.Submitted, state.Working) // an open story
+
+	dead := []doctor.WorkspaceReport{{Epics: []doctor.EpicReport{{Path: epic, WatcherAlive: false}}}}
+	if len(watcherIssuesForWorkspaces(dead)) == 0 {
+		t.Error("a dead watcher with an active story in a discovered workspace must raise an issue")
+	}
+	// An alive watcher raises nothing.
+	alive := []doctor.WorkspaceReport{{Epics: []doctor.EpicReport{{Path: epic, WatcherAlive: true}}}}
+	if len(watcherIssuesForWorkspaces(alive)) != 0 {
+		t.Error("an alive watcher must raise no issue")
+	}
+}
 
 // doctor renders one capability card per implemented harness, each tagged adapter=yes, with the card's real fields.
 func TestDoctorHarnessCards(t *testing.T) {

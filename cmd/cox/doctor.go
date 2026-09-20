@@ -138,6 +138,9 @@ func cmdDoctor(args []string) int {
 
 	out := doctorOutput{Report: rep, Harnesses: harnessCards(codexCoxHooksInstalled(".")), PolicyOptions: policyOptions(*epicDir), Quota: quotaReport(*epicDir), Workspaces: wsReports, Checks: checks}
 	var watcherIssues []string
+	// A dead watcher with active stories in a workspace found only via --root or the epic path must also fail doctor, not
+	// just those under the default installation scan (PR#3 review finding 5). Computed for both --json and human output.
+	wsWatcherIssues := watcherIssuesForWorkspaces(wsReports)
 
 	if *asJSON {
 		enc := json.NewEncoder(os.Stdout)
@@ -243,11 +246,14 @@ func cmdDoctor(args []string) int {
 		for _, iss := range watcherIssues {
 			fmt.Fprintln(os.Stderr, "ISSUE:", iss)
 		}
+		for _, iss := range wsWatcherIssues {
+			fmt.Fprintln(os.Stderr, "ISSUE:", iss)
+		}
 	}
 
 	// Exit code: any fail (an install issue, a dead watcher with open stories, an invalid workspace, or a failed check)
 	// is 1; any unknown with no fail (e.g. orca present but `orca status` unreachable) is 3; otherwise 0.
-	hasFail := len(rep.Issues) > 0 || len(watcherIssues) > 0
+	hasFail := len(rep.Issues) > 0 || len(watcherIssues) > 0 || len(wsWatcherIssues) > 0
 	hasUnknown := false
 	for _, w := range wsReports {
 		if !w.Valid {
@@ -263,6 +269,23 @@ func cmdDoctor(args []string) int {
 		}
 	}
 	return doctorExit(hasFail, hasUnknown)
+}
+
+// watcherIssuesForWorkspaces returns a watcherIssue for every discovered-workspace epic whose watcher is dead while it
+// still has active stories - the case the older default-root scan would catch but the new --root/epic scan would miss.
+func watcherIssuesForWorkspaces(reps []doctor.WorkspaceReport) []string {
+	var issues []string
+	for _, w := range reps {
+		for _, ep := range w.Epics {
+			if ep.WatcherAlive {
+				continue
+			}
+			if iss := watcherIssue(ep.Path, watcherInfo(ep.Path)); iss != "" {
+				issues = append(issues, iss)
+			}
+		}
+	}
+	return issues
 }
 
 // doctorExit maps the aggregate check outcome to an exit code: any fail is 1, any unknown with no fail is 3, else 0.
