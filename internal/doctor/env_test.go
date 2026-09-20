@@ -214,6 +214,32 @@ func TestInspectWorkspaceInvalid(t *testing.T) {
 	}
 }
 
+// hooksComplete requires all four cox hook commands, not just one (PR#3 review finding 6).
+func TestHooksComplete(t *testing.T) {
+	dir := t.TempDir()
+	full := filepath.Join(dir, "full.json")
+	if err := os.WriteFile(full, []byte(`{"hooks":{
+      "UserPromptSubmit":[{"hooks":[{"command":"cox hook prompt-drain"}]}],
+      "Stop":[{"hooks":[{"command":"cox hook stop-rewake"}]}],
+      "PreCompact":[{"hooks":[{"command":"cox hook precompact"}]}],
+      "SessionStart":[{"hooks":[{"command":"cox hook session-start"}]}]}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !hooksComplete(full) {
+		t.Error("all four hook commands present must be complete")
+	}
+	partial := filepath.Join(dir, "partial.json")
+	if err := os.WriteFile(partial, []byte(`{"hooks":{"UserPromptSubmit":[{"hooks":[{"command":"cox hook prompt-drain"}]}]}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if hooksComplete(partial) {
+		t.Error("only prompt-drain present must be incomplete (Stop/PreCompact/SessionStart missing)")
+	}
+	if hooksComplete(filepath.Join(dir, "absent.json")) {
+		t.Error("an absent settings file is incomplete")
+	}
+}
+
 // pidAlive detects this process as alive and a bogus pid as dead.
 func TestPidAlive(t *testing.T) {
 	if !pidAlive(os.Getpid()) {

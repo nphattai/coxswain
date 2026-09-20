@@ -9,6 +9,7 @@ package doctor
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -240,7 +241,7 @@ func InspectWorkspace(wsRoot string) WorkspaceReport {
 	if pol, perr := workspace.LoadPolicy(wsRoot); perr == nil {
 		for _, h := range pol.Harness.Leader.Options {
 			if target := hookTarget(wsRoot, h); target != "" {
-				rep.Hooks[h] = fileContains(target, "cox hook ")
+				rep.Hooks[h] = hooksComplete(target)
 			}
 		}
 	}
@@ -310,9 +311,48 @@ func epicStatus(designPath string) string {
 	return ""
 }
 
-func fileContains(path, sub string) bool {
+// requiredHookNames are the four leader hook commands a complete install carries.
+var requiredHookNames = []string{"prompt-drain", "stop-rewake", "precompact", "session-start"}
+
+// hooksComplete parses a settings/hooks file and reports true only when every one of the four `cox hook <name>`
+// commands is present. A single `cox hook` (e.g. only prompt-drain) is not enough - reporting hooks=yes while Stop is
+// missing would hide broken rewaking or checkpointing (PR#3 review finding 6).
+func hooksComplete(path string) bool {
 	b, err := os.ReadFile(path)
-	return err == nil && strings.Contains(string(b), sub)
+	if err != nil {
+		return false
+	}
+	var doc struct {
+		Hooks map[string][]struct {
+			Hooks []struct {
+				Command string `json:"command"`
+			} `json:"hooks"`
+		} `json:"hooks"`
+	}
+	if json.Unmarshal(b, &doc) != nil {
+		return false
+	}
+	var cmds []string
+	for _, groups := range doc.Hooks {
+		for _, g := range groups {
+			for _, h := range g.Hooks {
+				cmds = append(cmds, h.Command)
+			}
+		}
+	}
+	for _, name := range requiredHookNames {
+		found := false
+		for _, c := range cmds {
+			if strings.Contains(c, "cox hook "+name) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
 }
 
 func readPid(path string) int {
