@@ -89,6 +89,56 @@ func TestDecideAboveBarChoosesAndCites(t *testing.T) {
 	}
 }
 
+// threeCardPolicy and threeCards add pi as a third card-fit candidate (worker role).
+func threeCardPolicy() *workspace.Policy {
+	p := &workspace.Policy{}
+	p.Harness.Worker = workspace.HarnessRole{Options: []string{"claude", "codex", "pi"}, Default: "claude"}
+	p.Harness.Leader = workspace.HarnessRole{Options: []string{"claude", "codex", "pi"}, Default: "claude"}
+	return p
+}
+
+func threeCards() map[string]harness.Capability {
+	c := testCards()
+	c["pi"] = harness.Capability{Name: "pi", Roles: []harness.Role{harness.RoleLeader, harness.RoleWorker}, Telemetry: true}
+	return c
+}
+
+// Pi is a third card-fit candidate, but with no measured baseline rows it is never auto-routed even above the bar:
+// bestByBaseline drops a candidate with no rows, so codex (measured, fewest fixes) wins and pi is only listed as a fit.
+func TestDecidePiThirdCandidateDroppedUntilBaseline(t *testing.T) {
+	var rows []BaselineRow
+	for i := 0; i < 6; i++ {
+		rows = append(rows, BaselineRow{Story: "s", Harness: "claude", Condition: "bare", Result: "pass", LeaderFixes: 2})
+		rows = append(rows, BaselineRow{Story: "s", Harness: "codex", Condition: "bare", Result: "pass", LeaderFixes: 0})
+	}
+	ch := Decide(Story{ID: "s", Harness: "auto"}, threeCardPolicy(), threeCards(), testQuotas(), rows)
+	if !reasonsHave(ch.Reasons, "card-fit candidates: claude, codex, pi") {
+		t.Fatalf("pi must be a third card-fit candidate: %+v", ch.Reasons)
+	}
+	if ch.Harness == "pi" {
+		t.Fatalf("pi has no measured rows and must not be auto-routed, got %q", ch.Harness)
+	}
+	if ch.Harness != "codex" {
+		t.Fatalf("codex (measured, fewest fixes) should win, got %q", ch.Harness)
+	}
+}
+
+// Once Pi has its own measured baseline rows that beat the default, it becomes eligible and is chosen with citations.
+func TestDecidePiEligibleWithBaseline(t *testing.T) {
+	var rows []BaselineRow
+	for i := 0; i < 6; i++ {
+		rows = append(rows, BaselineRow{Story: "s", Harness: "claude", Condition: "bare", Result: "pass", LeaderFixes: 2})
+		rows = append(rows, BaselineRow{Story: "s", Harness: "pi", Condition: "bare", Result: "pass", LeaderFixes: 0})
+	}
+	ch := Decide(Story{ID: "s", Harness: "auto"}, threeCardPolicy(), threeCards(), testQuotas(), rows)
+	if ch.Harness != "pi" {
+		t.Fatalf("pi with fewest fixes should be chosen once it has rows, got %q", ch.Harness)
+	}
+	if len(ch.CitedRows) == 0 || !reasonsHave(ch.Reasons, "chose pi over default claude") {
+		t.Fatalf("pi choice must cite rows and record the override: %+v", ch)
+	}
+}
+
 // Above the bar but with the default already the best, routing keeps the default (no citation, clear reason).
 func TestDecideAboveBarDefaultWins(t *testing.T) {
 	var rows []BaselineRow
