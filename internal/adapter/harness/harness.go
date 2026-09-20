@@ -67,13 +67,14 @@ type Brief struct {
 // resource flag (e.g. codex's writable roots for a linked worktree). The backend receives the resulting []string as
 // data and never imports this layer.
 type Launch struct {
-	Role     Role
-	Worktree string
-	Model    string
-	Effort   string
-	Flags    []string
-	Arena    bool // an arena-role launch (read-only report writer); a sandboxed harness grants it no extra writable roots
-	Brief    Brief
+	Role      Role
+	Worktree  string
+	Model     string
+	Effort    string
+	Flags     []string
+	Arena     bool   // an arena-role launch (read-only report writer); a sandboxed harness grants it no extra writable roots
+	Extension string // a verified project-local extension to load explicitly (pi -e); empty runs the harness without it
+	Brief     Brief
 }
 
 // WorkerPrompt renders the single prompt argument a dispatched worker harness receives, shared by every adapter so the

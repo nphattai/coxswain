@@ -78,6 +78,25 @@ func piPreSpawnValidate(harnessName, model, effort string) error {
 	return pi.ValidateThinking(effort)
 }
 
+// piReducedModeNotice is the downgrade notice printed when the pi extension is not verified: the effective card falls
+// from push/auto to pull/manual, emitted through the notice path, never inferred from the static card (DESIGN AC6).
+const piReducedModeNotice = "reduced mode: pi extension not verified (%s); effective card pull/manual - leader must run cox wake wait, worker must write cox checkpoint facts at each phase boundary"
+
+// resolvePiExtension installs the packaged pi extension into the worktree and verifies it. On success it returns the -e
+// entry path (push/auto). On install/hash failure it returns entry="" plus a reduced-mode downgrade notice, so pi
+// launches without the extension in pull/manual mode rather than claiming the static push/auto card over an unverified
+// extension.
+func resolvePiExtension(worktree string) (entry string, notices []string) {
+	if _, err := pi.InstallExtension(worktree); err != nil {
+		return "", []string{fmt.Sprintf(piReducedModeNotice, "install failed: "+err.Error())}
+	}
+	entry, ok := pi.VerifyExtension(worktree)
+	if !ok {
+		return "", []string{fmt.Sprintf(piReducedModeNotice, "hash unverified")}
+	}
+	return entry, nil
+}
+
 // modelHarnessMismatch reports whether `model` belongs to a different vendor than `harness` expects (a claude-family
 // model at a codex worker, or a codex-family model at a claude worker), with a message naming both. A model whose
 // vendor is unrecognised, or a harness that is neither claude nor codex, is never flagged.

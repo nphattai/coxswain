@@ -60,6 +60,33 @@ func TestLaunchArgsWorker(t *testing.T) {
 	}
 }
 
+// When a verified extension path is supplied, Pi loads it explicitly with -e and disables ambient extension discovery,
+// so worker correctness does not depend on discovery/trust.
+func TestLaunchArgsWithExtension(t *testing.T) {
+	argv := New().LaunchArgs(harness.Launch{
+		Role: harness.RoleWorker, Model: "anthropic/claude-opus-4-8", Extension: "/wt/.pi/extensions/cox-pi.ts",
+		Brief: harness.Brief{StoryPath: "/e/stories/s.md"},
+	})
+	joined := strings.Join(argv, " ")
+	if !strings.Contains(joined, "--no-extensions -e /wt/.pi/extensions/cox-pi.ts") {
+		t.Fatalf("pi worker must load the extension with --no-extensions -e: %v", argv)
+	}
+	// No extension supplied (downgrade): no -e, no --no-extensions.
+	bare := New().LaunchArgs(harness.Launch{Role: harness.RoleWorker, Model: "anthropic/x", Brief: harness.Brief{StoryPath: "/e/stories/s.md"}})
+	if strings.Contains(strings.Join(bare, " "), "-e ") || contains(bare, "--no-extensions") {
+		t.Fatalf("no extension must type no -e/--no-extensions: %v", bare)
+	}
+}
+
+func contains(argv []string, tok string) bool {
+	for _, a := range argv {
+		if a == tok {
+			return true
+		}
+	}
+	return false
+}
+
 // With no thinking level set, Pi types no --thinking (it uses its default), but still marks trust with --approve.
 func TestLaunchArgsWorkerNoThinking(t *testing.T) {
 	argv := New().LaunchArgs(harness.Launch{

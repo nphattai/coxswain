@@ -144,10 +144,21 @@ func storyDispatch(args []string) int {
 	if err := registry.PrepareWorktree(harnessName, wt.Path); err != nil {
 		return fail("prepare worktree trust: %v", err)
 	}
+	// For pi, install and verify the packaged extension in the worktree. A verified extension is loaded explicitly with
+	// -e (push/auto). An install/hash failure downgrades the EFFECTIVE card to pull/manual through the notice path
+	// (never inferred from the static push/auto card): the extension is left unset and pi runs in reduced mode.
+	extension := ""
+	if harnessName == "pi" {
+		var extNotices []string
+		extension, extNotices = resolvePiExtension(wt.Path)
+		for _, n := range extNotices {
+			fmt.Println(n)
+		}
+	}
 	// Compose the adapter-owned argv and thread it as data into the spawn spec (launch seam, ADR 0002): the backend
 	// types this argv, it never rebuilds it or imports the harness layer.
 	argv, err := registry.LaunchArgs(harnessName, harness.Launch{
-		Role: harness.RoleWorker, Worktree: wt.Path, Model: modelID, Effort: effort,
+		Role: harness.RoleWorker, Worktree: wt.Path, Model: modelID, Effort: effort, Extension: extension,
 		Flags: pol.LaunchFlags(harnessName), Brief: harness.Brief{StoryPath: storyPath},
 	})
 	if err != nil {

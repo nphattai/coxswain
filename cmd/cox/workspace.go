@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/nphattai/coxswain/hooks"
+	"github.com/nphattai/coxswain/internal/adapter/harness/pi"
 	"github.com/nphattai/coxswain/internal/workspace"
 )
 
@@ -117,7 +118,7 @@ func cmdWorkspaceHooks(args []string) int {
 	fs := flag.NewFlagSet("workspace hooks", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	root := fs.String("root", ".", "workspace root")
-	harnessName := fs.String("harness", "claude", "harness whose hooks to install: claude | codex")
+	harnessName := fs.String("harness", "claude", "harness whose hooks to install: "+harnessOptions())
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -125,8 +126,12 @@ func cmdWorkspaceHooks(args []string) int {
 	if err != nil {
 		return fail("%v", err)
 	}
+	// Pi installs a project-local extension (no claude/codex hook file), so it routes to its own installer.
+	if *harnessName == "pi" {
+		return installPiHooks(wsRoot, false)
+	}
 	if *harnessName != "claude" && *harnessName != "codex" {
-		return usageErr("cox workspace hooks [--root <dir>] --harness claude|codex")
+		return usageErr("cox workspace hooks [--root <dir>] --harness " + harnessOptions())
 	}
 	path, changed, err := writeLeaderHooks(wsRoot, *harnessName)
 	if err != nil {
@@ -137,6 +142,23 @@ func cmdWorkspaceHooks(args []string) int {
 	} else {
 		fmt.Printf("hooks: %s already current (%s leader)\n", path, *harnessName)
 	}
+	return 0
+}
+
+// installPiHooks installs the project-local, hash-verifiable Coxswain Pi extension into <root>/.pi/extensions/, without
+// touching user-level Pi config (DESIGN section 4). It never installs claude/codex hooks. Worker launch loads the same
+// packaged extension explicitly with -e, so worker correctness does not depend on project trust or ambient discovery.
+func installPiHooks(root string, dryRun bool) int {
+	if dryRun {
+		fmt.Printf("hooks (dry-run) would install the cox pi extension into %s (hash %s)\n",
+			filepath.Join(root, pi.ExtensionRelDir), pi.ExtensionHash()[:12])
+		return 0
+	}
+	entry, err := pi.InstallExtension(root)
+	if err != nil {
+		return fail("%v", err)
+	}
+	fmt.Printf("hooks: installed cox pi extension at %s (hash %s; load with -e)\n", entry, pi.ExtensionHash()[:12])
 	return 0
 }
 

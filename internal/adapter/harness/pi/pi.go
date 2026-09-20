@@ -76,6 +76,12 @@ func (h *Harness) LaunchArgs(l harness.Launch) []string {
 		args = append(args, "--thinking", l.Effort)
 	}
 	args = append(args, "--approve")
+	// Load the packaged Coxswain extension explicitly and disable ambient extension discovery, so worker correctness
+	// does not depend on project trust or discovery (DESIGN section 3). Empty Extension means the extension was not
+	// verified (effective-card downgrade): pi runs without it, in reduced mode.
+	if l.Extension != "" {
+		args = append(args, "--no-extensions", "-e", l.Extension)
+	}
 	for _, f := range l.Flags {
 		if f != "" {
 			args = append(args, f)
