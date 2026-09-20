@@ -60,9 +60,10 @@ pull-wake fallback and optional project hooks.
 cox doctor
 ```
 
-`cox doctor` is the setup oracle. Before any workspace exists it confirms the binary is on `PATH` and checks Orca and
-your harness binaries; once you have a workspace it also lists every workspace, epic, watcher, and whether leader hooks
-are installed. Each check is pass, fail, or `unknown` with a fix hint. Its exit code tells you the worst state found:
+`cox doctor` is the setup oracle. Before any workspace exists it confirms the binary is on `PATH` and checks Orca. The
+harness-binary checks begin once a workspace is initialized, because doctor reads which harnesses to check from the
+workspace's `policy.json`; from then on it also lists every workspace, epic, watcher, and whether leader hooks are
+installed. Each check is pass, fail, or `unknown` with a fix hint. Its exit code tells you the worst state found:
 
 | Exit | Meaning |
 |---|---|
