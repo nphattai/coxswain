@@ -166,7 +166,8 @@ func AddRepo(wsRoot string, r Repo) error {
 func gitignoreRules(ws *Workspace) []string {
 	rules := []string{"cox/workspace.json", "cox/.cache/", "**/.cox/", "**/.cox.closed/"}
 	for _, r := range ws.Repos {
-		rules = append(rules, "*/epics/*/"+r.Alias)
+		// **/ (not */) so the rule also matches a nested project layout, e.g. apps/foo/epics/demo/<alias>.
+		rules = append(rules, "**/epics/*/"+r.Alias)
 	}
 	return rules
 }

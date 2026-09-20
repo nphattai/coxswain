@@ -31,7 +31,7 @@ func TestScaffoldWritesEverythingAndIsIdempotent(t *testing.T) {
 	}
 	// .gitignore carries the machine-bound rules including the per-alias symlink line.
 	gi, _ := os.ReadFile(filepath.Join(root, ".gitignore"))
-	for _, rule := range []string{"cox/workspace.json", "cox/.cache/", "**/.cox/", "**/.cox.closed/", "*/epics/*/app"} {
+	for _, rule := range []string{"cox/workspace.json", "cox/.cache/", "**/.cox/", "**/.cox.closed/", "**/epics/*/app"} {
 		if !strings.Contains(string(gi), rule) {
 			t.Errorf(".gitignore missing rule %q:\n%s", rule, gi)
 		}
@@ -92,7 +92,7 @@ func TestAddRepoExtendsGitignore(t *testing.T) {
 		t.Fatal(err)
 	}
 	gi, _ := os.ReadFile(filepath.Join(root, ".gitignore"))
-	if !strings.Contains(string(gi), "*/epics/*/web") {
+	if !strings.Contains(string(gi), "**/epics/*/web") {
 		t.Errorf(".gitignore missing the new alias rule:\n%s", gi)
 	}
 }
