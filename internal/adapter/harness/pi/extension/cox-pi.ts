@@ -10,16 +10,31 @@
 // reported as an automatic checkpoint success.
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { spawn, execFile, type ChildProcess } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { Supervisor, TurnEndLatch } from "./cox-supervisor.ts";
+import { coxArgs, resolveEpic } from "./cox-commands.ts";
 
 const WAIT_MAX = "25m"; // ponytail: fixed wait window matching the terminal-plane `cox wake wait` default; tune in dogfood
 const WAKE_NUDGE = "A Coxswain watcher wake arrived. Run `cox wake drain --epic $COX_EPIC`, handle each wake, then ack.";
+const EPIC_MARKER = "cox-pi.epic"; // written next to the extension by `cox workspace hooks --harness pi --epic <dir>`
+
+// readEpicMarker reads the epic binding persisted next to this module, or "" when absent/unreadable.
+function readEpicMarker(): string {
+  try {
+    return readFileSync(join(import.meta.dirname, EPIC_MARKER), "utf8");
+  } catch {
+    return "";
+  }
+}
 
 export default function (pi: ExtensionAPI): void {
-  const epic = process.env.COX_EPIC ?? "";
   const story = process.env.COX_STORY ?? "";
   const cox = process.env.COX_BIN || "cox";
   const identity = story || "_leader";
+  // Epic binding: COX_EPIC (set by the launch seam for a worker) wins, else the marker installed for a leader. Without
+  // it, wake supervision stays idle rather than running against the wrong epic.
+  const epic = resolveEpic(process.env.COX_EPIC, readEpicMarker());
   const isLeader = (process.env.COX_ROLE || (story && story !== "_leader" ? "worker" : "leader")) === "leader";
 
   let child: ChildProcess | null = null;
@@ -42,7 +57,7 @@ export default function (pi: ExtensionAPI): void {
     if (!isLeader || !epic) return false;
     try {
       killChild();
-      const c = spawn(cox, ["wake", "wait", "--max", WAIT_MAX, "--epic", epic], {
+      const c = spawn(cox, coxArgs.wakeWait(epic, WAIT_MAX), {
         stdio: ["ignore", "ignore", "ignore"],
       });
       child = c;
@@ -86,11 +101,16 @@ export default function (pi: ExtensionAPI): void {
     if (isLeader) sup.sessionStart();
   });
 
-  // session_before_compact: write a checkpoint from the current context BEFORE Pi summarizes it, for the bound
-  // leader/worker identity. Failure is left visible; it is never reported as an automatic checkpoint success.
+  // session_before_compact: PERSIST a checkpoint from the current context BEFORE Pi summarizes it, for the bound
+  // leader/worker identity. `cox hook precompact` writes <epic>/handoffs/<story>.md (whereas `cox checkpoint facts`
+  // only prints). Failure is left visible; it is never reported as an automatic checkpoint success.
   pi.on("session_before_compact", async (_event, ctx) => {
-    await run(cox, ["checkpoint", "facts", "--epic", epic, "--story", identity]).catch((e: unknown) => {
-      ctx.ui?.notify?.(`cox checkpoint facts failed before compaction: ${String(e)}`, "warn");
+    if (!epic) {
+      ctx.ui?.notify?.("cox precompact skipped: no epic binding (COX_EPIC or installed marker)", "warn");
+      return;
+    }
+    await run(cox, coxArgs.precompact(epic, identity, ctx.cwd)).catch((e: unknown) => {
+      ctx.ui?.notify?.(`cox hook precompact failed before compaction: ${String(e)}`, "warn");
     });
   });
 
@@ -116,7 +136,8 @@ export default function (pi: ExtensionAPI): void {
   // injectCheckpoint runs `cox checkpoint inject` and, when it yields recovery context, delivers it as a followUp so the
   // session starts from the saved state. Absence/failure is visible (a notify), never a silent success.
   function injectCheckpoint(ctx: ExtensionContext): void {
-    execFile(cox, ["checkpoint", "inject", "--epic", epic, "--story", identity], (err, stdout) => {
+    if (!epic) return; // no epic binding: nothing to inject
+    execFile(cox, coxArgs.checkpointInject(epic, identity), (err, stdout) => {
       const text = (stdout || "").trim();
       if (err) {
         ctx.ui?.notify?.(`cox checkpoint inject failed: ${String(err)}`, "warn");

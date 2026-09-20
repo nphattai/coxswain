@@ -12,7 +12,8 @@ import (
 // effective-card resolver then verifies it (push/auto) and downgrades to pull/manual when it is missing or tampered.
 func TestWorkspaceHooksPiInstallsExtensionAndResolves(t *testing.T) {
 	root := t.TempDir()
-	if code := cmdWorkspaceHooks([]string{"--root", root, "--harness", "pi"}); code != 0 {
+	epic := "/Users/x/epics/v2"
+	if code := cmdWorkspaceHooks([]string{"--root", root, "--epic", epic, "--harness", "pi"}); code != 0 {
 		t.Fatalf("pi install exit %d", code)
 	}
 	// The pi extension is installed project-local; no claude/codex hook files are created.
@@ -26,20 +27,25 @@ func TestWorkspaceHooksPiInstallsExtensionAndResolves(t *testing.T) {
 		t.Errorf("pi install must not write codex hooks")
 	}
 
-	// resolvePiExtension on the same worktree verifies (push/auto): entry set, no downgrade notice.
-	entry, notices := resolvePiExtension(root)
+	// resolvePiExtension installs out-of-tree and verifies (push/auto): entry set, no downgrade notice, and NOT inside
+	// the story worktree (finding #6: the worktree must stay clean).
+	installDir := filepath.Join(t.TempDir(), "pi-ext")
+	entry, notices := resolvePiExtension(installDir, epic)
 	if entry == "" || len(notices) != 0 {
 		t.Fatalf("verified extension should yield an entry and no downgrade notice, got entry=%q notices=%v", entry, notices)
 	}
+	if !strings.HasPrefix(entry, installDir) {
+		t.Errorf("extension entry %q must live under the out-of-tree install dir %q", entry, installDir)
+	}
 
-	// When the extension cannot be installed (here: the worktree path is under a regular file, so mkdir fails), the
+	// When the extension cannot be installed (here: the install path is under a regular file, so mkdir fails), the
 	// effective card downgrades to pull/manual through the notice path and the entry is left empty (never inferred from
 	// the static push/auto card).
 	fileAsRoot := filepath.Join(t.TempDir(), "not-a-dir")
 	if err := os.WriteFile(fileAsRoot, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	entryBad, noticesBad := resolvePiExtension(filepath.Join(fileAsRoot, "wt"))
+	entryBad, noticesBad := resolvePiExtension(filepath.Join(fileAsRoot, "wt"), epic)
 	if entryBad != "" {
 		t.Errorf("install failure must leave the extension unset (reduced mode), got %q", entryBad)
 	}

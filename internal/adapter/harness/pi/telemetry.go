@@ -51,15 +51,15 @@ func sessionDir(home, worktree string) string {
 }
 
 // piUsage is the subset of Pi's Usage we read: the input-side tokens that occupy the context window (input + cached).
-// Output/reasoning are not context occupancy, matching the claude adapter's input+cache sum.
+// Output/reasoning are not context occupancy, matching the claude adapter's input+cache sum. cacheWrite1h is NOT added:
+// it is the 1-hour-TTL portion already included in cacheWrite (a subset), so adding it double-counts the write cache.
 type piUsage struct {
-	Input       int `json:"input"`
-	CacheRead   int `json:"cacheRead"`
-	CacheWrite  int `json:"cacheWrite"`
-	CacheWrite1 int `json:"cacheWrite1h"`
+	Input      int `json:"input"`
+	CacheRead  int `json:"cacheRead"`
+	CacheWrite int `json:"cacheWrite"`
 }
 
-func (u piUsage) contextTokens() int { return u.Input + u.CacheRead + u.CacheWrite + u.CacheWrite1 }
+func (u piUsage) contextTokens() int { return u.Input + u.CacheRead + u.CacheWrite }
 
 // parseSession sums the last assistant message's context tokens and counts assistant turns. Taking the LAST assistant
 // usage naturally reflects compaction (the post-compaction turn carries the reduced context). Malformed lines are

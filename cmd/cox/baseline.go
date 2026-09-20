@@ -33,6 +33,7 @@ func cmdBaseline(args []string) int {
 	before := fs.String("before", "", "sha to check out before the solution")
 	repoFlag := fs.String("repo", "", "repo path to replay in (default: the story's repo alias)")
 	dryRun := fs.Bool("dry-run", false, "validate and record the plan without a worktree or a worker")
+	allowUnsandboxed := fs.Bool("allow-unsandboxed", false, "authorize a baseline run of an unsandboxed harness (not a sandbox)")
 	if err := fs.Parse(args[1:]); err != nil {
 		return 2
 	}
@@ -110,11 +111,21 @@ func cmdBaseline(args []string) int {
 		brief.StoryPath = filepath.Join(*epicDir, "stories", *story+".md")
 		hb = harnesspkg.Brief{StoryPath: brief.StoryPath}
 	}
+	// Same authorization + extension flow as story dispatch: a baseline run of an unsandboxed harness is refused without
+	// --allow-unsandboxed, and a pi baseline gets its verified extension (or a pull/manual downgrade via notice).
+	extension, notices, _, err := authorizeWorker(*harness, *epicDir, *story, *allowUnsandboxed)
+	if err != nil {
+		return fail("%v", err)
+	}
+	for _, n := range notices {
+		fmt.Println(n)
+	}
 	if err := registry.PrepareWorktree(*harness, wt.Path); err != nil {
 		return fail("prepare worktree trust: %v", err)
 	}
 	argv, err := registry.LaunchArgs(*harness, harnesspkg.Launch{
-		Role: harnesspkg.RoleWorker, Worktree: wt.Path, Model: model, Flags: pol.LaunchFlags(*harness), Brief: hb,
+		Role: harnesspkg.RoleWorker, Worktree: wt.Path, Model: model, Extension: extension,
+		Flags: pol.LaunchFlags(*harness), Brief: hb,
 	})
 	if err != nil {
 		return fail("compose launch argv: %v", err)

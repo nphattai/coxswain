@@ -44,6 +44,7 @@ func cmdControl(args []string) int {
 	fs.SetOutput(os.Stderr)
 	epicDir := fs.String("epic", "", "epic directory")
 	note := fs.String("note", "", "progress note (relaunch)")
+	allowUnsandboxed := fs.Bool("allow-unsandboxed", false, "authorize relaunching an unsandboxed harness (not a sandbox)")
 	if err := fs.Parse(rest); err != nil {
 		return 2
 	}
@@ -83,11 +84,20 @@ func cmdControl(args []string) int {
 		if err := piPreSpawnValidate(hname, model, ""); err != nil {
 			return fail("%v", err)
 		}
+		// Same authorization + extension flow as dispatch: an unsandboxed relaunch is refused without
+		// --allow-unsandboxed, and a pi relaunch keeps push/auto via its verified extension (or downgrades via notice).
+		extension, notices, _, err := authorizeWorker(hname, *epicDir, story, *allowUnsandboxed)
+		if err != nil {
+			return fail("%v", err)
+		}
+		for _, n := range notices {
+			fmt.Println(n)
+		}
 		if err := registry.PrepareWorktree(hname, wtPath); err != nil {
 			return fail("prepare worktree trust: %v", err)
 		}
 		argv, err := registry.LaunchArgs(hname, harness.Launch{
-			Role: harness.RoleWorker, Worktree: wtPath, Model: model,
+			Role: harness.RoleWorker, Worktree: wtPath, Model: model, Extension: extension,
 			Flags: pol.LaunchFlags(hname), Brief: harness.Brief{StoryPath: storyPath, Note: *note},
 		})
 		if err != nil {

@@ -14,7 +14,7 @@ import (
 // `cox workspace hooks --harness pi` and pi worker dispatch write them project-local. The deterministic test
 // (extension/cox-supervisor.test.ts) is not embedded - it is not needed at runtime.
 //
-//go:embed extension/cox-pi.ts extension/cox-supervisor.ts
+//go:embed extension/cox-pi.ts extension/cox-supervisor.ts extension/cox-commands.ts
 var extensionFS embed.FS
 
 // Extension install layout (project-local, never user-level Pi config). The entry file is what worker launch loads
@@ -24,13 +24,15 @@ const (
 	ExtensionRelDir  = ".pi/extensions" // project-local dir, relative to the worktree/clone root
 	ExtensionEntry   = "cox-pi.ts"      // the -e entry file
 	extensionSupport = "cox-supervisor.ts"
+	extensionCmds    = "cox-commands.ts"
 	extensionMarker  = ".cox-pi.hash" // load/hash marker written by cox
+	extensionEpic    = "cox-pi.epic"  // epic binding the extension reads when COX_EPIC is absent (leader install)
 )
 
 // extensionSources returns the embedded {basename: content} the extension is made of, in a stable order.
 func extensionSources() map[string][]byte {
 	src := map[string][]byte{}
-	for _, name := range []string{ExtensionEntry, extensionSupport} {
+	for _, name := range []string{ExtensionEntry, extensionSupport, extensionCmds} {
 		b, err := extensionFS.ReadFile("extension/" + name)
 		if err != nil {
 			// Embedded content is compiled in; a read error here is a build defect, not a runtime condition.
@@ -63,10 +65,11 @@ func hashSources(src map[string][]byte) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// InstallExtension writes the embedded extension (entry + support) into <root>/.pi/extensions/ and a hash marker, and
-// returns the absolute entry path to load with `-e`. It never touches user-level Pi config. Idempotent: a re-run
-// rewrites the same bytes and marker.
-func InstallExtension(root string) (entryPath string, err error) {
+// InstallExtension writes the embedded extension sources into <root>/.pi/extensions/, a hash marker, and (when epic is
+// non-empty) an epic-binding marker the extension reads when COX_EPIC is absent (a leader install). It returns the
+// absolute entry path to load with `-e`. It never touches user-level Pi config. Idempotent: a re-run rewrites the same
+// bytes and markers.
+func InstallExtension(root, epic string) (entryPath string, err error) {
 	dir := filepath.Join(root, ExtensionRelDir)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", fmt.Errorf("pi InstallExtension: mkdir %s: %w", dir, err)
@@ -79,6 +82,11 @@ func InstallExtension(root string) (entryPath string, err error) {
 	}
 	if err := os.WriteFile(filepath.Join(dir, extensionMarker), []byte(hashSources(src)+"\n"), 0o644); err != nil {
 		return "", fmt.Errorf("pi InstallExtension: write marker: %w", err)
+	}
+	if epic != "" {
+		if err := os.WriteFile(filepath.Join(dir, extensionEpic), []byte(epic+"\n"), 0o644); err != nil {
+			return "", fmt.Errorf("pi InstallExtension: write epic marker: %w", err)
+		}
 	}
 	abs, err := filepath.Abs(filepath.Join(dir, ExtensionEntry))
 	if err != nil {

@@ -1,12 +1,44 @@
 package main
 
 import (
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/nphattai/coxswain/internal/state"
 	"github.com/nphattai/coxswain/internal/workspace"
 )
+
+// authorizeWorker is the single gate every launch path shares. It refuses an unsandboxed harness without authority,
+// authorizes pi only with --allow-unsandboxed (installing its extension out-of-tree under the epic .cox), authorizes
+// claude silently via its standing ack, and leaves codex (sandboxed) ungated.
+func TestAuthorizeWorker(t *testing.T) {
+	epic := t.TempDir()
+	// pi without the flag is refused at the gate.
+	if _, _, _, err := authorizeWorker("pi", epic, "s1", false); err == nil || !strings.Contains(err.Error(), "unsandboxed") {
+		t.Fatalf("pi without --allow-unsandboxed must be refused, got %v", err)
+	}
+	// pi with the flag: authorized (authority=flag), extension installed out-of-tree under the epic .cox.
+	ext, _, auth, err := authorizeWorker("pi", epic, "s1", true)
+	if err != nil {
+		t.Fatalf("pi with flag: %v", err)
+	}
+	if auth != "flag" || ext == "" {
+		t.Fatalf("pi authorized: ext=%q auth=%q, want non-empty ext + authority flag", ext, auth)
+	}
+	if !strings.HasPrefix(ext, filepath.Join(epic, ".cox", "pi-ext")) {
+		t.Errorf("pi extension must be out-of-tree under the epic .cox, got %q", ext)
+	}
+	// claude authorizes silently via the standing ack: no flag, no extension, authority standing-ack.
+	if ext2, _, auth2, err := authorizeWorker("claude", epic, "s1", false); err != nil || ext2 != "" || auth2 != "standing-ack" {
+		t.Fatalf("claude authorizeWorker = (ext=%q auth=%q err=%v), want (\"\", standing-ack, nil)", ext2, auth2, err)
+	}
+	// codex is sandboxed: no extension, empty authority, no error.
+	if _, _, auth3, err := authorizeWorker("codex", epic, "s1", false); err != nil || auth3 != "" {
+		t.Fatalf("codex authorizeWorker auth=%q err=%v, want empty authority no error", auth3, err)
+	}
+}
 
 func TestEnvDuration(t *testing.T) {
 	const name = "COX_TEST_DUR"

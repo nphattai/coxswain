@@ -82,11 +82,13 @@ func storyDispatch(args []string) int {
 		fmt.Printf("routed %s -> harness=%s (%s)\n", story, ch.Harness, strings.Join(ch.Reasons, "; "))
 	}
 	harnessName := nonEmpty(*harnessFlag, routedHarness(routeChoice, nonEmpty(meta.Harness, "claude")))
-	// Enforce the capability card before doing any work at the single card-notice gate: a harness with no adapter (e.g.
-	// omp, opencode) is refused here; a pull-wake or manual-checkpoint harness prints a reduced-mode notice and still
-	// dispatches; and an unsandboxed harness (sandbox: false) is refused unless authorized by a standing card ack or the
-	// --allow-unsandboxed flag (recorded in dispatch evidence).
-	notices, unsandboxedAuthority, err := registry.Notices(harnessName, harness.RoleWorker, *allowUnsandboxed)
+	// Authorize the worker launch before doing any work at the single card-notice gate, and resolve the pi extension
+	// (out-of-tree): a harness with no adapter (e.g. omp, opencode) is refused here; a pull-wake or manual-checkpoint
+	// harness prints a reduced-mode notice and still dispatches; an unsandboxed harness (sandbox: false) is refused
+	// unless authorized by a standing card ack or --allow-unsandboxed (recorded in evidence); and a pi extension that
+	// cannot be verified downgrades the effective card to pull/manual. Extension install is out-of-tree, so this runs
+	// before the worktree is created.
+	extension, notices, unsandboxedAuthority, err := authorizeWorker(harnessName, *epicDir, story, *allowUnsandboxed)
 	if err != nil {
 		return fail("%v", err)
 	}
@@ -143,17 +145,6 @@ func storyDispatch(args []string) int {
 	// mutation beyond this per-directory trust; pi's trust is a launch flag so this is a no-op for pi.
 	if err := registry.PrepareWorktree(harnessName, wt.Path); err != nil {
 		return fail("prepare worktree trust: %v", err)
-	}
-	// For pi, install and verify the packaged extension in the worktree. A verified extension is loaded explicitly with
-	// -e (push/auto). An install/hash failure downgrades the EFFECTIVE card to pull/manual through the notice path
-	// (never inferred from the static push/auto card): the extension is left unset and pi runs in reduced mode.
-	extension := ""
-	if harnessName == "pi" {
-		var extNotices []string
-		extension, extNotices = resolvePiExtension(wt.Path)
-		for _, n := range extNotices {
-			fmt.Println(n)
-		}
 	}
 	// Compose the adapter-owned argv and thread it as data into the spawn spec (launch seam, ADR 0002): the backend
 	// types this argv, it never rebuilds it or imports the harness layer.
@@ -419,6 +410,7 @@ func storyControl(verb string, args []string) int {
 	harnessFlag := fs.String("harness", "", "resume on a different harness (reroute); default keeps the current harness")
 	modelFlag := fs.String("model", "", "model for the resumed harness (with --harness)")
 	forceModel := fs.Bool("force-model", false, "allow a model whose vendor does not match the harness")
+	allowUnsandboxed := fs.Bool("allow-unsandboxed", false, "authorize resuming an unsandboxed harness (not a sandbox)")
 	// park only: how long to wait for the worker's checkpoint before refusing to park blind. Defaults from COX_PARK_WAIT
 	// (0 => the controller's own default), so an E2E can shorten it and surface a checkpoint mismatch fast.
 	parkWait := fs.Duration("park-wait", envDuration("COX_PARK_WAIT", 0), "max wait for a matching checkpoint (park)")
@@ -464,18 +456,27 @@ func storyControl(verb string, args []string) int {
 		if rerouting {
 			extra = map[string]any{"reroute": map[string]any{"from": curHarness, "to": targetHarness, "reason": *note}}
 		}
-		// Resume preserves its historical launch shape: model only, no policy launch flags (the resumed harness keeps
-		// its prior autonomy), argv composed from the story path plus the progress note.
-		wtPath := readWorktree(*epicDir, story)
-		resumeStoryPath := filepath.Join(*epicDir, "stories", story+".md")
+		// Resume runs the SAME authorization + extension flow as initial dispatch: the card-notice gate (an unsandboxed
+		// reroute to pi is refused without --allow-unsandboxed) and the pi extension resolution (so a resumed pi worker
+		// keeps push wake + auto checkpoint, or downgrades to pull/manual via the notice path). It preserves resume's
+		// historical launch shape otherwise: model only, no policy launch flags (the resumed harness keeps its autonomy).
 		if err := piPreSpawnValidate(targetHarness, targetModel, ""); err != nil {
 			return fail("%v", err)
 		}
+		extension, notices, _, err := authorizeWorker(targetHarness, *epicDir, story, *allowUnsandboxed)
+		if err != nil {
+			return fail("%v", err)
+		}
+		for _, n := range notices {
+			fmt.Println(n)
+		}
+		wtPath := readWorktree(*epicDir, story)
+		resumeStoryPath := filepath.Join(*epicDir, "stories", story+".md")
 		if err := registry.PrepareWorktree(targetHarness, wtPath); err != nil {
 			return fail("prepare worktree trust: %v", err)
 		}
 		argv, err := registry.LaunchArgs(targetHarness, harness.Launch{
-			Role: harness.RoleWorker, Worktree: wtPath, Model: targetModel,
+			Role: harness.RoleWorker, Worktree: wtPath, Model: targetModel, Extension: extension,
 			Brief: harness.Brief{StoryPath: resumeStoryPath, Note: *note},
 		})
 		if err != nil {

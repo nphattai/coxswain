@@ -3,6 +3,7 @@ package pi
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -10,15 +11,19 @@ import (
 // then accepts the install and returns the -e entry path.
 func TestInstallAndVerifyExtension(t *testing.T) {
 	root := t.TempDir()
-	entry, err := InstallExtension(root)
+	entry, err := InstallExtension(root, "/Users/x/epics/v2")
 	if err != nil {
 		t.Fatalf("InstallExtension: %v", err)
 	}
 	dir := filepath.Join(root, ExtensionRelDir)
-	for _, name := range []string{ExtensionEntry, extensionSupport, extensionMarker} {
+	for _, name := range []string{ExtensionEntry, extensionSupport, extensionCmds, extensionMarker, extensionEpic} {
 		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
 			t.Errorf("expected %s installed: %v", name, err)
 		}
+	}
+	// The epic marker carries the binding the extension reads when COX_EPIC is absent.
+	if b, _ := os.ReadFile(filepath.Join(dir, extensionEpic)); strings.TrimSpace(string(b)) != "/Users/x/epics/v2" {
+		t.Errorf("epic marker = %q, want the epic dir", string(b))
 	}
 	got, ok := VerifyExtension(root)
 	if !ok {
@@ -42,7 +47,7 @@ func TestVerifyExtensionMissing(t *testing.T) {
 // A tampered (or stale) installed file no longer matches the embedded hash, so VerifyExtension returns false.
 func TestVerifyExtensionTampered(t *testing.T) {
 	root := t.TempDir()
-	if _, err := InstallExtension(root); err != nil {
+	if _, err := InstallExtension(root, ""); err != nil {
 		t.Fatal(err)
 	}
 	entryPath := filepath.Join(root, ExtensionRelDir, ExtensionEntry)

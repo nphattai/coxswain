@@ -98,30 +98,27 @@ func (h *Harness) PrepareWorktree(wt string) error {
 	}
 	path := filepath.Join(h.home(), ".codex", "config.toml")
 	header := fmt.Sprintf("[projects.%s]", tomlQuoteKey(abs))
-	existing, err := os.ReadFile(path)
-	if err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("codex PrepareWorktree: read %s: %w", path, err)
-	}
-	if strings.Contains(string(existing), header) {
-		return nil // already has a trust table for this directory; leave it as-is
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return fmt.Errorf("codex PrepareWorktree: mkdir: %w", err)
-	}
-	var b strings.Builder
-	b.Write(existing)
-	if len(existing) > 0 && !strings.HasSuffix(string(existing), "\n") {
-		b.WriteByte('\n')
-	}
-	fmt.Fprintf(&b, "\n%s\ntrust_level = \"trusted\"\n", header)
-	tmp := path + ".cox.tmp"
-	if err := os.WriteFile(tmp, []byte(b.String()), 0o600); err != nil {
-		return fmt.Errorf("codex PrepareWorktree: write temp: %w", err)
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		return fmt.Errorf("codex PrepareWorktree: replace %s: %w", path, err)
-	}
-	return nil
+	// Hold an exclusive lock across the read-append-write so concurrent dispatches never read the same snapshot and
+	// drop each other's trust table, and write via a unique temp (not a shared fixed name).
+	return harness.WithFileLock(path+".cox.lock", func() error {
+		existing, err := os.ReadFile(path)
+		if err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("codex PrepareWorktree: read %s: %w", path, err)
+		}
+		if strings.Contains(string(existing), header) {
+			return nil // already has a trust table for this directory; leave it as-is
+		}
+		var b strings.Builder
+		b.Write(existing)
+		if len(existing) > 0 && !strings.HasSuffix(string(existing), "\n") {
+			b.WriteByte('\n')
+		}
+		fmt.Fprintf(&b, "\n%s\ntrust_level = \"trusted\"\n", header)
+		if err := harness.AtomicWriteFile(path, []byte(b.String()), 0o600); err != nil {
+			return fmt.Errorf("codex PrepareWorktree: write %s: %w", path, err)
+		}
+		return nil
+	})
 }
 
 // tomlQuoteKey renders an absolute path as a TOML basic-string quoted key, escaping backslashes and quotes so a path

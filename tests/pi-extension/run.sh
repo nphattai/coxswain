@@ -25,7 +25,7 @@ node --input-type=module -e "
 
 echo "== 3. type-check against the installed Pi package =="
 if command -v tsc >/dev/null 2>&1; then
-  tsc --noEmit --strict --module nodenext --moduleResolution nodenext internal/adapter/harness/pi/extension/cox-pi.ts internal/adapter/harness/pi/extension/cox-supervisor.ts
+  tsc --noEmit --strict --module nodenext --moduleResolution nodenext internal/adapter/harness/pi/extension/cox-pi.ts internal/adapter/harness/pi/extension/cox-supervisor.ts internal/adapter/harness/pi/extension/cox-commands.ts
   echo "ok: tsc type-check passed"
 else
   echo "skip: tsc not installed; type-check runs in dogfood/CI where the Pi toolchain is present"

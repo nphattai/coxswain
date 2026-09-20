@@ -11,7 +11,9 @@ import (
 
 	"github.com/nphattai/coxswain/internal/adapter/backend"
 	"github.com/nphattai/coxswain/internal/adapter/backend/orca"
+	"github.com/nphattai/coxswain/internal/adapter/harness"
 	"github.com/nphattai/coxswain/internal/adapter/harness/pi"
+	"github.com/nphattai/coxswain/internal/adapter/harness/registry"
 	"github.com/nphattai/coxswain/internal/state"
 	"github.com/nphattai/coxswain/internal/workspace"
 )
@@ -78,19 +80,44 @@ func piPreSpawnValidate(harnessName, model, effort string) error {
 	return pi.ValidateThinking(effort)
 }
 
+// authorizeWorker runs the single card-notice authorization gate for a worker launch and, for pi, resolves the
+// out-of-tree packaged extension. It is the one place every launch path (dispatch, resume/reroute, control relaunch,
+// baseline) shares, so none can bypass the unsandboxed gate or silently omit the Pi extension. It returns the -e
+// extension path (empty for a non-pi harness or a reduced-mode downgrade), the notices to print, the recorded
+// unsandboxed authority ("flag"|"standing-ack"|""), and an error when the launch is refused (no adapter, role not
+// allowed, or an unauthorized unsandboxed harness).
+func authorizeWorker(harnessName, epic, story string, allowUnsandboxed bool) (extension string, notices []string, authority string, err error) {
+	n, authority, err := registry.Notices(harnessName, harness.RoleWorker, allowUnsandboxed)
+	if err != nil {
+		return "", nil, "", err
+	}
+	notices = n
+	if harnessName == "pi" {
+		ext, extNotices := resolvePiExtension(piExtDir(epic, story), epic)
+		extension = ext
+		notices = append(notices, extNotices...)
+	}
+	return extension, notices, authority, nil
+}
+
 // piReducedModeNotice is the downgrade notice printed when the pi extension is not verified: the effective card falls
 // from push/auto to pull/manual, emitted through the notice path, never inferred from the static card (DESIGN AC6).
 const piReducedModeNotice = "reduced mode: pi extension not verified (%s); effective card pull/manual - leader must run cox wake wait, worker must write cox checkpoint facts at each phase boundary"
 
-// resolvePiExtension installs the packaged pi extension into the worktree and verifies it. On success it returns the -e
-// entry path (push/auto). On install/hash failure it returns entry="" plus a reduced-mode downgrade notice, so pi
-// launches without the extension in pull/manual mode rather than claiming the static push/auto card over an unverified
-// extension.
-func resolvePiExtension(worktree string) (entry string, notices []string) {
-	if _, err := pi.InstallExtension(worktree); err != nil {
+// piExtDir is the out-of-tree install location for a worker's pi extension: under the epic's .cox, keyed by story. It is
+// deliberately NOT inside the story worktree, so a Pi dispatch never leaves untracked .pi runtime files in the tree the
+// worker commits from.
+func piExtDir(epic, story string) string { return filepath.Join(epic, ".cox", "pi-ext", story) }
+
+// resolvePiExtension installs the packaged pi extension into installDir (out-of-tree) with the epic binding and verifies
+// it. On success it returns the -e entry path (push/auto). On install/hash failure it returns entry="" plus a
+// reduced-mode downgrade notice, so pi launches without the extension in pull/manual mode rather than claiming the
+// static push/auto card over an unverified extension.
+func resolvePiExtension(installDir, epic string) (entry string, notices []string) {
+	if _, err := pi.InstallExtension(installDir, epic); err != nil {
 		return "", []string{fmt.Sprintf(piReducedModeNotice, "install failed: "+err.Error())}
 	}
-	entry, ok := pi.VerifyExtension(worktree)
+	entry, ok := pi.VerifyExtension(installDir)
 	if !ok {
 		return "", []string{fmt.Sprintf(piReducedModeNotice, "hash unverified")}
 	}

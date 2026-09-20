@@ -75,41 +75,38 @@ func (h *Harness) PrepareWorktree(wt string) error {
 		return fmt.Errorf("claude PrepareWorktree: resolve %q: %w", wt, err)
 	}
 	path := filepath.Join(h.home(), ".claude.json")
-	root := map[string]any{}
-	if data, err := os.ReadFile(path); err == nil {
-		if err := json.Unmarshal(data, &root); err != nil {
-			return fmt.Errorf("claude PrepareWorktree: parse %s: %w", path, err)
+	// Hold an exclusive lock across the read-modify-write so concurrent dispatches never read the same snapshot and drop
+	// each other's trust entry, and write via a unique temp (not a shared fixed name).
+	return harness.WithFileLock(path+".cox.lock", func() error {
+		root := map[string]any{}
+		if data, err := os.ReadFile(path); err == nil {
+			if err := json.Unmarshal(data, &root); err != nil {
+				return fmt.Errorf("claude PrepareWorktree: parse %s: %w", path, err)
+			}
+		} else if !os.IsNotExist(err) {
+			return fmt.Errorf("claude PrepareWorktree: read %s: %w", path, err)
 		}
-	} else if !os.IsNotExist(err) {
-		return fmt.Errorf("claude PrepareWorktree: read %s: %w", path, err)
-	}
-	projects, ok := root["projects"].(map[string]any)
-	if !ok || projects == nil {
-		projects = map[string]any{}
-	}
-	entry, ok := projects[abs].(map[string]any)
-	if !ok || entry == nil {
-		entry = map[string]any{}
-	}
-	entry["hasTrustDialogAccepted"] = true
-	projects[abs] = entry
-	root["projects"] = projects
+		projects, ok := root["projects"].(map[string]any)
+		if !ok || projects == nil {
+			projects = map[string]any{}
+		}
+		entry, ok := projects[abs].(map[string]any)
+		if !ok || entry == nil {
+			entry = map[string]any{}
+		}
+		entry["hasTrustDialogAccepted"] = true
+		projects[abs] = entry
+		root["projects"] = projects
 
-	out, err := json.MarshalIndent(root, "", "  ")
-	if err != nil {
-		return fmt.Errorf("claude PrepareWorktree: encode %s: %w", path, err)
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return fmt.Errorf("claude PrepareWorktree: mkdir: %w", err)
-	}
-	tmp := path + ".cox.tmp"
-	if err := os.WriteFile(tmp, out, 0o600); err != nil {
-		return fmt.Errorf("claude PrepareWorktree: write temp: %w", err)
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		return fmt.Errorf("claude PrepareWorktree: replace %s: %w", path, err)
-	}
-	return nil
+		out, err := json.MarshalIndent(root, "", "  ")
+		if err != nil {
+			return fmt.Errorf("claude PrepareWorktree: encode %s: %w", path, err)
+		}
+		if err := harness.AtomicWriteFile(path, out, 0o600); err != nil {
+			return fmt.Errorf("claude PrepareWorktree: write %s: %w", path, err)
+		}
+		return nil
+	})
 }
 
 // Telemetry ports v1 inbox-lib.sh session_ctx: find the newest session log for the worktree path and sum the last

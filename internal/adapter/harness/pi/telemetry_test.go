@@ -32,22 +32,23 @@ func writeSession(t *testing.T, home, worktree, name string, lines ...string) {
 	}
 }
 
-// A single session with an assistant turn reports the last assistant usage's context tokens (input + all cache) and the
-// assistant turn count.
+// A single session with an assistant turn reports the last assistant usage's context tokens (input + read cache + write
+// cache) and the assistant turn count. cacheWrite1h is the 1-hour-TTL subset of cacheWrite and must NOT be added again:
+// here cacheWrite=300 with cacheWrite1h=100, so context is 1000+200+300 = 1500 (not 1600).
 func TestTelemetryKnownWithCache(t *testing.T) {
 	home, wt := t.TempDir(), "/wt"
 	writeSession(t, home, wt, "2026_sess-1.jsonl",
 		sessionHeader,
 		`{"type":"message","id":"u","message":{"role":"user","content":"go"}}`,
-		asstUsage(1000, 200, 300, 100), // context = 1000+200+300+100 = 1600
+		asstUsage(1000, 200, 300, 100), // context = 1000+200+300 = 1500 (cacheWrite1h=100 is a subset of cacheWrite)
 	)
 	h := &Harness{Home: home}
 	ctx, err := h.Telemetry(wt)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !ctx.Known || ctx.Tokens != 1600 || ctx.Turns != 1 {
-		t.Fatalf("telemetry = %+v, want Known tokens=1600 turns=1", ctx)
+	if !ctx.Known || ctx.Tokens != 1500 || ctx.Turns != 1 {
+		t.Fatalf("telemetry = %+v, want Known tokens=1500 turns=1", ctx)
 	}
 }
 

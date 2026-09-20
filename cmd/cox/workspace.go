@@ -119,6 +119,8 @@ func cmdWorkspaceHooks(args []string) int {
 	fs.SetOutput(os.Stderr)
 	root := fs.String("root", ".", "workspace root")
 	harnessName := fs.String("harness", "claude", "harness whose hooks to install: "+harnessOptions())
+	epicDir := fs.String("epic", "", "epic dir the pi extension binds (pi only)")
+	dryRun := fs.Bool("dry-run", false, "pi only: print the extension install plan and write nothing")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -128,7 +130,7 @@ func cmdWorkspaceHooks(args []string) int {
 	}
 	// Pi installs a project-local extension (no claude/codex hook file), so it routes to its own installer.
 	if *harnessName == "pi" {
-		return installPiHooks(wsRoot, false)
+		return installPiHooks(wsRoot, *epicDir, *dryRun)
 	}
 	if *harnessName != "claude" && *harnessName != "codex" {
 		return usageErr("cox workspace hooks [--root <dir>] --harness " + harnessOptions())
@@ -148,17 +150,17 @@ func cmdWorkspaceHooks(args []string) int {
 // installPiHooks installs the project-local, hash-verifiable Coxswain Pi extension into <root>/.pi/extensions/, without
 // touching user-level Pi config (DESIGN section 4). It never installs claude/codex hooks. Worker launch loads the same
 // packaged extension explicitly with -e, so worker correctness does not depend on project trust or ambient discovery.
-func installPiHooks(root string, dryRun bool) int {
+func installPiHooks(root, epicDir string, dryRun bool) int {
 	if dryRun {
-		fmt.Printf("hooks (dry-run) would install the cox pi extension into %s (hash %s)\n",
-			filepath.Join(root, pi.ExtensionRelDir), pi.ExtensionHash()[:12])
+		fmt.Printf("hooks (dry-run) would install the cox pi extension into %s (hash %s, epic %s)\n",
+			filepath.Join(root, pi.ExtensionRelDir), pi.ExtensionHash()[:12], epicDir)
 		return 0
 	}
-	entry, err := pi.InstallExtension(root)
+	entry, err := pi.InstallExtension(root, epicDir)
 	if err != nil {
 		return fail("%v", err)
 	}
-	fmt.Printf("hooks: installed cox pi extension at %s (hash %s; load with -e)\n", entry, pi.ExtensionHash()[:12])
+	fmt.Printf("hooks: installed cox pi extension at %s (hash %s, epic %s; load with -e)\n", entry, pi.ExtensionHash()[:12], epicDir)
 	return 0
 }
 

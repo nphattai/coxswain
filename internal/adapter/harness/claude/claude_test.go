@@ -4,11 +4,53 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/nphattai/coxswain/internal/adapter/harness"
 )
+
+// Concurrent PrepareWorktree calls for different worktrees must all persist their trust entries: the process lock +
+// unique temp file prevent a lost update. On the old code (fixed .cox.tmp, no lock) parallel dispatches drop entries.
+func TestPrepareWorktreeConcurrent(t *testing.T) {
+	home := t.TempDir()
+	h := &Harness{Home: home}
+	const n = 24
+	var wg sync.WaitGroup
+	errs := make(chan error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			errs <- h.PrepareWorktree(filepath.Join(home, "wt", strconv.Itoa(i)))
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+	for e := range errs {
+		if e != nil {
+			t.Fatalf("concurrent PrepareWorktree error: %v", e)
+		}
+	}
+	data, err := os.ReadFile(filepath.Join(home, ".claude.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var root map[string]any
+	if err := json.Unmarshal(data, &root); err != nil {
+		t.Fatalf("config corrupted by concurrent writes: %v", err)
+	}
+	projects, _ := root["projects"].(map[string]any)
+	for i := 0; i < n; i++ {
+		abs, _ := filepath.Abs(filepath.Join(home, "wt", strconv.Itoa(i)))
+		e, ok := projects[abs].(map[string]any)
+		if !ok || e["hasTrustDialogAccepted"] != true {
+			t.Errorf("lost trust entry for worktree %d (concurrent write dropped it)", i)
+		}
+	}
+}
 
 // PrepareWorktree merges projects[<abspath>].hasTrustDialogAccepted=true into ~/.claude.json, creating the file when
 // absent and preserving every other project entry and top-level key.
