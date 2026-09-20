@@ -89,6 +89,9 @@ nav:
   - Reference:
     - CLI map: reference/cli.md
     - Configuration: reference/configuration.md
+    - workspace.json: reference/workspace-json.md
+    - policy.json: reference/policy-json.md
+    - Story frontmatter: reference/story-frontmatter.md
   - Build and extend:
     - Contributing: contributing.md
     - Author an adapter: contributing/adapters.md

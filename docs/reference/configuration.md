@@ -7,13 +7,16 @@ the authoritative shape. This page explains where a decision belongs and how pre
 
 ## Authority map
 
-| Surface | Purpose | Machine authority |
-|---|---|---|
-| `cox/workspace.json` | Projects, repositories, services, hosts, and backend worktree location | `templates/workspace.json`, `internal/workspace/workspace.go` |
-| `cox/policy.json` | Workspace-wide behavioral defaults and their rationale | `templates/policy.json`, `internal/workspace/policy.go` |
-| `<project>/cox/policy.json` | Project-specific replacement of selected policy sections | `internal/workspace/policy.go:Resolve` and tests |
-| Story frontmatter | Per-story harness, model, repo, ownership, and resolved delivery facts | `templates/story.md`, `cmd/cox/story.go`, `internal/epic/stories.go` |
-| Process environment | Narrow operational overrides documented by the owning command | `cmd/cox/` and adapter launch code |
+| Surface | Purpose | Field reference | Machine authority |
+|---|---|---|---|
+| `cox/workspace.json` | Projects, repositories, services, hosts, and backend worktree location | [`workspace.json`](workspace-json.md) | `templates/workspace.json`, `internal/workspace/workspace.go` |
+| `cox/policy.json` | Workspace-wide behavioral defaults and their rationale | [`policy.json`](policy-json.md) | `templates/policy.json`, `internal/workspace/policy.go` |
+| `<project>/cox/policy.json` | Project-specific replacement of selected policy sections | [`policy.json`](policy-json.md) | `internal/workspace/policy.go:Resolve` and tests |
+| Story frontmatter | Per-story harness, model, repo, ownership, and resolved delivery facts | [Story frontmatter](story-frontmatter.md) | `templates/story.md`, `cmd/cox/story.go`, `internal/epic/stories.go` |
+| Process environment | Narrow operational overrides documented by the owning command | - | `cmd/cox/` and adapter launch code |
+
+The three field-reference pages are kept in parity with the Go types by `internal/workspace/docs_parity_test.go`, so a
+field added or renamed in code fails the build until the page is updated.
 
 Do not copy the template into documentation. Inspect the current template before editing a workspace, and run
 `cox doctor` to detect drift.
