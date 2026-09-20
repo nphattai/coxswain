@@ -4,15 +4,49 @@ import (
 	"bytes"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/nphattai/coxswain/internal/protocol/checkpoint"
 	"github.com/nphattai/coxswain/internal/state"
 	"github.com/nphattai/coxswain/internal/wake"
 )
+
+// gitInitRepo makes a git repo with one commit, so checkpoint.Facts (which reads HEAD) works against it.
+func gitInitRepo(t *testing.T, dir string) {
+	t.Helper()
+	run := func(args ...string) {
+		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	run("init", "-q", "-b", "main")
+	run("commit", "-q", "--allow-empty", "-m", "init")
+}
+
+// A terminal-plane worker's checkpoint hooks run with no flags and rely on the exported COX_EPIC/COX_STORY (the worker
+// plane keeps that env). From a worktree outside any workspace, precompact must still write the worker checkpoint at the
+// env epic - not walk up, find no workspace, and skip it (PR#3 review round 2, finding 1).
+func TestCheckpointHooksUseWorkerEnvOutsideWorkspace(t *testing.T) {
+	epic := t.TempDir()
+	wt := t.TempDir()
+	gitInitRepo(t, wt)
+	t.Setenv("COX_EPIC", epic)
+	t.Setenv("COX_STORY", "m1")
+	t.Chdir(t.TempDir()) // cwd is outside any cox workspace
+	if code := cmdHook([]string{"precompact", "--worktree", wt}); code != 0 {
+		t.Fatalf("worker precompact exit %d (COX_EPIC/COX_STORY env fallback lost?)", code)
+	}
+	if _, err := os.Stat(checkpoint.Path(epic, "m1")); err != nil {
+		t.Errorf("worker checkpoint not written from the COX_EPIC/COX_STORY env: %v", err)
+	}
+}
 
 func noSleep(time.Duration) {}
 

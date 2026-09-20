@@ -8,13 +8,13 @@ import (
 	"testing"
 )
 
-// The leader-hook path no longer binds to an epic via COX_EPIC (DESIGN §3): hooks walk up to the workspace and act on
-// every active epic. Per the captain ruling (inbox 001), the grep is scoped to cmd/cox/hook.go, cmd/cox/workspace.go,
-// hooks/, templates/, and the leader docs; the worker launch plane keeps its own COX_EPIC untouched.
+// The leader wake hooks no longer bind to an epic via COX_EPIC (DESIGN §3): they walk up to the workspace and act on
+// every active epic. The grep is scoped to cmd/cox/workspace.go, hooks/, templates/, and the leader docs. cmd/cox/hook.go
+// is intentionally excluded: its precompact/session-start path keeps the COX_EPIC/COX_STORY worker-plane env fallback so
+// a terminal-plane worker's checkpoint hooks still resolve their epic (captain ruling, inbox 001 + review round 2).
 func TestNoCOXEPICInLeaderHookPath(t *testing.T) {
 	var files []string
 	files = append(files,
-		"hook.go",
 		"workspace.go",
 		"../../docs/adapters/claude.md",
 		"../../docs/adapters/codex.md",

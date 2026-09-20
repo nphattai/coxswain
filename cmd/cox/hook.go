@@ -35,8 +35,11 @@ func cmdHook(args []string) int {
 	name := args[0]
 	fs := flag.NewFlagSet("hook "+name, flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	epicDir := fs.String("epic", "", "epic directory (optional; narrows to one epic instead of every active epic in the workspace)")
-	story := fs.String("story", "", "story id (optional; the workspace path uses the leader checkpoint)")
+	// COX_EPIC/COX_STORY are the worker-plane env the launch line exports; the terminal-plane worker's checkpoint hooks
+	// (precompact, session-start) run with no flags and rely on them. Keeping them as the flag defaults preserves the
+	// worker checkpoint path; a leader terminal sets neither, so leader hooks fall through to workspace discovery.
+	epicDir := fs.String("epic", os.Getenv("COX_EPIC"), "epic directory (optional; narrows to one epic instead of every active epic in the workspace)")
+	story := fs.String("story", os.Getenv("COX_STORY"), "story id (optional; the workspace path uses the leader checkpoint)")
 	worktree := fs.String("worktree", ".", "worktree path")
 	harnessName := fs.String("harness", "claude", "invoking harness: claude | codex (controls the block/continue signal)")
 	if err := fs.Parse(args[1:]); err != nil {
