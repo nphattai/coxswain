@@ -7,7 +7,7 @@ and recovery.
 
 | Need | Route |
 |---|---|
-| Create and dispatch a first story | [Run your first epic](../QUICKSTART.md) |
+| Create and dispatch a first story | [First epic](../getting-started/first-epic.md) |
 | Decide whether a design needs adversarial review | [Arena](../arena.md) |
 | Supervise workers and answer questions | [Handoff](../handoff.md) |
 | Inspect all stories without changing them | [Board](../board.md) |

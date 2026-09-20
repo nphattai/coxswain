@@ -4,14 +4,16 @@ Coxswain is the control plane for multi-agent epics. A human captain works with 
 approved design into repo-scoped stories, dispatches workers into isolated git worktrees, and supervises them through
 durable state. The captain reviews and merges every change.
 
-Coxswain is designed for work that crosses repositories or needs durable agent supervision. It is not a wrapper for a
-single prompt or a replacement for human merge authority.
+Coxswain fits any codebase that needs durable agent supervision - a single repo, a monorepo, or many repos at once. A
+workspace is a folder beside your code, so a monorepo is a first-class case (register it as one repo in a sibling ops
+workspace). It is not a wrapper for a single prompt or a replacement for human merge authority.
 
 ## Start here
 
-1. [Install the binary and harness integration](docs/getting-started/install.md).
-2. [Run a first epic](docs/QUICKSTART.md).
-3. [Learn the operating model](docs/getting-started/concepts.md).
+1. [Install](docs/getting-started/install.md) the `cox` binary, Orca, and your harness.
+2. [Create a workspace](docs/getting-started/workspace.md) with one command - single repo or many.
+3. [Run a first epic](docs/getting-started/first-epic.md) to a dispatched story.
+4. [Learn the operating model](docs/getting-started/concepts.md).
 
 The published manual is at <https://nphattai.github.io/coxswain/>.
 

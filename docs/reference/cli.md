@@ -9,7 +9,7 @@ and implementation file under `cmd/cox/` own its exact flags, validation, and ex
 
 | Task | Command family | Owner |
 |---|---|---|
-| Set up a workspace (`init`), leader hooks (`hooks`), add a repo (`add-repo`) | `cox workspace` | `cmd/cox/workspace.go`, `internal/workspace/` |
+| Set up a workspace (`init`), write leader hooks (`hooks --harness claude\|codex`), add a repo (`add-repo`) | `cox workspace` | `cmd/cox/workspace.go`, `internal/workspace/` |
 | Check the workspace, PATH, Orca, harness binaries, hooks, and epic health | `cox doctor` | `cmd/cox/doctor.go`, `internal/doctor/` |
 | Migrate a v1 epic | `cox migrate` | `cmd/cox/migrate.go`, `internal/migrate/` |
 
@@ -32,6 +32,8 @@ and implementation file under `cmd/cox/` own its exact flags, validation, and ex
 | Ask, wait, and reply | `cox question`, `cox reply` | `cmd/cox/question.go`, `cmd/cox/reply.go` |
 | Capture or inject resume context | `cox checkpoint` | `cmd/cox/checkpoint.go`, `internal/protocol/checkpoint/` |
 | Drain, acknowledge, or wait for wakes | `cox wake`, `cox watch` | `cmd/cox/wake.go`, `cmd/cox/watch.go` |
+| Acknowledge a steer/inbox record (worker) | `cox inbox ack` | `cmd/cox/inbox.go`, `internal/protocol/inbox/` |
+| Run a harness hook (drain, rewake, checkpoint) | `cox hook` | `cmd/cox/hook.go`, `hooks/` |
 
 ## Observe and recover
 
