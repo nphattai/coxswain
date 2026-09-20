@@ -60,7 +60,7 @@ type EpicMeta struct {
 func New(o NewOptions) (string, error) {
 	epicDir := o.EpicDir()
 	if _, err := os.Stat(epicDir); err == nil {
-		return "", fmt.Errorf("epic dir already exists: %s", epicDir)
+		return "", fmt.Errorf("epic dir already exists: %s (use 'cox epic attach --epic %s' to re-attach it on a fresh clone)", epicDir, epicDir)
 	}
 	for _, sub := range []string{"stories", "plans", "reports", "handoffs", "briefs", "inbox", ".cox"} {
 		if err := os.MkdirAll(filepath.Join(epicDir, sub), 0o755); err != nil {
@@ -96,9 +96,9 @@ func New(o NewOptions) (string, error) {
 		return "", err
 	}
 
-	// epic.env with an allocated port block.
-	api, base := allocatePorts(o.WsRoot)
-	if err := os.WriteFile(filepath.Join(epicDir, "epic.env"), []byte(renderEpicEnv(&o, api, base)), 0o644); err != nil {
+	// epic.env: a port block only when the epic declares a backend; otherwise EPIC and PROJECT only, so a docs-only or
+	// CLI-only epic allocates no ports (§4).
+	if err := os.WriteFile(filepath.Join(epicDir, "epic.env"), []byte(renderEpicEnv(&o)), 0o644); err != nil {
 		return "", err
 	}
 
@@ -118,8 +118,10 @@ func New(o NewOptions) (string, error) {
 		if err := os.Symlink(wt.Path, link); err != nil {
 			return "", fmt.Errorf("symlink %s -> %s: %w", alias, wt.Path, err)
 		}
+		fmt.Fprintf(o.warn(), "epic new: marking %s trusted in ~/.claude.json\n", wt.Path)
 		trustWorktree(o.warn(), wt.Path)
 		if !o.NoPush {
+			fmt.Fprintf(o.warn(), "epic new: publishing epic/%s to origin for %s (use --no-push to skip)\n", o.Slug, alias)
 			if err := pushEpicBranch(wt.Path, o.Slug); err != nil {
 				fmt.Fprintf(o.warn(), "warn: could not publish epic/%s for %s: %v\n", o.Slug, alias, err)
 			}
@@ -134,11 +136,17 @@ func New(o NewOptions) (string, error) {
 	return epicDir, nil
 }
 
-func renderEpicEnv(o *NewOptions, api, base int) string {
-	dbName := strings.ReplaceAll(o.Slug, "-", "_")
+// renderEpicEnv builds epic.env. A docs-only or CLI-only epic (no --backend) carries EPIC and PROJECT only and allocates
+// no ports; an epic that declares a backend gets the full block with a freshly allocated port range and a DB name.
+func renderEpicEnv(o *NewOptions) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "EPIC=%s\n", o.Slug)
 	fmt.Fprintf(&b, "PROJECT=%s\n", o.Project)
+	if o.BackendAlias == "" {
+		return b.String()
+	}
+	api, base := allocatePorts(o.WsRoot)
+	dbName := strings.ReplaceAll(o.Slug, "-", "_")
 	fmt.Fprintf(&b, "BACKEND=%s\n", o.BackendAlias)
 	b.WriteString("BACKEND_APP=\n")
 	fmt.Fprintf(&b, "API_PORT=%d\n", api)
