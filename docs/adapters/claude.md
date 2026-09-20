@@ -25,8 +25,10 @@ This table is checked against `internal/adapter/harness/claude.Harness.Card()` b
 ## Support contract
 
 - Claude reads the harness-neutral job description through `CLAUDE.md`; plugin skills carry the role workflows.
-- Leader hooks drain wakes and rearm an idle leader. Worker hooks preserve and inject checkpoints around compaction or
-  resume.
+- Leader hooks belong to the workspace, not an epic: `cox workspace init` (or `cox workspace hooks --harness claude`)
+  writes `.claude/settings.json`, and each hook walks up from the cwd to the workspace and acts on every epic with a live
+  watcher - draining wakes and rearming an idle leader, and refreshing or injecting the leader checkpoint around
+  compaction or resume.
 - Telemetry reads the newest matching session log. No usable log is unknown, never zero usage.
 - Worker launch permissions and models come from resolved policy. Non-interactive permission modes transfer risk to the
   captain and can be tightened or removed in policy.

@@ -9,15 +9,15 @@ and implementation file under `cmd/cox/` own its exact flags, validation, and ex
 
 | Task | Command family | Owner |
 |---|---|---|
-| Initialize workspace files | `cox workspace` | `cmd/cox/workspace.go` |
-| Check installation, drift, and epic health | `cox doctor` | `cmd/cox/doctor.go`, `internal/doctor/` |
+| Set up a workspace (`init`), leader hooks (`hooks`), add a repo (`add-repo`) | `cox workspace` | `cmd/cox/workspace.go`, `internal/workspace/` |
+| Check the workspace, PATH, Orca, harness binaries, hooks, and epic health | `cox doctor` | `cmd/cox/doctor.go`, `internal/doctor/` |
 | Migrate a v1 epic | `cox migrate` | `cmd/cox/migrate.go`, `internal/migrate/` |
 
 ## Design and decompose
 
 | Task | Command family | Owner |
 |---|---|---|
-| Create, sign, or close an epic | `cox epic` | `cmd/cox/epic.go`, `internal/epic/` |
+| Create, attach, sign, or close an epic | `cox epic` | `cmd/cox/epic.go`, `internal/epic/` |
 | Run adversarial design review | `cox epic arena`, `cox arena` | `cmd/cox/arena.go`, `internal/arena/` |
 | Render or compare plan artifacts | `cox plan`, `cox artifact` | `cmd/cox/plan.go`, `cmd/cox/artifact.go` |
 

@@ -32,7 +32,9 @@ This table is checked against `internal/adapter/harness/codex.Harness.Card()` by
 - Worker launch flags, model selection, network access, and additional writable roots are composed by
   `internal/adapter/backend/launch.go`. These permissions are captain-owned policy.
 - Project hooks are installed only in the project layer. Coxswain does not modify the user's Codex configuration or
-  trust decision.
+  trust decision. `cox workspace init` (or `cox workspace hooks --harness codex`) writes the workspace `.codex/hooks.json`
+  with the four leader hooks from `hooks/hooks.json`; each hook resolves the workspace from the cwd and acts on every
+  epic with a live watcher, so leader hooks belong to the workspace, not an epic.
 
 The executable owners are `internal/adapter/harness/codex/`, `internal/adapter/backend/launch.go`,
 `cmd/cox/workspace.go`, `cmd/cox/hook.go`, and their tests. Dated hook and sandbox findings are in
