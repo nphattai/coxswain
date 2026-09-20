@@ -38,17 +38,32 @@ func TestSetupCommandsUseHomeNotTilde(t *testing.T) {
 }
 
 func TestSetupPageCommandsAreInE2E(t *testing.T) {
-	e2e := coxCommandKeys(readFile(t, e2eScript), false)
+	// The E2E's coverage per subcommand: subcommand -> the union of flag NAMES it exercises across all invocations.
+	e2e := map[string]map[string]bool{}
+	for _, c := range coxCommands(readFile(t, e2eScript), false) {
+		if e2e[c.sub] == nil {
+			e2e[c.sub] = map[string]bool{}
+		}
+		for f := range c.flags {
+			e2e[c.sub][f] = true
+		}
+	}
 	if len(e2e) == 0 {
 		t.Fatalf("no cox commands found in %s", e2eScript)
 	}
 	total := 0
 	for _, page := range setupPages {
-		keys := coxCommandKeys(readFile(t, page), true) // fenced blocks only
-		for key := range keys {
+		for _, c := range coxCommands(readFile(t, page), true) { // fenced blocks only
 			total++
-			if !e2e[key] {
-				t.Errorf("%s runs `cox %s` but %s does not; extend the E2E instead of documenting an untested command", page, key, e2eScript)
+			cov, ok := e2e[c.sub]
+			if !ok {
+				t.Errorf("%s runs `cox %s` but %s never runs that subcommand; extend the E2E", page, c.sub, e2eScript)
+				continue
+			}
+			for f := range c.flags {
+				if !cov[f] {
+					t.Errorf("%s runs `cox %s %s` but the E2E does not exercise %s on `cox %s`; extend the E2E", page, c.sub, f, f, c.sub)
+				}
 			}
 		}
 	}
@@ -57,11 +72,17 @@ func TestSetupPageCommandsAreInE2E(t *testing.T) {
 	}
 }
 
-// coxCommandKeys returns the set of command keys in text. A key is up to the first two non-flag tokens after a cox
-// invocation token (`cox`, `$COX`, `"$COX"`, or any token ending in /cox), e.g. "workspace init", "epic new", "doctor".
-// When fencedOnly is true (markdown pages), only lines inside ``` fenced code blocks are scanned.
-func coxCommandKeys(text string, fencedOnly bool) map[string]bool {
-	keys := map[string]bool{}
+// coxCmd is one cox invocation reduced to its subcommand (up to the first two non-flag tokens) and the set of flag
+// NAMES it carries (values are ignored, so `--repo api` and `--repo web` both count as the `--repo` flag).
+type coxCmd struct {
+	sub   string
+	flags map[string]bool
+}
+
+// coxCommands returns every cox invocation in text. When fencedOnly is true (markdown pages) only ``` fenced blocks are
+// scanned.
+func coxCommands(text string, fencedOnly bool) []coxCmd {
+	var cmds []coxCmd
 	inFence := !fencedOnly
 	for _, line := range strings.Split(text, "\n") {
 		if fencedOnly && strings.HasPrefix(strings.TrimSpace(line), "```") {
@@ -71,31 +92,37 @@ func coxCommandKeys(text string, fencedOnly bool) map[string]bool {
 		if !inFence {
 			continue
 		}
-		if key := commandKey(strings.Fields(line)); key != "" {
-			keys[key] = true
+		if c, ok := parseCoxCommand(strings.Fields(line)); ok {
+			cmds = append(cmds, c)
 		}
 	}
-	return keys
+	return cmds
 }
 
-func commandKey(fields []string) string {
+func parseCoxCommand(fields []string) (coxCmd, bool) {
 	for i, f := range fields {
 		if !isCoxInvocation(f) {
 			continue
 		}
-		var parts []string
+		c := coxCmd{flags: map[string]bool{}}
+		var sub []string
+		seenFlag := false
 		for _, tok := range fields[i+1:] {
-			if strings.HasPrefix(tok, "-") { // a flag ends the command name
-				break
+			if strings.HasPrefix(tok, "-") {
+				c.flags[strings.SplitN(tok, "=", 2)[0]] = true // flag name, dropping any =value
+				seenFlag = true
+				continue
 			}
-			parts = append(parts, tok)
-			if len(parts) == 2 {
-				break
+			// Subcommand is the first (up to two) non-flag tokens BEFORE any flag; tokens after a flag are flag values
+			// or positional args, never part of the subcommand name.
+			if !seenFlag && len(sub) < 2 {
+				sub = append(sub, tok)
 			}
 		}
-		return strings.Join(parts, " ")
+		c.sub = strings.Join(sub, " ")
+		return c, c.sub != ""
 	}
-	return ""
+	return coxCmd{}, false
 }
 
 func isCoxInvocation(tok string) bool {
