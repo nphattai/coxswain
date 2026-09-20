@@ -65,6 +65,33 @@ func TestScaffoldRefusesWithoutRepo(t *testing.T) {
 	}
 }
 
+// An invalid seed (e.g. a repo with an empty production, as a --from-repos-md row can produce) is rejected before any
+// write, so it never wedges the workspace on disk.
+func TestScaffoldRejectsInvalidSeedBeforeWrite(t *testing.T) {
+	root := t.TempDir()
+	if _, err := Scaffold(root, []Repo{{Alias: "a", Path: t.TempDir()}}); err == nil { // no production
+		t.Fatal("scaffold with an invalid seed must fail")
+	}
+	if _, err := os.Stat(filepath.Join(root, "cox", "workspace.json")); !os.IsNotExist(err) {
+		t.Error("an invalid seed must not be written to disk")
+	}
+}
+
+// AddRepo extends .gitignore with the new alias's per-epic symlink rule.
+func TestAddRepoExtendsGitignore(t *testing.T) {
+	root := t.TempDir()
+	if _, err := Scaffold(root, []Repo{{Alias: "app", Path: t.TempDir(), Production: "main"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := AddRepo(root, Repo{Alias: "web", Path: t.TempDir(), Production: "main"}); err != nil {
+		t.Fatal(err)
+	}
+	gi, _ := os.ReadFile(filepath.Join(root, ".gitignore"))
+	if !strings.Contains(string(gi), "*/epics/*/web") {
+		t.Errorf(".gitignore missing the new alias rule:\n%s", gi)
+	}
+}
+
 // AddRepo persists a repo into workspace.json and refuses a duplicate alias.
 func TestAddRepoPersistsAndRefusesDuplicate(t *testing.T) {
 	root := t.TempDir()

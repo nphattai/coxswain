@@ -17,6 +17,13 @@ import (
 // A file that already exists is left untouched (reported in `created`), so init is safe to re-run. When ws is non-nil
 // its repos/projects seed workspace.json instead of the empty default (used by --from-repos-md).
 func Init(wsRoot string, ws *Workspace) (created []string, err error) {
+	// Validate a seed BEFORE writing anything: an invalid seed (e.g. a --from-repos-md row with an empty production)
+	// must never land on disk, or the validating Load rejects it on every later command and the workspace is wedged.
+	if ws != nil {
+		if err := ws.Validate(); err != nil {
+			return nil, err
+		}
+	}
 	dir := filepath.Join(wsRoot, ControlDir)
 	if err := os.MkdirAll(filepath.Join(dir, "services"), 0o755); err != nil {
 		return nil, err
@@ -143,7 +150,13 @@ func AddRepo(wsRoot string, r Repo) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, append(b, '\n'), 0o644)
+	if err := os.WriteFile(path, append(b, '\n'), 0o644); err != nil {
+		return err
+	}
+	// Keep .gitignore's per-alias symlink rule in step with the registry, so a repo added after init still has its
+	// */epics/*/<alias> worktree symlinks ignored (DESIGN §2).
+	var rep ScaffoldReport
+	return ensureGitignore(wsRoot, ws, &rep)
 }
 
 // gitignoreRules returns the machine-bound paths a workspace .gitignore must cover (DESIGN §2): the local registry, the
