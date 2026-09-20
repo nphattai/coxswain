@@ -110,6 +110,12 @@ step "3. cox epic stories"
 step "4. cox story dispatch"
 if "$COX" story dispatch hello-app --epic "$EPIC" >/dev/null 2>&1; then ok "dispatched"; else no "dispatch failed"; fi
 
+step "4b. cox wake wait (the pull-harness leader wake loop taught on the First epic page)"
+# A queued wake (exit 0) or a clean idle timeout (exit 3) both prove the command runs; only a usage (2) or hard
+# failure (1) is wrong. --max is tiny so CI does not block.
+"$COX" wake wait --max 3s --epic "$EPIC" >/dev/null 2>&1; wc=$?
+{ [ $wc -eq 0 ] || [ $wc -eq 3 ]; } && ok "wake wait ran (exit $wc)" || no "wake wait exit $wc (want 0 or 3)"
+
 step "5. cox doctor exits 0 and lists workspace, epic, watcher, hooks"
 OUT="$("$COX" doctor --root "$WS" --epic "$EPIC" 2>&1)"; code=$?
 echo "$OUT"
