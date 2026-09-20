@@ -8,15 +8,15 @@ command creates all of it.
 
 ```bash
 cox workspace init \
-  --root ~/Work/acme-ops \
-  --repo api=~/Work/acme-api
+  --root $HOME/Work/acme-ops \
+  --repo api=$HOME/Work/acme-api
 ```
 
 `--repo` is `<alias>=<absolute-path>[:<production-branch>]` and repeatable. When you omit `:production`, init reads the
 checkout's default branch (`origin/HEAD`, else `main`). With no `--repo`, init refuses rather than write a placeholder
 you would have to hand-edit.
 
-Add a repo later with `cox workspace add-repo api=~/Work/acme-api`; re-running `cox workspace init` is idempotent - it
+Add a repo later with `cox workspace add-repo api=$HOME/Work/acme-api`; re-running `cox workspace init` is idempotent - it
 reports what already exists and creates only what is missing, and never rewrites `workspace.json`, `policy.json`, or an
 edited `AGENTS.md`.
 
@@ -39,7 +39,7 @@ epic under the workspace. Re-run just the hooks with `cox workspace hooks --harn
 Verify the result any time:
 
 ```bash
-cox doctor --root ~/Work/acme-ops
+cox doctor --root $HOME/Work/acme-ops
 ```
 
 ## Two workspace shapes
@@ -51,38 +51,38 @@ alias. From an empty folder to a dispatched story:
 
 ```bash
 cox workspace init \
-  --root ~/Work/acme-ops \
-  --repo api=~/Work/acme-api \
-  --repo web=~/Work/acme-web \
-  --repo infra=~/Work/acme-infra
+  --root $HOME/Work/acme-ops \
+  --repo api=$HOME/Work/acme-api \
+  --repo web=$HOME/Work/acme-web \
+  --repo infra=$HOME/Work/acme-infra
 
 cox epic new acme checkout \
   --repo api --repo web \
-  --root ~/Work/acme-ops
+  --root $HOME/Work/acme-ops
 
-cox epic stories --epic ~/Work/acme-ops/acme/epics/checkout
+cox epic stories --epic $HOME/Work/acme-ops/acme/epics/checkout
 # edit stories/checkout-api.md (goal, scope, owned files, proof), then:
-cox story dispatch checkout-api --epic ~/Work/acme-ops/acme/epics/checkout
+cox story dispatch checkout-api --epic $HOME/Work/acme-ops/acme/epics/checkout
 ```
 
 ### Shape B - a personal monorepo (sibling ops folder)
 
-You have one monorepo (`~/Work/henrylab`) with products under `apps/`. The workspace is a **sibling** ops folder,
-`~/Work/henrylab-ops`, whose single repo entry points at the monorepo. Epics are named `<product>-<slug>`, and each
+You have one monorepo (`$HOME/Work/henrylab`) with products under `apps/`. The workspace is a **sibling** ops folder,
+`$HOME/Work/henrylab-ops`, whose single repo entry points at the monorepo. Epics are named `<product>-<slug>`, and each
 story pins its product by scoping `apps/<product>` in its text:
 
 ```bash
 cox workspace init \
-  --root ~/Work/henrylab-ops \
-  --repo henrylab=~/Work/henrylab
+  --root $HOME/Work/henrylab-ops \
+  --repo henrylab=$HOME/Work/henrylab
 
 cox epic new henrylab notes-sync \
   --repo henrylab \
-  --root ~/Work/henrylab-ops
+  --root $HOME/Work/henrylab-ops
 
-cox epic stories --epic ~/Work/henrylab-ops/henrylab/epics/notes-sync
+cox epic stories --epic $HOME/Work/henrylab-ops/henrylab/epics/notes-sync
 # in stories/notes-sync-henrylab.md, scope the work to apps/notes, then:
-cox story dispatch notes-sync-henrylab --epic ~/Work/henrylab-ops/henrylab/epics/notes-sync
+cox story dispatch notes-sync-henrylab --epic $HOME/Work/henrylab-ops/henrylab/epics/notes-sync
 ```
 
 ### Do not put the workspace inside a monorepo

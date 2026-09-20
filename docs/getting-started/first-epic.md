@@ -9,7 +9,7 @@ onboarding end-to-end test, so you can copy it with confidence.
 ```bash
 cox epic new acme checkout \
   --repo api --repo web \
-  --root ~/Work/acme-ops
+  --root $HOME/Work/acme-ops
 ```
 
 `cox epic new <project> <slug>` creates the epic directory (`<root>/<project>/epics/<slug>` with `DESIGN.md`, `repos`,
@@ -17,14 +17,14 @@ and the `.cox/` state tree), one Orca worktree per repo on branch `epic/<slug>` 
 and the alias symlinks into the epic dir. It announces each outward effect before doing it:
 
 - it **pushes** `epic/<slug>` to origin - pass `--no-push` to keep it local;
-- it writes a trust entry to `~/.claude.json` so the harness may run in the new worktrees.
+- it writes a trust entry to `$HOME/.claude.json` so the harness may run in the new worktrees.
 
 An epic with no backend gets an `epic.env` carrying only `EPIC` and `PROJECT` (no ports allocated).
 
 ## 2. Render the stories
 
 ```bash
-cox epic stories --epic ~/Work/acme-ops/acme/epics/checkout
+cox epic stories --epic $HOME/Work/acme-ops/acme/epics/checkout
 ```
 
 This renders one story per repo from `templates/story.md`, resolving the project policy once (delivery style, context
@@ -38,7 +38,7 @@ for every field.
 ## 3. Dispatch a story
 
 ```bash
-cox story dispatch checkout-api --epic ~/Work/acme-ops/acme/epics/checkout
+cox story dispatch checkout-api --epic $HOME/Work/acme-ops/acme/epics/checkout
 ```
 
 The worker runs in its own worktree on `story/<id>`. `agent: auto` routes the harness from policy; a fixed harness skips
@@ -54,7 +54,7 @@ on the harness:
 - **Pull (Codex, and any harness without hooks):** the leader drains at the start of each turn and blocks when idle:
 
   ```bash
-  cox wake wait --max 15m --epic ~/Work/acme-ops/acme/epics/checkout
+  cox wake wait --max 15m --epic $HOME/Work/acme-ops/acme/epics/checkout
   ```
 
 A wake is a durable notification, not the source of truth; the event log and `cox state` own story state.
@@ -79,7 +79,7 @@ fresh clone or a second machine - it recreates `.cox/`, the worktrees on the exi
 never recreated), and the alias symlinks:
 
 ```bash
-cox epic attach --epic ~/Work/acme-ops/acme/epics/checkout
+cox epic attach --epic $HOME/Work/acme-ops/acme/epics/checkout
 ```
 
 `attach` refuses if a `.cox/` already exists or a worktree is dirty, so it never clobbers live state.

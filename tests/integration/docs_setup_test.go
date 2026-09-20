@@ -19,6 +19,24 @@ var setupPages = []string{
 
 const e2eScript = "../../tests/e2e/onboarding.sh"
 
+// TestSetupCommandsUseHomeNotTilde guards the zsh trap the leader hit in review: `--repo alias=~/path` is NOT expanded
+// after `=` in zsh (macOS default), so the tilde is recorded literally as a backend repo name. Every fenced command on
+// the Set up pages must use $HOME instead of ~ for a home path.
+func TestSetupCommandsUseHomeNotTilde(t *testing.T) {
+	for _, page := range setupPages {
+		inFence := false
+		for i, line := range strings.Split(readFile(t, page), "\n") {
+			if strings.HasPrefix(strings.TrimSpace(line), "```") {
+				inFence = !inFence
+				continue
+			}
+			if inFence && strings.Contains(line, "~/") {
+				t.Errorf("%s:%d fenced command uses ~ for a home path; use $HOME (zsh does not expand ~ after =): %q", page, i+1, strings.TrimSpace(line))
+			}
+		}
+	}
+}
+
 func TestSetupPageCommandsAreInE2E(t *testing.T) {
 	e2e := coxCommandKeys(readFile(t, e2eScript), false)
 	if len(e2e) == 0 {
