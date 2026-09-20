@@ -46,6 +46,10 @@ by a command have authority.
 - An explicit empty launch-flag list is a captain opt-out, distinct from an absent entry.
 - Optional newer sections retain code defaults so older workspace policy can still load.
 - Project policy cannot silently inherit a rationale that no longer matches its replacement value.
+- An unsandboxed harness (`sandbox: false`, e.g. Pi) is refused at dispatch unless authorized: claude carries a standing
+  card acknowledgment, while Pi requires an explicit `cox story dispatch --allow-unsandboxed` recorded in evidence. The
+  flag authorizes an unsandboxed dispatch; it is not a sandbox. Pi is a policy `harness` option with no default model, so
+  a Pi dispatch must pin an explicit `provider/model`.
 
 For exact keys and defaults, read `templates/workspace.json`, `templates/policy.json`, and the types in
 `internal/workspace/`. For operational commands, use [CLI map](cli.md).
