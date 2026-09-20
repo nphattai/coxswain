@@ -12,9 +12,11 @@ List existing epics' `Status:` lines (`grep -H '^Status:' <ws>/*/epics/*/DESIGN.
 
 ## 1. Create the epic
 ```
-cox epic new <project> <slug> --repo <alias> [--repo <alias> ...] [--backend <alias>]
+cox epic new <project> <slug> --repo <alias> [--repo <alias> ...] [--backend <alias>] [--root <dir>] [--no-push]
 ```
-`--repo` aliases resolve from `<ws>/cox/workspace.json` (name or absolute path); `alias=ref` registers an ad-hoc repo. This creates the epic dir, one worktree per repo on `epic/<slug>` (cut from the repo's production branch), the alias symlinks, `epic.env` (a fresh port block), `DESIGN.md`, and `.cox/epic.json`. It publishes `epic/<slug>` to origin unless `--no-push`. Check `epic.env`: set `BACKEND`, `BACKEND_APP`, `SEED`, `SIM_BASE` if the epic needs them.
+`--root` is the workspace root (defaults to the current directory); `--no-push` keeps `epic/<slug>` local instead of
+publishing it to origin. `--repo` aliases resolve from `<ws>/cox/workspace.json` (name or absolute path); `alias=ref`
+registers an ad-hoc repo. This creates the epic dir, one worktree per repo on `epic/<slug>` (cut from the repo's production branch), the alias symlinks, `epic.env` (a fresh port block), `DESIGN.md`, and `.cox/epic.json`. It publishes `epic/<slug>` to origin unless `--no-push`. Check `epic.env`: set `BACKEND`, `BACKEND_APP`, `SEED`, `SIM_BASE` if the epic needs them.
 
 ## 2. Epic environment (only if the epic runs a backend)
 Write the service adapter `<ws>/cox/services/<alias>.sh` (four verbs; see `docs/adapters/service.md`), then:
