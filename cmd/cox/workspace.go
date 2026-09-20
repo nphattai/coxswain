@@ -175,8 +175,10 @@ func parseRepoFlag(v string) (workspace.Repo, error) {
 	if !ok || strings.TrimSpace(alias) == "" || strings.TrimSpace(ref) == "" {
 		return workspace.Repo{}, fmt.Errorf("--repo must be alias=path[:production], got %q", v)
 	}
+	// A path or name never contains ':', so the last ':' (after the '=') separates an optional production branch, which
+	// itself may contain slashes (e.g. release/2026).
 	prod := ""
-	if i := strings.LastIndex(ref, ":"); i > 0 && !strings.Contains(ref[i+1:], "/") {
+	if i := strings.LastIndex(ref, ":"); i > 0 {
 		prod, ref = ref[i+1:], ref[:i]
 	}
 	r := workspace.Repo{Alias: alias}

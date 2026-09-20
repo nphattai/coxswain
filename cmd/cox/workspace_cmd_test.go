@@ -62,6 +62,34 @@ func TestWorkspaceAddRepoCmd(t *testing.T) {
 	}
 }
 
+// parseRepoFlag splits alias=ref[:production] on the last ':', so a production branch with slashes (release/2026) is
+// kept whole and a slashless path has no production split (PR#3 review round 3, finding 3).
+func TestParseRepoFlagProductionWithSlashes(t *testing.T) {
+	r, err := parseRepoFlag("app=/abs/path:release/2026")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Path != "/abs/path" || r.Production != "release/2026" {
+		t.Errorf("got path=%q production=%q, want /abs/path and release/2026", r.Path, r.Production)
+	}
+	// A name ref with a slashed production.
+	n, err := parseRepoFlag("svc=org/repo:release/2026")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n.Name != "org/repo" || n.Production != "release/2026" {
+		t.Errorf("got name=%q production=%q, want org/repo and release/2026", n.Name, n.Production)
+	}
+	// No production given: no split, production is detected/defaulted (main for a non-git path).
+	p, err := parseRepoFlag("web=/abs/nogit")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Path != "/abs/nogit" || p.Production != "main" {
+		t.Errorf("got path=%q production=%q, want /abs/nogit and main", p.Path, p.Production)
+	}
+}
+
 // doctorExit maps aggregate check outcomes: fail -> 1, unknown (no fail) -> 3, else 0 (AC 5).
 func TestDoctorExit(t *testing.T) {
 	if doctorExit(true, false) != 1 {
