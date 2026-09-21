@@ -10,6 +10,7 @@ package doctor
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -60,6 +61,10 @@ type WorkspaceReport struct {
 	Hooks        map[string]bool `json:"hooks"` // leader harness -> hooks installed
 	Epics        []EpicReport    `json:"epics"`
 	PolicyInRepo []string        `json:"policy_in_repo,omitempty"`
+	// RepoIssues names each path-backed repo in workspace.json whose checkout is missing or is not a git checkout. The
+	// workspace loads (structural JSON is valid), but a leader cannot cut a worktree from it, so doctor fails on these
+	// (cox-onboarding finding 7 / codex PR#3 r3): existence and git-checkout are a doctor concern, not a load-time one.
+	RepoIssues []string `json:"repo_issues,omitempty"`
 }
 
 // Roots merges the default roots ($HOME/Work and $ORCA_WORKSPACES), $COX_ROOTS (path-list separated), and any explicit
@@ -315,7 +320,28 @@ func InspectWorkspace(wsRoot string) WorkspaceReport {
 			rep.PolicyInRepo = append(rep.PolicyInRepo, r.Alias)
 		}
 	}
+	// A path-backed repo whose checkout is missing or is not a git checkout: the workspace loaded, but no worktree can be
+	// cut from it. A name-only repo has no local path to check.
+	rep.RepoIssues = repoCheckoutIssues(ws)
 	return rep
+}
+
+// repoCheckoutIssues returns a fix-hinted message for every path-backed repo whose checkout is missing or is not a git
+// checkout (no .git). Repos are checked in registry order; a name-only repo is skipped (nothing to verify locally).
+func repoCheckoutIssues(ws *workspace.Workspace) []string {
+	var issues []string
+	for _, r := range ws.Repos {
+		if r.Path == "" {
+			continue
+		}
+		switch {
+		case !exists(r.Path):
+			issues = append(issues, fmt.Sprintf("repo %q path %s does not exist (clone it, or fix its path in cox/workspace.json)", r.Alias, r.Path))
+		case !exists(filepath.Join(r.Path, ".git")):
+			issues = append(issues, fmt.Sprintf("repo %q path %s is not a git checkout (no .git; clone the repo there, or fix its path in cox/workspace.json)", r.Alias, r.Path))
+		}
+	}
+	return issues
 }
 
 // hookTarget returns the workspace settings file a harness's leader hooks live in, or "" for a harness with no target.

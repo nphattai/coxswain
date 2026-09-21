@@ -141,6 +141,7 @@ func cmdDoctor(args []string) int {
 	// A dead watcher with active stories in a workspace found only via --root or the epic path must also fail doctor, not
 	// just those under the default installation scan (PR#3 review finding 5). Computed for both --json and human output.
 	wsWatcherIssues := watcherIssuesForWorkspaces(wsReports)
+	wsRepoIssues := workspaceRepoIssues(wsReports)
 
 	if *asJSON {
 		enc := json.NewEncoder(os.Stdout)
@@ -211,6 +212,9 @@ func cmdDoctor(args []string) int {
 			for _, alias := range w.PolicyInRepo {
 				fmt.Fprintf(os.Stderr, "WARN: repo %q checkout carries cox/policy.json; nothing reads it and it drifts from the workspace policy - delete it\n", alias)
 			}
+			for _, iss := range w.RepoIssues {
+				fmt.Fprintf(os.Stderr, "ISSUE: workspace %s %s\n", w.Root, iss)
+			}
 		}
 		fmt.Println("checks:")
 		for _, c := range checks {
@@ -256,7 +260,7 @@ func cmdDoctor(args []string) int {
 
 	// Exit code: any fail (an install issue, a dead watcher with open stories, an invalid workspace, or a failed check)
 	// is 1; any unknown with no fail (e.g. orca present but `orca status` unreachable) is 3; otherwise 0.
-	hasFail := len(rep.Issues) > 0 || len(watcherIssues) > 0 || len(wsWatcherIssues) > 0
+	hasFail := len(rep.Issues) > 0 || len(watcherIssues) > 0 || len(wsWatcherIssues) > 0 || len(wsRepoIssues) > 0
 	hasUnknown := false
 	for _, w := range wsReports {
 		if !w.Valid || w.PolicyError != "" {
@@ -286,6 +290,18 @@ func watcherIssuesForWorkspaces(reps []doctor.WorkspaceReport) []string {
 			if iss := watcherIssue(ep.Path, watcherInfo(ep.Path)); iss != "" {
 				issues = append(issues, iss)
 			}
+		}
+	}
+	return issues
+}
+
+// workspaceRepoIssues gathers every discovered workspace's path-backed repo checkout problems (missing path or not a git
+// checkout), so doctor fails when a registered repo cannot back a worktree (finding 7).
+func workspaceRepoIssues(reps []doctor.WorkspaceReport) []string {
+	var issues []string
+	for _, w := range reps {
+		for _, iss := range w.RepoIssues {
+			issues = append(issues, w.Root+": "+iss)
 		}
 	}
 	return issues

@@ -3,6 +3,7 @@ package doctor
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -66,6 +67,37 @@ func TestSingleOnPATHResolvesDuplicates(t *testing.T) {
 	t.Setenv("PATH", d1+string(os.PathListSeparator)+d3)
 	if c := SingleOnPATH("coxbin"); c.Status != StatusFail {
 		t.Errorf("two distinct binaries = %v, want fail", c)
+	}
+}
+
+// A path-backed repo whose checkout is missing or is not a git checkout is flagged by InspectWorkspace; a real git
+// checkout is not (finding 7).
+func TestRepoCheckoutIssues(t *testing.T) {
+	root := t.TempDir()
+	gitRepo := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(gitRepo, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	nonGit := t.TempDir() // exists, no .git
+	missing := filepath.Join(t.TempDir(), "not-cloned-yet")
+	repos := []workspace.Repo{
+		{Alias: "ok", Path: gitRepo, Production: "main"},
+		{Alias: "bare", Path: nonGit, Production: "main"},
+		{Alias: "gone", Path: missing, Production: "main"},
+	}
+	if _, err := workspace.Init(root, &workspace.Workspace{Repos: repos}); err != nil {
+		t.Fatal(err)
+	}
+	rep := InspectWorkspace(root)
+	joined := strings.Join(rep.RepoIssues, "\n")
+	if strings.Contains(joined, `"ok"`) {
+		t.Errorf("a real git checkout must not be flagged: %v", rep.RepoIssues)
+	}
+	if !strings.Contains(joined, `"bare"`) || !strings.Contains(joined, "not a git checkout") {
+		t.Errorf("a non-git path must be flagged: %v", rep.RepoIssues)
+	}
+	if !strings.Contains(joined, `"gone"`) || !strings.Contains(joined, "does not exist") {
+		t.Errorf("a missing path must be flagged: %v", rep.RepoIssues)
 	}
 }
 

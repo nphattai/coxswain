@@ -39,6 +39,19 @@ func TestWatcherIssuesForWorkspaces(t *testing.T) {
 	}
 }
 
+// A path-backed repo whose checkout is missing or is not a git checkout makes doctor fail (finding 7): the issue is
+// surfaced and folds into the exit code.
+func TestWorkspaceRepoIssues(t *testing.T) {
+	reps := []doctor.WorkspaceReport{{Root: "/ws", RepoIssues: []string{`repo "api" path /gone does not exist`}}}
+	got := workspaceRepoIssues(reps)
+	if len(got) != 1 || !strings.Contains(got[0], "/ws") || !strings.Contains(got[0], "api") {
+		t.Fatalf("workspaceRepoIssues = %v, want the repo issue prefixed with the workspace root", got)
+	}
+	if len(workspaceRepoIssues([]doctor.WorkspaceReport{{Root: "/ok"}})) != 0 {
+		t.Error("a workspace with no repo issues must contribute nothing")
+	}
+}
+
 // doctor renders one capability card per implemented harness, each tagged adapter=yes, with the card's real fields.
 func TestDoctorHarnessCards(t *testing.T) {
 	cards := harnessCards(false)
