@@ -307,6 +307,12 @@ func (w *Watcher) Run(stop <-chan struct{}, poll time.Duration) {
 		if _, err := w.Tick(); err != nil {
 			fmt.Fprintln(os.Stderr, "watch:", err)
 		}
+		// A pass may have run while the control tree was being torn down; re-check before writing the beacon so the loop
+		// stands down promptly instead of sleeping a full poll first.
+		if reason := w.evictReason(); reason != "" {
+			w.logEviction(reason)
+			return
+		}
 		w.markTick()
 		select {
 		case <-stop:
@@ -358,6 +364,12 @@ func (w *Watcher) logEviction(reason string) {
 // (M14, dogfood: the watcher stopped writing and nobody noticed - no watcher-alive line anywhere). Best-effort: a write
 // failure never disturbs the loop.
 func (w *Watcher) markTick() {
+	// Never resurrect the control tree: if .cox has vanished (an epic close or teardown mid-tick), MkdirAll(.cox/watch)
+	// would recreate .cox and defeat self-eviction, spinning the loop forever recreating its own beacon. Skip the beacon
+	// when .cox is gone so the next loop-top evictReason check stands the watcher down instead (item 2).
+	if _, err := os.Stat(filepath.Join(w.EpicDir, state.ControlDir)); err != nil {
+		return
+	}
 	dir := w.watchDir()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return
