@@ -35,6 +35,11 @@ type HarnessSpec struct {
 	// backend never rebuilds it or imports the harness layer (ADR 0002). Empty on the orchestration plane, which
 	// hands a prompt to Orca instead.
 	Argv []string
+	// BusyGen is the harness-owned busy-state incarnation gen minted by busy.Arm at dispatch/relaunch (empty when the
+	// harness does not report its own state). LaunchLine exports it as COX_BUSY_GEN so the harness hook Applies idle/busy
+	// against the armed record; a hook that outlives its incarnation presents a stale gen and is rejected (DESIGN wave-3
+	// item 1). It rides on the spec (not the Brief) so it threads through relaunch unchanged.
+	BusyGen string
 }
 
 // Brief is the instruction payload delivered to a worker on Spawn. StoryPath is the file the worker reads in full;

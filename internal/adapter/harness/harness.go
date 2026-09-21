@@ -42,6 +42,16 @@ type Capability struct {
 	Interrupt  bool // the harness can be interrupted mid-turn
 	Telemetry  bool // Telemetry() returns real token/turn counts (false => always Unknown)
 	Sandbox    bool // the harness sandboxes tool execution by default
+	// BusyRecord is true when the harness reports its own idle/busy through the busy-state record (its hook Applies
+	// against the gen armed at dispatch, DESIGN wave-3). Dispatch arms COX_BUSY_GEN only for such a harness, so a harness
+	// whose hook is not yet wired (claude/codex today) is never left stranded "busy" in a record nothing clears; backends
+	// then fall back to their existing signal for it. It never branches on a harness name (DESIGN).
+	BusyRecord bool
+	// BackendInterrupt is true when the backend keystroke interrupt (orca terminal send --interrupt / Ctrl-C) actually
+	// aborts this harness's turn. It is false for a harness whose TUI ignores that keystroke (Pi 0.86.1, dogfood F-C): for
+	// such a harness cox control interrupt also delivers an interrupt record through the durable inbox and the harness's
+	// own extension aborts the run (DESIGN wave-3 item 4). The keystroke stays the fallback either way.
+	BackendInterrupt bool
 	// UnsandboxedAck is a standing captain acknowledgment that this harness's unsandboxed dispatch is already accepted,
 	// so an unsandboxed dispatch (Sandbox==false) is authorized without the per-dispatch --allow-unsandboxed flag. It
 	// records an existing ruling (claude runs bypassPermissions autonomously, captain owns the risk), keeping the

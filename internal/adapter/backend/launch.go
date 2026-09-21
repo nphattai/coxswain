@@ -7,7 +7,8 @@ import (
 )
 
 // LaunchLine builds the shell line a terminal-plane backend types into a fresh worker terminal: the cox env prefix
-// (COX_EPIC/COX_STORY derived from the story path, COX_PLANE=terminal) followed by the adapter-owned harness argv,
+// (COX_EPIC/COX_STORY derived from the story path, COX_PLANE=terminal, and COX_BUSY_GEN when the harness reports its own
+// busy state) followed by the adapter-owned harness argv,
 // shell-quoted token by token. The argv (executable, model/provider syntax, trust/resource flags, prompt) is composed
 // by cmd/cox/internal-arena via registry.LaunchArgs and threaded in as HarnessSpec.Argv, so both terminal-plane
 // backends (orca, herdr) type the command without importing the harness layer (decision 0002). Shared so the env
@@ -22,6 +23,9 @@ func LaunchLine(h HarnessSpec, brief Brief) string {
 		fmt.Fprintf(&b, "COX_STORY=%s ", shellQuote(story))
 	}
 	b.WriteString("COX_PLANE=terminal")
+	if h.BusyGen != "" {
+		fmt.Fprintf(&b, " COX_BUSY_GEN=%s", shellQuote(h.BusyGen))
+	}
 	for _, a := range h.Argv {
 		if a == "" {
 			continue

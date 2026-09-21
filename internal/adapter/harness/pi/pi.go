@@ -37,16 +37,18 @@ func (h *Harness) home() string {
 // packaged Pi extension.
 func (h *Harness) Card() harness.Capability {
 	return harness.Capability{
-		Name:           "pi",
-		Roles:          []harness.Role{harness.RoleLeader, harness.RoleWorker},
-		Wake:           harness.WakePush,
-		Checkpoint:     harness.CheckpointAuto,
-		Doorbell:       true,
-		Interrupt:      true,
-		Telemetry:      true,
-		Sandbox:        false,
-		UnsandboxedAck: false, // Pi has no standing ack: an unsandboxed Pi worker dispatch requires --allow-unsandboxed every time until it passes its support gates
-		Instructions:   "AGENTS.md + Agent Skills",
+		Name:             "pi",
+		Roles:            []harness.Role{harness.RoleLeader, harness.RoleWorker},
+		Wake:             harness.WakePush,
+		Checkpoint:       harness.CheckpointAuto,
+		Doorbell:         true,
+		Interrupt:        true,
+		BackendInterrupt: false, // Pi 0.86.1's TUI ignores the backend interrupt keystroke (dogfood F-C): interrupt is delivered through the durable inbox and the Pi extension aborts the run
+		BusyRecord:       true,  // the Pi extension reports its own idle/busy into the busy record (agent_start/agent_settled), so dispatch arms COX_BUSY_GEN
+		Telemetry:        true,
+		Sandbox:          false,
+		UnsandboxedAck:   false, // Pi has no standing ack: an unsandboxed Pi worker dispatch requires --allow-unsandboxed every time until it passes its support gates
+		Instructions:     "AGENTS.md + Agent Skills",
 	}
 }
 

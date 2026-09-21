@@ -24,16 +24,17 @@ func New() *Harness { return &Harness{} }
 
 func (h *Harness) Card() harness.Capability {
 	return harness.Capability{
-		Name:           "claude",
-		Roles:          []harness.Role{harness.RoleLeader, harness.RoleWorker},
-		Wake:           harness.WakePush,
-		Checkpoint:     harness.CheckpointAuto,
-		Doorbell:       true,
-		Interrupt:      true,
-		Telemetry:      true,
-		Sandbox:        false,
-		UnsandboxedAck: true, // captain ruling: claude workers run bypassPermissions autonomously; unsandboxed dispatch is accepted
-		Instructions:   "plugin skills + AGENTS.md",
+		Name:             "claude",
+		Roles:            []harness.Role{harness.RoleLeader, harness.RoleWorker},
+		Wake:             harness.WakePush,
+		Checkpoint:       harness.CheckpointAuto,
+		Doorbell:         true,
+		Interrupt:        true,
+		BackendInterrupt: true, // claude aborts on the backend ESC keystroke
+		Telemetry:        true,
+		Sandbox:          false,
+		UnsandboxedAck:   true, // captain ruling: claude workers run bypassPermissions autonomously; unsandboxed dispatch is accepted
+		Instructions:     "plugin skills + AGENTS.md",
 	}
 }
 

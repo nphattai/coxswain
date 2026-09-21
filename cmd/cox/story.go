@@ -14,6 +14,7 @@ import (
 	"github.com/nphattai/coxswain/internal/adapter/harness/registry"
 	"github.com/nphattai/coxswain/internal/arena/cite"
 	"github.com/nphattai/coxswain/internal/protocol/brief"
+	"github.com/nphattai/coxswain/internal/protocol/busy"
 	"github.com/nphattai/coxswain/internal/protocol/control"
 	"github.com/nphattai/coxswain/internal/routing"
 	"github.com/nphattai/coxswain/internal/state"
@@ -155,7 +156,18 @@ func storyDispatch(args []string) int {
 	if err != nil {
 		return fail("compose launch argv: %v", err)
 	}
-	sess, err := b.Spawn(wt, backend.HarnessSpec{Name: harnessName, Model: modelID, Effort: effort, LaunchFlags: pol.LaunchFlags(harnessName), Argv: argv}, backend.Brief{StoryPath: storyPath})
+	// Harness-owned busy state (DESIGN wave-3): a harness that reports its own idle/busy gets a fresh incarnation gen
+	// armed here and threaded to it via COX_BUSY_GEN, so its hook Applies against the record and a stale hook is rejected.
+	// A harness whose hook is not wired yet (claude/codex) is not armed, so it is never stranded "busy".
+	busyGen := ""
+	if registry.Card(harnessName).BusyRecord {
+		g, err := busy.Arm(*epicDir, story)
+		if err != nil {
+			return fail("arm busy state: %v", err)
+		}
+		busyGen = g
+	}
+	sess, err := b.Spawn(wt, backend.HarnessSpec{Name: harnessName, Model: modelID, Effort: effort, LaunchFlags: pol.LaunchFlags(harnessName), Argv: argv, BusyGen: busyGen}, backend.Brief{StoryPath: storyPath})
 	if err != nil {
 		return fail("spawn: %v", err)
 	}
@@ -499,6 +511,15 @@ func storyControl(verb string, args []string) int {
 			return fail("compose launch argv: %v", err)
 		}
 		spec := backend.HarnessSpec{Name: targetHarness, Model: targetModel, Argv: argv}
+		// Re-arm the busy record for a fresh incarnation so a resumed worker's hook Applies against a new gen and any late
+		// event from the prior incarnation is rejected as stale (DESIGN wave-3).
+		if registry.Card(targetHarness).BusyRecord {
+			g, err := busy.Arm(*epicDir, story)
+			if err != nil {
+				return fail("arm busy state: %v", err)
+			}
+			spec.BusyGen = g
+		}
 		prior, _ := loadSession(*epicDir, story) // previous attempt's terminal, closed before the new spawn (zero value when none)
 		sess, err := ctl.Relaunch(story, wtPath, *note, prior, spec, extra)
 		if err != nil {

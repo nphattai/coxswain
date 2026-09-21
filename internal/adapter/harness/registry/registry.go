@@ -35,6 +35,15 @@ func Adapter(name string) (harness.Harness, bool) {
 	}
 }
 
+// Card returns the named adapter's capability card, or the zero card when the name has no adapter. The zero card's
+// booleans are all false, so a caller reading e.g. BusyRecord on an unknown name safely gets the conservative answer.
+func Card(name string) harness.Capability {
+	if h, ok := Adapter(name); ok {
+		return h.Card()
+	}
+	return harness.Capability{}
+}
+
 // LaunchArgs composes the full production argv for a launch via the named adapter. It is the single production entry
 // point for adapter-owned argv (the launch seam): wiring code (cmd/cox, internal/arena) calls it and threads the
 // resulting []string into the backend spawn spec as data, so the backend never imports the harness layer (ADR 0002).

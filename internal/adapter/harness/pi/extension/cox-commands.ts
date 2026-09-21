@@ -19,6 +19,25 @@ export const coxArgs = {
     worktree,
   ],
 
+  // busyApply reports the harness-owned busy state (DESIGN wave-3 item 2): `cox busy apply <story> <state> --gen G
+  // --source pi-ext --event E --epic <dir>`. The gen is the one armed at dispatch (COX_BUSY_GEN); a stale gen is
+  // rejected by cox, so a hook that outlived its incarnation fails closed. Best-effort: a refusal never breaks Pi's
+  // lifecycle.
+  busyApply: (epic: string, story: string, state: "busy" | "idle", gen: string, event: string): string[] => [
+    "busy",
+    "apply",
+    story,
+    state,
+    "--gen",
+    gen,
+    "--source",
+    "pi-ext",
+    "--event",
+    event,
+    "--epic",
+    epic,
+  ],
+
   // sessionStart injects the saved checkpoint on session start THROUGH the hook, which computes the current git HEAD from
   // the worktree so the CHECKPOINT STALE freshness check runs. `cox checkpoint inject` without --head has an empty HEAD
   // and silently suppresses that warning.

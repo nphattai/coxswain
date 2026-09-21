@@ -29,6 +29,14 @@ func TestCard(t *testing.T) {
 	if len(got.Roles) != 2 || got.Roles[0] != harness.RoleLeader || got.Roles[1] != harness.RoleWorker {
 		t.Errorf("Pi roles = %v, want [leader worker]", got.Roles)
 	}
+	// Harness-owned busy state (DESIGN wave-3): Pi reports its own idle/busy (BusyRecord), and its TUI ignores the backend
+	// keystroke interrupt (BackendInterrupt=false, dogfood F-C) so interrupt is delivered through the durable inbox.
+	if !got.BusyRecord {
+		t.Error("Pi card BusyRecord = false, want true (the extension reports its own state)")
+	}
+	if got.BackendInterrupt {
+		t.Error("Pi card BackendInterrupt = true, want false (Pi's TUI ignores the backend interrupt keystroke, F-C)")
+	}
 }
 
 // Telemetry for a worktree with no Pi session is Unknown (never 0 usage, F11). Deeper telemetry parsing cases live in

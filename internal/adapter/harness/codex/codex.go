@@ -30,15 +30,16 @@ func (h *Harness) home() string {
 
 func (h *Harness) Card() harness.Capability {
 	return harness.Capability{
-		Name:         "codex",
-		Roles:        []harness.Role{harness.RoleLeader, harness.RoleWorker},
-		Wake:         harness.WakePull,
-		Checkpoint:   harness.CheckpointManual,
-		Doorbell:     true,
-		Interrupt:    true,
-		Telemetry:    false,
-		Sandbox:      true,
-		Instructions: "AGENTS.md + markdown skills",
+		Name:             "codex",
+		Roles:            []harness.Role{harness.RoleLeader, harness.RoleWorker},
+		Wake:             harness.WakePull,
+		Checkpoint:       harness.CheckpointManual,
+		Doorbell:         true,
+		Interrupt:        true,
+		BackendInterrupt: true, // codex aborts on the backend ESC keystroke
+		Telemetry:        false,
+		Sandbox:          true,
+		Instructions:     "AGENTS.md + markdown skills",
 	}
 }
 

@@ -47,6 +47,19 @@ export default function (pi: ExtensionAPI): void {
   // it, wake supervision stays idle rather than running against the wrong epic.
   const epic = resolveEpic(process.env.COX_EPIC, readEpicMarker());
   const isLeader = (process.env.COX_ROLE || (story && story !== "_leader" ? "worker" : "leader")) === "leader";
+  // Harness-owned busy state (DESIGN wave-3 item 2): the gen armed at dispatch. Absent gen (or no epic/story) means this
+  // session reports no state - never a guess. Both worker and leader roles report, using whatever gen the launch env
+  // carries (a leader carries none today, so it simply does not write).
+  const busyGen = (process.env.COX_BUSY_GEN ?? "").trim();
+
+  // applyBusy reports one lifecycle transition into the busy record, best-effort: a missing gen means no write, and a
+  // refusal (a stale gen after re-arm) is swallowed so it never breaks Pi's own lifecycle.
+  function applyBusy(state: "busy" | "idle", event: string): void {
+    if (!busyGen || !epic || !story) return;
+    execFile(cox, coxArgs.busyApply(epic, story, state, busyGen, event), () => {
+      /* best-effort: cox rejects a stale gen; that must not disturb the turn */
+    });
+  }
 
   let child: ChildProcess | null = null;
   const latch = new TurnEndLatch();
@@ -126,9 +139,16 @@ export default function (pi: ExtensionAPI): void {
     });
   });
 
-  // agent_settled: the turn-end health boundary. When wake supervision is unhealthy (leader with no live wait child),
-  // schedule at most one bounded continuation to reopen the cycle; the latch prevents recursion.
+  // agent_start: a turn is running -> busy (DESIGN wave-3 item 2). Applied for both roles using the env gen.
+  pi.on("agent_start", async (_event, _ctx) => {
+    applyBusy("busy", "agent_start");
+  });
+
+  // agent_settled: the turn has fully settled (Pi fires it even on abort/failure - no retry/compaction/continuation
+  // follows), so reporting idle here also covers the abort and error paths, the DESIGN's "finally block" requirement.
+  // Reported for both roles BEFORE the leader-only supervision so a worker's idle is never gated on the leader branch.
   pi.on("agent_settled", async (_event, _ctx) => {
+    applyBusy("idle", "agent_settled");
     if (!isLeader) return;
     const healthy = sup.liveGeneration() !== null;
     latch.onSettled(healthy, () => {
