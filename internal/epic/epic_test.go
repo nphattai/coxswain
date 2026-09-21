@@ -56,6 +56,8 @@ func (g *gitBackend) Probe(backend.Session) (backend.Liveness, error) {
 	return g.live, nil
 }
 func (g *gitBackend) Composer(backend.Session) (string, error) { return backend.ComposerUnknown, nil }
+func (g *gitBackend) Screen(backend.Session) ([]string, error) { return nil, nil }
+func (g *gitBackend) Terminals() ([]backend.Terminal, error)   { return nil, nil }
 func (g *gitBackend) WorkerList() ([]backend.Worker, error)    { return nil, nil }
 func (g *gitBackend) Mail() backend.Mailbox                    { return nil }
 

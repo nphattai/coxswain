@@ -29,3 +29,9 @@ pty handle, so a harness restart no longer orphans the epic: the first `cox hook
 restarted terminal re-binds `<epic>/.cox/leader` to the new handle (when the recorded handle is no longer live and this
 terminal is in the epic's workspace), the watcher reads `.cox/leader` fresh every tick and logs a failed leader doorbell
 to `.cox/watch/log`, and `cox doctor` fails an active epic whose recorded leader handle is disconnected.
+
+**Two leader terminals are open on the same workspace.** Only one leader may drive an epic, or a wake reaches the wrong
+terminal. `cox doctor` fails an active epic when more than one connected Orca terminal in the workspace root runs the
+leader harness, naming the recorded `.cox/leader` as the one to keep; `cox hook prompt-drain` prints the same warning
+into the leader's turn context so it is seen without running doctor. Close the extra terminals and keep the recorded
+`.cox/leader`.

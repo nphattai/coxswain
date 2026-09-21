@@ -33,6 +33,9 @@ Current behavior lives in `internal/adapter/backend/orca/`, with contract covera
 - The compatibility orchestration plane is constrained by Orca run binding and completion semantics.
 - Branches left behind by safe worktree recovery are not automatically deleted. Manual cleanup remains a captain or
   operator decision.
+- Duplicate-leader detection reads `terminal list` (handle, worktreePath, connected, agentIdentity), observed on Orca
+  1.4.197. A terminal counts as a leader when it is connected, runs the leader harness, and its worktree contains the
+  workspace root. Re-verify the `terminal list` shape on an Orca upgrade.
 
 Version-specific command shapes and live discoveries are in
 [Orca CLI 1.4.197 compatibility evidence](../evidence/compatibility/orca-1.4.197.md).
