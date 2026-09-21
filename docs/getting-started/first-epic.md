@@ -74,9 +74,10 @@ See [Dispatch, supervise, recover](../handoff.md) for the channel and acknowledg
 
 ## Attach the epic on a second machine
 
-An epic directory (with `DESIGN.md`, `repos`, and stories) that has been committed and pushed can be re-attached on a
-fresh clone or a second machine - it recreates `.cox/`, the worktrees on the existing `epic/<slug>` branch (fetched,
-never recreated), and the alias symlinks:
+An epic directory (with `DESIGN.md`, `repos`, stories, and the committed `ledger.jsonl`) that has been committed and
+pushed can be re-attached on a fresh clone or a second machine - it recreates `.cox/`, the worktrees on the existing
+`epic/<slug>` branch (fetched, never recreated), and the alias symlinks. The signature lives in `ledger.jsonl`, which
+travels with the clone, so a re-attached epic is still signed without replaying anything:
 
 ```bash
 cox epic attach --epic $HOME/Work/acme-ops/acme/epics/checkout

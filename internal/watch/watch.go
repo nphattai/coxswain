@@ -40,12 +40,13 @@ const (
 	DefaultBlockedWait = 2 * time.Minute
 )
 
-// Watcher runs one epic's watch loop. Sessions maps a story to its worker session (for re-ring and interrupt); Leader
-// is the leader terminal handle for the pull-path doorbell. Now is injectable for tests.
+// Watcher runs one epic's watch loop. Sessions maps a story to its worker session (for re-ring and interrupt). The
+// leader terminal handle for the pull-path doorbell is read FRESH from <epic>/.cox/leader every tick (never cached), so
+// a leader harness restart that re-binds the file is picked up on the next ring instead of ringing a dead handle
+// (finding 4). Now is injectable for tests.
 type Watcher struct {
 	EpicDir        string
 	Backend        backend.Backend
-	Leader         string
 	Sessions       map[string]backend.Session
 	StaleMin       time.Duration
 	RunawayMin     time.Duration
@@ -142,12 +143,41 @@ func (w *Watcher) Tick() (int, error) {
 	appended += n
 	urgent = urgent || urg
 
-	if urgent && w.Leader != "" {
-		// Pull-path doorbell: knock on the leader terminal to drain (mail only lands on the leader's own next check, so
-		// it wakes no one). Fixed text (brief G).
-		_, _ = w.Backend.Send(backend.Session{Kind: "orca", Handle: w.Leader}, "Wake waiting: run `cox wake drain`")
+	if urgent {
+		if handle := w.leaderHandle(); handle != "" {
+			// Pull-path doorbell: knock on the leader terminal to drain (mail only lands on the leader's own next check, so
+			// it wakes no one). Fixed text (brief G). The handle is read fresh so a re-bound .cox/leader is honoured, and a
+			// failed doorbell is logged (with the handle and error) instead of vanishing to /dev/null (finding 4).
+			if _, err := w.Backend.Send(backend.Session{Kind: "orca", Handle: handle}, "Wake waiting: run `cox wake drain`"); err != nil {
+				w.logLeaderDoorbellFailure(handle, err)
+			}
+		}
 	}
 	return appended, nil
+}
+
+// leaderHandle reads the current leader terminal handle from <epic>/.cox/leader, fresh each tick, or "" when unset.
+func (w *Watcher) leaderHandle() string {
+	b, err := os.ReadFile(filepath.Join(w.EpicDir, state.ControlDir, "leader"))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
+}
+
+// logLeaderDoorbellFailure appends one "<ts> <handle> <err>" line to <epic>/.cox/watch/log so a leader doorbell that
+// never reached its terminal (e.g. a stale handle after a restart) is visible instead of discarded. Best-effort.
+func (w *Watcher) logLeaderDoorbellFailure(handle string, cause error) {
+	dir := w.watchDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return
+	}
+	f, err := os.OpenFile(filepath.Join(dir, "log"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	fmt.Fprintf(f, "%s leader-doorbell %s %v\n", w.now().UTC().Format(time.RFC3339), handle, cause)
 }
 
 // Run polls Tick every poll interval until the context-like stop channel is closed. Polling is mandatory (no fsnotify;

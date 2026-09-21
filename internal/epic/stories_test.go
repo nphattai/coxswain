@@ -44,6 +44,14 @@ func TestStoriesDefaultStyleWithProvenance(t *testing.T) {
 	if !strings.Contains(s, "400000") || !strings.Contains(s, "500000") {
 		t.Errorf("context thresholds not rendered:\n%s", s)
 	}
+	// Item 9: the Read first block is path-free - it carries the literal tokens (resolved at inject), never the epic's
+	// absolute path baked in at creation (finding 1).
+	if !strings.Contains(s, "Contract: {{.EpicDir}}/DESIGN.md") {
+		t.Errorf("Read first must carry the {{.EpicDir}} token, not an absolute path:\n%s", s)
+	}
+	if !strings.Contains(s, "{{.WorkspaceDir}}/docs/workflow.md") {
+		t.Errorf("Read first must carry the {{.WorkspaceDir}} token:\n%s", s)
+	}
 	// F14: the withdrawn "no PNG" rule must be gone; the frame-look rule present.
 	if strings.Contains(s, "No PNG enters your context") {
 		t.Errorf("withdrawn no-PNG rule still present")

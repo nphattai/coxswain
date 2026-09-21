@@ -66,12 +66,31 @@ func (s Snapshot) SortedStories() []*StorySnap {
 	return out
 }
 
-// Load reads and parses <epic>/.cox/events.jsonl. It returns the events in file order. A line whose JSON is corrupt
-// is a hard error naming the 1-based line number (a torn or bad record must not be silently dropped). A line that
-// parses but carries an unknown schema is skipped and reported in warnings, never fatal (forward compatibility).
-// A missing log is not an error: it returns no events.
+// Load reads the epic's two logs and merges them: the runtime log <epic>/.cox/events.jsonl (story lifecycle) and the
+// durable ledger <epic>/ledger.jsonl (design_signed / design_amended, committed with git). Events are returned sorted by
+// timestamp, so isSigned, cox board and cox doctor read one truth whether the signature was written to the ledger (the
+// new path) or to an older events.jsonl (both are read, so a pre-ledger design_signed still counts - no migration). A
+// line whose JSON is corrupt is a hard error naming the file and 1-based line; an unknown schema is skipped with a
+// warning; a missing file is not an error.
 func Load(epicDir string) (events []Event, warnings []string, err error) {
-	f, err := os.Open(EventsPath(epicDir))
+	runtime, w1, err := loadLog(EventsPath(epicDir))
+	if err != nil {
+		return nil, nil, err
+	}
+	ledger, w2, err := loadLog(LedgerPath(epicDir))
+	if err != nil {
+		return nil, w1, err
+	}
+	events = append(runtime, ledger...)
+	// Stable sort by timestamp so cross-file order is deterministic; equal timestamps keep runtime-before-ledger order.
+	sort.SliceStable(events, func(i, j int) bool { return events[i].TS < events[j].TS })
+	warnings = append(w1, w2...)
+	return events, warnings, nil
+}
+
+// loadLog parses one .jsonl event log in file order. A missing file returns no events (not an error).
+func loadLog(path string) (events []Event, warnings []string, err error) {
+	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil, nil
@@ -94,15 +113,15 @@ func Load(epicDir string) (events []Event, warnings []string, err error) {
 			Schema string `json:"schema"`
 		}
 		if err := json.Unmarshal(raw, &probe); err != nil {
-			return nil, warnings, fmt.Errorf("corrupt JSON at %s line %d: %w", EventsPath(epicDir), line, err)
+			return nil, warnings, fmt.Errorf("corrupt JSON at %s line %d: %w", path, line, err)
 		}
 		if probe.Schema != Schema {
-			warnings = append(warnings, fmt.Sprintf("line %d: unknown schema %q, skipped", line, probe.Schema))
+			warnings = append(warnings, fmt.Sprintf("%s line %d: unknown schema %q, skipped", path, line, probe.Schema))
 			continue
 		}
 		var ev Event
 		if err := json.Unmarshal(raw, &ev); err != nil {
-			return nil, warnings, fmt.Errorf("corrupt JSON at %s line %d: %w", EventsPath(epicDir), line, err)
+			return nil, warnings, fmt.Errorf("corrupt JSON at %s line %d: %w", path, line, err)
 		}
 		events = append(events, ev)
 	}

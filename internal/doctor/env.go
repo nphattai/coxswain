@@ -10,6 +10,7 @@ package doctor
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,6 +20,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/nphattai/coxswain/internal/state"
 	"github.com/nphattai/coxswain/internal/workspace"
 )
 
@@ -47,6 +49,13 @@ type EpicReport struct {
 	Status       string `json:"status,omitempty"`
 	WatcherAlive bool   `json:"watcher_alive"`
 	WatcherPid   int    `json:"watcher_pid,omitempty"`
+	// Closed is true for an archived epic: a .cox.closed exists and .cox does not. A closed epic has no live watcher and
+	// no open stories, so doctor prints it as "closed" rather than "active ... watcher dead" (finding 12).
+	Closed bool `json:"closed,omitempty"`
+	// Signed is the epic's signed state read from the durable log (the committed ledger, merged with the runtime log by
+	// state.Load), NOT from the free-text Status: line of DESIGN.md. doctor prints this and flags a disagreement with the
+	// Status: text, so a re-attach that lost the signature can no longer hide behind DESIGN.md still saying signed (finding 2).
+	Signed bool `json:"signed"`
 }
 
 // WorkspaceReport is one recognised v2 workspace: its validity, hook install state per leader harness, epics, and any
@@ -60,6 +69,10 @@ type WorkspaceReport struct {
 	Hooks        map[string]bool `json:"hooks"` // leader harness -> hooks installed
 	Epics        []EpicReport    `json:"epics"`
 	PolicyInRepo []string        `json:"policy_in_repo,omitempty"`
+	// RepoIssues names each path-backed repo in workspace.json whose checkout is missing or is not a git checkout. The
+	// workspace loads (structural JSON is valid), but a leader cannot cut a worktree from it, so doctor fails on these
+	// (cox-onboarding finding 7 / codex PR#3 r3): existence and git-checkout are a doctor concern, not a load-time one.
+	RepoIssues []string `json:"repo_issues,omitempty"`
 }
 
 // Roots merges the default roots ($HOME/Work and $ORCA_WORKSPACES), $COX_ROOTS (path-list separated), and any explicit
@@ -117,7 +130,9 @@ func FindWorkspaces(roots, explicit []string) []string {
 }
 
 // SingleOnPATH is the `which -a <bin>` check: exactly one executable named bin on PATH passes; none fails; more than one
-// fails (an ambiguous driver, F09's classic hazard).
+// fails (an ambiguous driver, F09's classic hazard). Results are de-duplicated by RESOLVED path, so a PATH entry listed
+// twice, or two entries that symlink to the same real binary, count as one install; only a genuine second binary (a
+// distinct real file) fails (finding 15).
 func SingleOnPATH(bin string) Check {
 	var found []string
 	seen := map[string]bool{}
@@ -126,11 +141,15 @@ func SingleOnPATH(bin string) Check {
 			dir = "."
 		}
 		p := filepath.Join(dir, bin)
-		if seen[p] {
-			continue
-		}
 		if fi, err := os.Stat(p); err == nil && !fi.IsDir() && fi.Mode()&0o111 != 0 {
-			seen[p] = true
+			key := p
+			if real, err := filepath.EvalSymlinks(p); err == nil {
+				key = real // a symlink and its target, or the same dir listed twice, resolve to one real binary
+			}
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
 			found = append(found, p)
 		}
 	}
@@ -192,6 +211,13 @@ func HarnessBinaries(pol *workspace.Policy, adaptered func(string) bool) []Check
 	var checks []Check
 	for _, n := range names {
 		if !adaptered(n) {
+			// A default harness with no adapter cannot dispatch, so it is a hard fail; a non-default option with no adapter
+			// stays info (a harness you listed but do not drive) - finding 8.
+			if required[n] {
+				checks = append(checks, Check{Name: "harness " + n, Status: StatusFail, Detail: "policy default harness has no adapter, cannot dispatch",
+					Fix: "set harness." + roleOf(pol, n) + ".default to an adaptered harness (claude or codex)"})
+				continue
+			}
 			checks = append(checks, Check{Name: "harness " + n, Status: StatusInfo, Detail: "no adapter, cannot dispatch"})
 			continue
 		}
@@ -207,6 +233,20 @@ func HarnessBinaries(pol *workspace.Policy, adaptered func(string) bool) []Check
 		}
 	}
 	return checks
+}
+
+// roleOf names which default role(s) a harness fills in a policy, for the fix hint on a no-adapter default.
+func roleOf(pol *workspace.Policy, name string) string {
+	leader := strings.TrimSpace(pol.Harness.Leader.Default) == name
+	worker := strings.TrimSpace(pol.Harness.Worker.Default) == name
+	switch {
+	case leader && worker:
+		return "leader/worker"
+	case worker:
+		return "worker"
+	default:
+		return "leader"
+	}
 }
 
 // OptionalBinary checks a named optional tool (quota-axi, lavish-axi) only when policy names it: present->pass,
@@ -272,6 +312,8 @@ func InspectWorkspace(wsRoot string) WorkspaceReport {
 		if fi, err := os.Stat(ep); err != nil || !fi.IsDir() {
 			continue
 		}
+		// A closed epic is archived: .cox.closed exists and .cox does not. It has no live watcher and no open stories.
+		closed := exists(filepath.Join(ep, ".cox.closed")) && !exists(filepath.Join(ep, ".cox"))
 		pid := readPid(filepath.Join(ep, ".cox", "watch.pid"))
 		rep.Epics = append(rep.Epics, EpicReport{
 			Path:         ep,
@@ -279,6 +321,8 @@ func InspectWorkspace(wsRoot string) WorkspaceReport {
 			Status:       epicStatus(filepath.Join(ep, "DESIGN.md")),
 			WatcherPid:   pid,
 			WatcherAlive: pid > 0 && pidAlive(pid),
+			Closed:       closed,
+			Signed:       epicSigned(ep),
 		})
 	}
 
@@ -288,7 +332,28 @@ func InspectWorkspace(wsRoot string) WorkspaceReport {
 			rep.PolicyInRepo = append(rep.PolicyInRepo, r.Alias)
 		}
 	}
+	// A path-backed repo whose checkout is missing or is not a git checkout: the workspace loaded, but no worktree can be
+	// cut from it. A name-only repo has no local path to check.
+	rep.RepoIssues = repoCheckoutIssues(ws)
 	return rep
+}
+
+// repoCheckoutIssues returns a fix-hinted message for every path-backed repo whose checkout is missing or is not a git
+// checkout (no .git). Repos are checked in registry order; a name-only repo is skipped (nothing to verify locally).
+func repoCheckoutIssues(ws *workspace.Workspace) []string {
+	var issues []string
+	for _, r := range ws.Repos {
+		if r.Path == "" {
+			continue
+		}
+		switch {
+		case !exists(r.Path):
+			issues = append(issues, fmt.Sprintf("repo %q path %s does not exist (clone it, or fix its path in cox/workspace.json)", r.Alias, r.Path))
+		case !exists(filepath.Join(r.Path, ".git")):
+			issues = append(issues, fmt.Sprintf("repo %q path %s is not a git checkout (no .git; clone the repo there, or fix its path in cox/workspace.json)", r.Alias, r.Path))
+		}
+	}
+	return issues
 }
 
 // hookTarget returns the workspace settings file a harness's leader hooks live in, or "" for a harness with no target.
@@ -301,6 +366,22 @@ func hookTarget(wsRoot, harness string) string {
 	default:
 		return ""
 	}
+}
+
+// epicSigned reports whether the epic's durable log carries a design_signed event. state.Load merges the committed
+// ledger with the runtime log, so a signature written to either is seen (finding 2). Any read error is treated as
+// unsigned rather than crashing doctor.
+func epicSigned(epicDir string) bool {
+	events, _, err := state.Load(epicDir)
+	if err != nil {
+		return false
+	}
+	for _, ev := range events {
+		if ev.Type == state.DesignSigned {
+			return true
+		}
+	}
+	return false
 }
 
 // epicStatus reads the first `Status:` line from an epic's DESIGN.md, or "" when absent.

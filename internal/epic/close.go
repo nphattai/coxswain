@@ -64,6 +64,12 @@ func Close(o CloseOptions) error {
 		}
 		fmt.Fprintf(o.out(), "ok: %s\n", s.name)
 	}
+	// Stop the epic's watcher before archiving: a live watcher recreates .cox/ after it is moved (finding 13). A live
+	// pid that cannot be proven to be this epic's watcher aborts close (never archived) rather than being signalled blind.
+	if err := o.stopWatcher(); err != nil {
+		o.recordIncomplete("stop-watcher", err.Error())
+		return fmt.Errorf("close aborted at stop-watcher (not archived): %w", err)
+	}
 	// (5) archive only after every step confirmed.
 	closed := filepath.Join(o.EpicDir, ".cox.closed")
 	if err := os.RemoveAll(closed); err != nil {
@@ -87,7 +93,8 @@ func (o *CloseOptions) dryRun() error {
 	}
 	fmt.Fprintln(w, "  3. release each story's db/sim/env (ownership cleared only on confirmed delete)")
 	fmt.Fprintf(w, "  4. detach + remove each worktree (branch kept; dirty/unpushed KEPT unless --force=%v)\n", o.Force)
-	fmt.Fprintln(w, "  5. archive .cox -> .cox.closed (only if 1-4 all succeed)")
+	fmt.Fprintln(w, "  5. stop this epic's watcher (refuses to archive while a provable watcher is alive)")
+	fmt.Fprintln(w, "  6. archive .cox -> .cox.closed (only if 1-5 all succeed)")
 	return nil
 }
 

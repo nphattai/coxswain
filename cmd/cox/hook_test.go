@@ -352,3 +352,71 @@ func TestNotLeaderTerminal(t *testing.T) {
 		t.Error("the leader terminal must not be suppressed")
 	}
 }
+
+// After a leader harness restart, the recorded handle is dead and Orca hands the same pane a new handle. In the epic's
+// workspace, leaderTerminal treats this terminal as the leader and re-binds .cox/leader to the new handle, so a restart
+// never orphans the epic (finding 4). Outside the workspace, or while the recorded handle is still live, it does not.
+func TestLeaderTerminalRebindsAfterRestart(t *testing.T) {
+	// A workspace with an epic under it.
+	ws := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(ws, "cox"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ws, "cox", "workspace.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	epic := filepath.Join(ws, "proj", "epics", "e1")
+	if err := os.MkdirAll(filepath.Join(epic, ".cox"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeStaleLeader := func() {
+		if err := os.WriteFile(filepath.Join(epic, ".cox", "leader"), []byte("term_old\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("ORCA_TERMINAL_HANDLE", "term_new")
+
+	// A dead recorded handle + this terminal in the epic's workspace -> leader, and .cox/leader is re-bound to term_new.
+	writeStaleLeader()
+	t.Chdir(ws)
+	restore := probeLeaderHandle
+	t.Cleanup(func() { probeLeaderHandle = restore })
+	probeLeaderHandle = func(string, string) (bool, bool) { return false, true } // recorded handle is dead
+
+	isLeader, rebound := leaderTerminal(epic)
+	if !isLeader || !rebound {
+		t.Fatalf("dead handle in-workspace: isLeader=%v rebound=%v, want true/true", isLeader, rebound)
+	}
+	if got := readLeader(epic); got != "term_new" {
+		t.Errorf(".cox/leader not re-bound: %q, want term_new", got)
+	}
+	// filterLeaderEpics (the prompt-drain / stop-rewake path) keeps the epic and drives the same rebind.
+	writeStaleLeader()
+	if got := filterLeaderEpics([]string{epic}); len(got) != 1 || got[0] != epic {
+		t.Errorf("filterLeaderEpics must keep the restarted-leader epic: %v", got)
+	}
+	if got := readLeader(epic); got != "term_new" {
+		t.Errorf("filterLeaderEpics must re-bind .cox/leader: %q", got)
+	}
+
+	// A still-live recorded handle -> a different leader owns the epic; do not steal it, do not rebind.
+	writeStaleLeader()
+	probeLeaderHandle = func(string, string) (bool, bool) { return true, true }
+	if isLeader, rebound = leaderTerminal(epic); isLeader || rebound {
+		t.Errorf("a live recorded handle must not be stolen: isLeader=%v rebound=%v", isLeader, rebound)
+	}
+	if got := readLeader(epic); got != "term_old" {
+		t.Errorf("a live leader's .cox/leader must be untouched: %q", got)
+	}
+
+	// A dead handle but this terminal is NOT in the epic's workspace -> not the leader, no rebind.
+	writeStaleLeader()
+	probeLeaderHandle = func(string, string) (bool, bool) { return false, true }
+	t.Chdir(t.TempDir()) // cwd no longer under the epic's workspace
+	if isLeader, rebound = leaderTerminal(epic); isLeader || rebound {
+		t.Errorf("dead handle out-of-workspace must not become leader: isLeader=%v rebound=%v", isLeader, rebound)
+	}
+	if got := readLeader(epic); got != "term_old" {
+		t.Errorf("out-of-workspace must not re-bind: %q", got)
+	}
+}

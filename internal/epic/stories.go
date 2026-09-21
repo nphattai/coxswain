@@ -41,6 +41,11 @@ type storyData struct {
 	PolicySource string
 	Delivery     workspace.Delivery
 	Context      workspace.Context
+	// EpicToken/WorkspaceToken render as the LITERAL tokens {{.EpicDir}} / {{.WorkspaceDir}} into the story's Read first
+	// block, so the created story stays path-free; cox checkpoint inject resolves them to this machine's paths at inject
+	// time (finding 1). Everything else in the template still renders the absolute EpicDir.
+	EpicToken      string
+	WorkspaceToken string
 }
 
 // Stories renders each spec into <epic>/stories/<id>.md from the one template, with the project policy resolved once
@@ -83,6 +88,7 @@ func Stories(epicDir, wsRoot, project string, specs []StorySpec) ([]string, erro
 			Device: s.Device, Host: s.Host, Harness: harness, Model: s.Model,
 			Slug: slug, EpicDir: epicDir, PolicySource: source,
 			Delivery: pol.Delivery, Context: pol.Context,
+			EpicToken: "{{.EpicDir}}", WorkspaceToken: "{{.WorkspaceDir}}",
 		}
 		var buf bytes.Buffer
 		if err := tmpl.Execute(&buf, data); err != nil {

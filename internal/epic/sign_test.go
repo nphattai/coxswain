@@ -89,6 +89,29 @@ func TestSignRecordsByAndRefusesReSign(t *testing.T) {
 	}
 }
 
+// Sign writes design_signed to the durable, committed ledger.jsonl (so it survives a machine move), never to the
+// machine-local .cox/events.jsonl (finding 2).
+func TestSignWritesDurableLedger(t *testing.T) {
+	epicDir := signEpic(t, filledSynthesis)
+	if err := Sign(epicDir, "captain"); err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	ledger, err := os.ReadFile(state.LedgerPath(epicDir))
+	if err != nil {
+		t.Fatalf("ledger.jsonl not written: %v", err)
+	}
+	if !strings.Contains(string(ledger), "design_signed") {
+		t.Errorf("ledger.jsonl missing design_signed:\n%s", ledger)
+	}
+	// The runtime log must not carry the durable signature.
+	if b, err := os.ReadFile(state.EventsPath(epicDir)); err == nil && strings.Contains(string(b), "design_signed") {
+		t.Errorf(".cox/events.jsonl must not carry design_signed:\n%s", b)
+	}
+	if signed, err := isSigned(epicDir); err != nil || !signed {
+		t.Errorf("isSigned must read the ledger: signed=%v err=%v", signed, err)
+	}
+}
+
 func TestSignRequiresCaptainAgrees(t *testing.T) {
 	noAgrees := `| role | claim | evidence | severity | verdict | reason | DESIGN.md change | captain agrees |
 |---|---|---|---|---|---|---|---|

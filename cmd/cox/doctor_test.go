@@ -39,6 +39,93 @@ func TestWatcherIssuesForWorkspaces(t *testing.T) {
 	}
 }
 
+// doctor flags a disagreement between an epic's DESIGN.md Status text and its ledger signed-state, and stays quiet when
+// they agree or the epic is closed (finding 2).
+func TestSignedDivergence(t *testing.T) {
+	// Status says signed, ledger unsigned: the dangerous case (a lost signature) is flagged.
+	if signedDivergence(doctor.EpicReport{Status: "active (signed 2026-09-21)", Signed: false}) == "" {
+		t.Error("status-signed + ledger-unsigned must be flagged")
+	}
+	// Ledger signed, status silent: also a mismatch.
+	if signedDivergence(doctor.EpicReport{Status: "active", Signed: true}) == "" {
+		t.Error("ledger-signed + status-silent must be flagged")
+	}
+	// Agreement raises nothing.
+	if signedDivergence(doctor.EpicReport{Status: "active (signed)", Signed: true}) != "" {
+		t.Error("agreement must raise nothing")
+	}
+	if signedDivergence(doctor.EpicReport{Status: "draft", Signed: false}) != "" {
+		t.Error("both unsigned must raise nothing")
+	}
+	// "unsigned" must not read as "signed": an honestly-unsigned epic with no ledger signature agrees, no flag.
+	if signedDivergence(doctor.EpicReport{Status: "active (unsigned, arena pending)", Signed: false}) != "" {
+		t.Error(`Status "unsigned" must not be treated as signed`)
+	}
+	// A hyphenated "re-signed" still counts as signed.
+	if signedDivergence(doctor.EpicReport{Status: "active (re-signed 2026-09-21)", Signed: false}) == "" {
+		t.Error(`"re-signed" must count as signed`)
+	}
+	// A closed epic's historical Status text is never flagged.
+	if signedDivergence(doctor.EpicReport{Status: "active (signed)", Signed: false, Closed: true}) != "" {
+		t.Error("a closed epic must not be flagged")
+	}
+	// The exit aggregator prefixes with the workspace root and epic slug.
+	reps := []doctor.WorkspaceReport{{Root: "/ws", Epics: []doctor.EpicReport{{Slug: "e1", Status: "signed", Signed: false}}}}
+	if got := workspaceSignedIssues(reps); len(got) != 1 || !strings.Contains(got[0], "e1") {
+		t.Fatalf("workspaceSignedIssues = %v, want one issue naming e1", got)
+	}
+}
+
+// doctor fails an active epic whose recorded .cox/leader handle is not live (a leader restart left a dead handle), skips
+// an epic with a live handle or no probe, and never flags a closed epic (finding 4). The prober is injected - no Orca.
+func TestLeaderHandleIssues(t *testing.T) {
+	restore := leaderHandleLive
+	t.Cleanup(func() { leaderHandleLive = restore })
+
+	reps := []doctor.WorkspaceReport{{Root: "/ws", Epics: []doctor.EpicReport{
+		{Slug: "dead", Path: "/ws/proj/epics/dead"},
+		{Slug: "live", Path: "/ws/proj/epics/live"},
+		{Slug: "norun", Path: "/ws/proj/epics/norun"},
+		{Slug: "gone", Path: "/ws/proj/epics/gone", Closed: true},
+	}}}
+	leaderHandleLive = func(epicDir string) (bool, bool) {
+		switch {
+		case strings.HasSuffix(epicDir, "/dead"):
+			return false, true // recorded handle not live
+		case strings.HasSuffix(epicDir, "/live"):
+			return true, true
+		default:
+			return false, false // no leader file / no backend to probe
+		}
+	}
+	got := leaderHandleIssues(reps)
+	if len(got) != 1 || !strings.Contains(got[0], "dead") || !strings.Contains(got[0], "not live") {
+		t.Fatalf("leaderHandleIssues = %v, want one issue naming the dead-handle epic", got)
+	}
+}
+
+// A closed epic raises no watcher issue (nothing to deliver), so doctor never prints it as "active ... watcher dead"
+// (finding 12).
+func TestWatcherIssuesSkipsClosedEpic(t *testing.T) {
+	closed := []doctor.WorkspaceReport{{Epics: []doctor.EpicReport{{Path: t.TempDir(), WatcherAlive: false, Closed: true}}}}
+	if len(watcherIssuesForWorkspaces(closed)) != 0 {
+		t.Error("a closed epic must raise no watcher issue")
+	}
+}
+
+// A path-backed repo whose checkout is missing or is not a git checkout makes doctor fail (finding 7): the issue is
+// surfaced and folds into the exit code.
+func TestWorkspaceRepoIssues(t *testing.T) {
+	reps := []doctor.WorkspaceReport{{Root: "/ws", RepoIssues: []string{`repo "api" path /gone does not exist`}}}
+	got := workspaceRepoIssues(reps)
+	if len(got) != 1 || !strings.Contains(got[0], "/ws") || !strings.Contains(got[0], "api") {
+		t.Fatalf("workspaceRepoIssues = %v, want the repo issue prefixed with the workspace root", got)
+	}
+	if len(workspaceRepoIssues([]doctor.WorkspaceReport{{Root: "/ok"}})) != 0 {
+		t.Error("a workspace with no repo issues must contribute nothing")
+	}
+}
+
 // doctor renders one capability card per implemented harness, each tagged adapter=yes, with the card's real fields.
 func TestDoctorHarnessCards(t *testing.T) {
 	cards := harnessCards(false)
