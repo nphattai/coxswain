@@ -180,3 +180,46 @@ test("no COX_BUSY_GEN -> no busy write (never a guess)", async () => {
   });
   rmSync(epic, { recursive: true, force: true });
 });
+
+// --- Interrupt through the harness (DESIGN wave-3 item 4) ---
+// FAIL_TO_PASS: the old wiring had no worker interrupt path, so a durable interrupt record could not abort a Pi turn. The
+// fixed wiring spawns `cox inbox interrupt-wait` per turn and calls ctx.abort() when it exits 0 (an interrupt arrived).
+
+// interruptStub writes a stub whose `inbox interrupt-wait` invocation behaves as `interrupt`: "now" exits 0 (an
+// interrupt arrived), "block" sleeps (no interrupt). Every other cox call (busy apply) exits 0.
+function interruptStub(dir: string, mode: "now" | "block"): string {
+  const stub = join(dir, "coxint.sh");
+  const body = mode === "now" ? "exit 0" : "sleep 5; exit 3";
+  writeFileSync(stub, `#!/bin/sh\nif [ "$1" = inbox ]; then ${body}; fi\nexit 0\n`);
+  chmodSync(stub, 0o755);
+  return stub;
+}
+
+test("a turn is aborted when an interrupt record arrives (interrupt-wait exits 0)", async () => {
+  const epic = mkdtempSync(join(tmpdir(), "coxpi-int-"));
+  const stub = interruptStub(epic, "now");
+  await busyEnv({ story: "w1", epic, gen: "g1", bin: stub }, async () => {
+    let aborted = false;
+    const { pi, handlers } = fakePi();
+    makeExtension(pi as never);
+    await handlers["agent_start"]?.({}, { abort: () => { aborted = true; } });
+    await waitFor(() => aborted, 1500);
+    assert.equal(aborted, true, "an interrupt record (interrupt-wait exit 0) must abort the running turn");
+  });
+  rmSync(epic, { recursive: true, force: true });
+});
+
+test("no interrupt -> the turn is not aborted", async () => {
+  const epic = mkdtempSync(join(tmpdir(), "coxpi-noint-"));
+  const stub = interruptStub(epic, "block");
+  await busyEnv({ story: "w1", epic, gen: "g1", bin: stub }, async () => {
+    let aborted = false;
+    const { pi, handlers } = fakePi();
+    makeExtension(pi as never);
+    await handlers["agent_start"]?.({}, { abort: () => { aborted = true; } });
+    await new Promise((r) => setTimeout(r, 400));
+    assert.equal(aborted, false, "with no interrupt record the turn must keep running");
+    await handlers["agent_settled"]?.({}, {}); // retire the still-blocking interrupt-wait child
+  });
+  rmSync(epic, { recursive: true, force: true });
+});

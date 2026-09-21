@@ -38,6 +38,16 @@ const (
 // 5-steer budget and refused a real steer).
 const KindReply = "reply"
 
+// KindInterrupt marks a durable interrupt record (written by `cox control interrupt` for a harness whose backend
+// keystroke interrupt is a no-op, DESIGN wave-3 item 4). The harness's own extension aborts the running turn when it
+// sees this record. Like a reply it is budget-exempt (an interrupt is a control action, not a steer) and rides as a
+// `kind=interrupt` header (inbox.v1 compatible).
+const KindInterrupt = "interrupt"
+
+// budgetBearing reports whether a steer record of this kind counts against the per-story steer budget. Reply and
+// interrupt records are control/answer traffic, not fresh instructions, so they are exempt.
+func budgetBearing(kind string) bool { return kind != KindReply && kind != KindInterrupt }
+
 // ErrBudget is returned when a steer would exceed the per-story budget and no override was given. It carries the
 // current steer count so the caller can report it.
 type ErrBudget struct {
@@ -83,6 +93,13 @@ func WriteReply(epicDir, story, text string) (string, error) {
 	return writeRecord(epicDir, story, text, Steer, KindReply, "")
 }
 
+// WriteInterrupt publishes a durable interrupt record (budget-exempt, urgency=steer so the ring ladder still delivers
+// it). The harness extension aborts the running turn when it sees it. Body is a short human-readable note; the kind
+// header is what the extension keys on.
+func WriteInterrupt(epicDir, story string) (string, error) {
+	return writeRecord(epicDir, story, "INTERRUPT: the leader asked to abort the current turn.", Steer, KindInterrupt, "")
+}
+
 func writeRecord(epicDir, story, text, urgency, kind, override string) (string, error) {
 	if urgency == "" {
 		urgency = Steer
@@ -107,10 +124,10 @@ func writeRecord(epicDir, story, text, urgency, kind, override string) (string, 
 	}
 	// Budget: count budget-bearing steer records only (handled or not); fyi and reply records never count. A reply
 	// (kind=reply) is an answer, not a steer, so it is exempt from both the check and the count (M14).
-	if urgency == Steer && kind != KindReply && override == "" {
+	if urgency == Steer && budgetBearing(kind) && override == "" {
 		used := 0
 		for _, r := range recs {
-			if r.Urgency == Steer && r.Kind != KindReply {
+			if r.Urgency == Steer && budgetBearing(r.Kind) {
 				used++
 			}
 		}

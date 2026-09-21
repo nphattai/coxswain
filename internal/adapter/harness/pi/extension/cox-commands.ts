@@ -38,6 +38,20 @@ export const coxArgs = {
     epic,
   ],
 
+  // interruptWait blocks until a durable interrupt record appears for the story (DESIGN wave-3 item 4): exit 0 = an
+  // interrupt arrived (the record is marked handled by cox), exit 3 = timeout. The extension spawns it per turn and
+  // aborts the running turn on exit 0. It is the worker-side counterpart to the leader's `cox wake wait` child.
+  interruptWait: (epic: string, story: string, max: string): string[] => [
+    "inbox",
+    "interrupt-wait",
+    "--epic",
+    epic,
+    "--story",
+    story,
+    "--max",
+    max,
+  ],
+
   // sessionStart injects the saved checkpoint on session start THROUGH the hook, which computes the current git HEAD from
   // the worktree so the CHECKPOINT STALE freshness check runs. `cox checkpoint inject` without --head has an empty HEAD
   // and silently suppresses that warning.
