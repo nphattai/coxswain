@@ -18,9 +18,11 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-
-	"github.com/nphattai/coxswain/internal/state"
 )
+
+// controlDir is the per-epic control directory (mirrors state.ControlDir; not imported to avoid an import cycle, since
+// state imports the backend package and the backend package consults this one).
+const controlDir = ".cox"
 
 // Schema is the record version. A record with any other schema is treated as malformed (Read -> Unknown).
 const Schema = "busy.v1"
@@ -55,7 +57,7 @@ type Record struct {
 
 // Path is the record file for a story: <epic>/.cox/sessions/<story>.busy.json (beside the session file).
 func Path(epic, story string) string {
-	return filepath.Join(epic, state.ControlDir, "sessions", story+".busy.json")
+	return filepath.Join(epic, controlDir, "sessions", story+".busy.json")
 }
 
 // tokenValid is the conservative charset shared by gen, source, and event (mirrors fm_busy_token_valid). Anything else

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/nphattai/coxswain/internal/adapter/backend"
+	"github.com/nphattai/coxswain/internal/protocol/busy"
 )
 
 var _ backend.Backend = New("sess")
@@ -189,4 +190,31 @@ func gitInit(t *testing.T, dir string) {
 	}
 	run("init", "-b", "main")
 	run("commit", "--allow-empty", "-m", "root")
+}
+
+// --- Harness-owned busy state consult (DESIGN wave-3 item 3) ---
+// herdr has no text composer classifier (Composer was always "unknown"), so before this change a busy-reporting harness
+// on herdr could never be seen idle. Now Composer consults the busy record first, the same code path Orca uses.
+func TestComposerConsultsBusyRecord(t *testing.T) {
+	epic := t.TempDir()
+	gen, err := busy.Arm(epic, "w1")
+	if err != nil {
+		t.Fatalf("arm: %v", err)
+	}
+	c := New("sess")
+	c.Epic = epic
+	// armed (busy)
+	if cs, _ := c.Composer(backend.Session{Story: "w1"}); cs != backend.ComposerBusy {
+		t.Fatalf("armed busy -> Composer %q, want busy", cs)
+	}
+	if err := busy.Apply(epic, "w1", busy.Idle, gen, "pi-ext", "e"); err != nil {
+		t.Fatal(err)
+	}
+	if cs, _ := c.Composer(backend.Session{Story: "w1"}); cs != backend.ComposerEmpty {
+		t.Fatalf("harness idle -> Composer %q, want empty", cs)
+	}
+	// no record / no story -> unknown (fallback preserved)
+	if cs, _ := c.Composer(backend.Session{Story: "other"}); cs != backend.ComposerUnknown {
+		t.Fatalf("no record -> Composer %q, want unknown", cs)
+	}
 }

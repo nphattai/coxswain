@@ -219,6 +219,7 @@ func newBackend(epicDir string) (backend.Backend, string) {
 	}
 	c := orca.New(run)
 	c.Plane = resolveOrcaPlane(epicDir)
+	c.Epic = epicDir // so ringReady/Composer consult the harness-owned busy record (DESIGN wave-3)
 	c.LaunchConfirmS = loadPolicyQuiet(epicDir).LaunchConfirmS()
 	if h := os.Getenv("ORCA_TERMINAL_HANDLE"); h != "" {
 		c.From = h
@@ -257,6 +258,7 @@ func loadSession(epicDir, story string) (backend.Session, error) {
 	if err := json.Unmarshal(b, &s); err != nil {
 		return backend.Session{}, err
 	}
+	s.Story = story // stamp the story so the backend can consult the busy record even for a session persisted before this field existed
 	return s, nil
 }
 
@@ -269,8 +271,8 @@ func loadAllSessions(epicDir string) map[string]backend.Session {
 		return out
 	}
 	for _, e := range entries {
-		if !strings.HasSuffix(e.Name(), ".json") {
-			continue
+		if !strings.HasSuffix(e.Name(), ".json") || strings.HasSuffix(e.Name(), ".busy.json") {
+			continue // skip the sibling busy-state records that live in the same dir
 		}
 		story := strings.TrimSuffix(e.Name(), ".json")
 		if s, err := loadSession(epicDir, story); err == nil {

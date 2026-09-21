@@ -62,6 +62,10 @@ type Session struct {
 	Kind   string // "orca" | "herdr"
 	ID     string // dispatch id (orca) or pane id (herdr)
 	Handle string // terminal handle (orca) or session:pane (herdr)
+	// Story is the story this session runs (set at Spawn and stamped on load). It lets a backend consult the
+	// harness-owned busy record (<epic>/.cox/sessions/<story>.busy.json) before its own UI-derived signal (DESIGN wave-3
+	// item 3); empty means no consult, so the backend falls back to its classifier as before.
+	Story string
 }
 
 // Liveness is what a Probe can confirm. Unknown is the zero value so a probe error or an unreadable response is
