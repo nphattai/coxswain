@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -141,6 +142,70 @@ func TestCloseStopErrorProbeSettled(t *testing.T) {
 func fileExists(p string) bool {
 	_, err := os.Stat(p)
 	return err == nil
+}
+
+// startFakeWatcher launches a real long-lived process and records its pid in <epic>/.cox/watch.pid, so close's
+// stop-watcher step has a live pid to reason about. The process is killed on cleanup if close did not.
+func startFakeWatcher(t *testing.T, epicDir string) int {
+	t.Helper()
+	cmd := exec.Command("sleep", "30")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start fake watcher: %v", err)
+	}
+	pid := cmd.Process.Pid
+	// Reap on exit so a SIGTERM'd process does not linger as a zombie that a signal-0 probe still reports alive. In
+	// production the watcher is not close's child, so the OS reaps it; the goroutine reproduces that here.
+	go func() { _ = cmd.Wait() }()
+	t.Cleanup(func() { _ = cmd.Process.Kill() })
+	if err := os.WriteFile(filepath.Join(epicDir, ".cox", "watch.pid"), []byte(strconv.Itoa(pid)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return pid
+}
+
+// A proven watcher (its command line names this epic's `cox watch --epic <dir>`) is stopped before the archive.
+func TestCloseStopsProvenWatcher(t *testing.T) {
+	epicDir, rt, _ := closeFixture(t, false)
+	pid := startFakeWatcher(t, epicDir)
+	old := watcherProcArgs
+	watcherProcArgs = func(int) (string, error) { return "cox watch --epic " + epicDir, nil }
+	t.Cleanup(func() { watcherProcArgs = old })
+
+	alloc := &env.Allocator{EpicDir: epicDir, Ops: env.RealOps()}
+	if err := Close(CloseOptions{EpicDir: epicDir, Runtime: rt, Alloc: alloc, Yes: true, Force: true}); err != nil {
+		t.Fatal(err)
+	}
+	if procAlive(pid) {
+		t.Errorf("a proven watcher must be stopped before archive (pid %d still alive)", pid)
+	}
+	if !fileExists(filepath.Join(epicDir, ".cox.closed")) {
+		t.Errorf(".cox must be archived once the watcher is stopped")
+	}
+}
+
+// A live pid whose command line does NOT prove it is this epic's watcher is never signalled, and close refuses to
+// archive (arena round 1, adversary-1-1).
+func TestCloseRefusesUnprovableWatcher(t *testing.T) {
+	epicDir, rt, _ := closeFixture(t, false)
+	pid := startFakeWatcher(t, epicDir)
+	old := watcherProcArgs
+	watcherProcArgs = func(int) (string, error) { return "sleep 30", nil } // no cox watch / --epic proof
+	t.Cleanup(func() { watcherProcArgs = old })
+
+	alloc := &env.Allocator{EpicDir: epicDir, Ops: env.RealOps()}
+	err := Close(CloseOptions{EpicDir: epicDir, Runtime: rt, Alloc: alloc, Yes: true, Force: true})
+	if err == nil {
+		t.Fatal("close must refuse to archive while an unprovable pid is alive")
+	}
+	if !procAlive(pid) {
+		t.Errorf("an unprovable pid must never be signalled (pid %d was killed)", pid)
+	}
+	if fileExists(filepath.Join(epicDir, ".cox.closed")) {
+		t.Errorf(".cox must NOT be archived when the watcher could not be stopped")
+	}
+	if !fileExists(filepath.Join(epicDir, ".cox", "close.incomplete.json")) {
+		t.Errorf("an aborted close must record close.incomplete.json")
+	}
 }
 
 func TestCloseKeepsDirtyWorktree(t *testing.T) {
