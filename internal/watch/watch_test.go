@@ -545,6 +545,53 @@ func TestBlockedPassStuckWake(t *testing.T) {
 	}
 }
 
+// Item 2: when blockedPass raises the stuck wake it captures the worker terminal's screen (Backend.Screen) and carries
+// the visible prompt block in the note, the Full text, and the evidence, plus the remedy, so the leader answers from the
+// hook output without opening the terminal. A backend that cannot read the screen still gets the wake, minus the dialog.
+func TestBlockedPassStuckWakeCarriesDialog(t *testing.T) {
+	epic := t.TempDir()
+	must(t, state.Append(epic, ev(epic, "s", 1, state.Submitted, state.Working)))
+	now := time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC)
+	b := fake.New()
+	b.ComposerState = backend.ComposerBlocked
+	b.ScreenRows = []string{
+		"", "some earlier output", "",
+		"Ship to production now?",
+		"  1. Yes, deploy",
+		"  2. No, hold",
+		"❯ ",
+	}
+	w := &Watcher{EpicDir: epic, Backend: b, Sessions: map[string]backend.Session{"s": {ID: "ctx_1", Handle: "term_1"}}, BlockedWait: time.Minute, Now: func() time.Time { return now }}
+
+	if _, _, err := w.blockedPass(); err != nil { // first sight records the interval
+		t.Fatal(err)
+	}
+	now = now.Add(2 * time.Minute)
+	if n, urg, err := w.blockedPass(); err != nil || n != 1 || !urg {
+		t.Fatalf("want one urgent stuck wake, got n=%d urg=%v err=%v", n, urg, err)
+	}
+	wakes, _ := wake.Drain(epic, true)
+	if len(wakes) != 1 {
+		t.Fatalf("want one wake, got %+v", wakes)
+	}
+	wk := wakes[0]
+	if !strings.Contains(wk.Note, "Ship to production now?") {
+		t.Errorf("note must carry the captured question: %q", wk.Note)
+	}
+	if !strings.Contains(wk.Note, "Remedy:") {
+		t.Errorf("note must name the remedy: %q", wk.Note)
+	}
+	if prompt, _ := wk.Evidence["prompt"].(string); !strings.Contains(prompt, "1. Yes, deploy") || !strings.Contains(prompt, "2. No, hold") {
+		t.Errorf("evidence.prompt must carry the numbered options: %q", prompt)
+	}
+	if !strings.Contains(wk.Full, "visible prompt:") || !strings.Contains(wk.Full, "Ship to production now?") {
+		t.Errorf("Full must carry the untruncated dialog: %q", wk.Full)
+	}
+	if !containsCall(b.Calls, "Screen") {
+		t.Errorf("blockedPass must read the terminal screen, calls=%v", b.Calls)
+	}
+}
+
 // Item 1: a story whose session file is written AFTER the watcher's first tick is picked up on the next tick, so a
 // story dispatched into a running watcher is covered (before, Sessions was cached at start and the new story was
 // invisible). blockedPass is the proof: with the second session absent it cannot track the second story; once the file

@@ -540,11 +540,24 @@ func (w *Watcher) blockedPass() (int, bool, error) {
 		if w.blockedFired(s.ID) {
 			continue // already raised for this interval
 		}
-		if _, err := wake.Append(w.EpicDir, wake.Wake{
-			Epic: filepath.Base(w.EpicDir), Story: s.ID, Kind: wake.KindStuck,
-			Note:     "worker waiting on a local prompt (approval or input); check the terminal",
-			Evidence: map[string]any{"dispatch": sess.ID, "waiting_m": int(now.Sub(since).Minutes())},
-		}); err != nil {
+		// Capture the worker terminal's screen so the leader answers the prompt from the hook output, not by opening the
+		// terminal (item 2). A failed read just omits the dialog: the stuck wake still fires. The rows ARE the screen, so
+		// no env/secret is captured.
+		note := blockedNote
+		ev := map[string]any{"dispatch": sess.ID, "waiting_m": int(now.Sub(since).Minutes())}
+		full := ""
+		if rows, err := w.Backend.Screen(sess); err == nil {
+			if block := promptBlock(rows); block != "" {
+				ev["prompt"] = block
+				full = note + "\nvisible prompt:\n" + block
+				note = note + " | prompt: " + truncate(strings.ReplaceAll(block, "\n", " "), 200)
+			}
+		}
+		wk := wake.Wake{Epic: filepath.Base(w.EpicDir), Story: s.ID, Kind: wake.KindStuck, Note: note, Evidence: ev}
+		if full != "" {
+			wk.Full = full
+		}
+		if _, err := wake.Append(w.EpicDir, wk); err != nil {
 			return appended, urgent, err
 		}
 		appended++
@@ -552,6 +565,38 @@ func (w *Watcher) blockedPass() (int, bool, error) {
 		w.markBlockedFired(s.ID)
 	}
 	return appended, urgent, nil
+}
+
+// blockedNote is the fixed lead of every stuck-on-a-prompt wake: what happened and the remedy the leader runs (steer
+// the ruling, then dismiss the prompt from the worker's terminal). The captured dialog, when the screen read succeeds,
+// is appended after it.
+const blockedNote = "worker waiting on a local prompt (approval or input); check the terminal. " +
+	"Remedy: cox steer the ruling, then `orca terminal send --enter` (or the option number) to dismiss."
+
+// blockLineMax bounds the captured prompt block so a long screen never bloats a wake (DESIGN item 2: ~40 lines).
+const blockLineMax = 40
+
+// promptBlock extracts the visible prompt a blocked worker is waiting on from the terminal's rendered screen rows: the
+// trailing run of lines (the question and its numbered options) with surrounding blank lines trimmed, bounded to
+// blockLineMax lines. The rows are the screen capture, never env, so no secret is included by construction.
+func promptBlock(rows []string) string {
+	lines := make([]string, len(rows))
+	for i, l := range rows {
+		lines[i] = strings.TrimRight(l, " \t")
+	}
+	for len(lines) > 0 && strings.TrimSpace(lines[0]) == "" {
+		lines = lines[1:]
+	}
+	for len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) == "" {
+		lines = lines[:len(lines)-1]
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	if len(lines) > blockLineMax {
+		lines = lines[len(lines)-blockLineMax:]
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (w *Watcher) reconcileEvery() int {

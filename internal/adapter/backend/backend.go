@@ -115,6 +115,11 @@ type Backend interface {
 	// Composer classifies the worker terminal's input state: "empty" | "pending" | "busy" | "unknown". It never errors
 	// on doubt (a backend that cannot read the composer returns "unknown"), so a caller treats only "empty" as idle.
 	Composer(s Session) (string, error)
+	// Screen returns the worker terminal's rendered screen rows (the tail Composer reads), so a caller can show the
+	// visible prompt a blocked worker is waiting on without opening the terminal. The rows are the screen, never env, so
+	// no secret is included by construction. A backend that cannot read a screen returns a nil slice and an error; the
+	// caller treats that as "no dialog captured", never as a failure of whatever it was doing.
+	Screen(s Session) ([]string, error)
 	// WorkerList returns every dispatch in the backend's run with its state, so a caller can tell a live dispatch from a
 	// settled one without one Probe per story. A backend with no run listing runs reduced (herdr) and returns an error.
 	WorkerList() ([]Worker, error)

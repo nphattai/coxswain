@@ -23,6 +23,7 @@ type Backend struct {
 	StopConfirmed bool             // what Stop returns when it does not fail
 	SendRang      bool             // what Send returns for rang when it does not fail (default true)
 	ComposerState string           // what Composer returns (default "unknown")
+	ScreenRows    []string         // what Screen returns when it does not fail
 	Workers       []backend.Worker // what WorkerList returns when it does not fail
 
 	mailbox *Mailbox
@@ -111,6 +112,13 @@ func (b *Backend) Composer(s backend.Session) (string, error) {
 		return backend.ComposerUnknown, nil
 	}
 	return b.ComposerState, nil
+}
+
+func (b *Backend) Screen(s backend.Session) ([]string, error) {
+	if err := b.record("Screen"); err != nil {
+		return nil, err
+	}
+	return b.ScreenRows, nil
 }
 
 func (b *Backend) WorkerList() ([]backend.Worker, error) {

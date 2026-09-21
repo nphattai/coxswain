@@ -474,9 +474,20 @@ func (c *Client) Composer(s backend.Session) (string, error) {
 // --screen so the tail is the rendered screen rows (the prompt and status line) rather than the raw stream tail, which
 // is truncated and classifies as unknown, so the doorbell would never ring an empty composer.
 func (c *Client) composerState(handle string) string {
-	res, err := c.call("terminal", "read", "--terminal", handle, "--screen", "--json")
+	tail, err := c.screenTail(handle)
 	if err != nil {
 		return "unknown"
+	}
+	return classifyComposer(tail)
+}
+
+// screenTail reads a terminal's rendered screen rows (the prompt and status line), the same `terminal read --screen`
+// call Composer classifies. It is shared with Screen so the blocked-worker dialog capture reads the exact rows the
+// composer classifier sees.
+func (c *Client) screenTail(handle string) ([]string, error) {
+	res, err := c.call("terminal", "read", "--terminal", handle, "--screen", "--json")
+	if err != nil {
+		return nil, err
 	}
 	var r struct {
 		Terminal struct {
@@ -484,9 +495,18 @@ func (c *Client) composerState(handle string) string {
 		} `json:"terminal"`
 	}
 	if err := json.Unmarshal(res, &r); err != nil {
-		return "unknown"
+		return nil, err
 	}
-	return classifyComposer(r.Terminal.Tail)
+	return r.Terminal.Tail, nil
+}
+
+// Screen returns the worker terminal's rendered screen rows, so the watcher can put a blocked worker's visible prompt in
+// the stuck wake. An empty handle or an unreadable read is an error (the caller omits the dialog, never fails on it).
+func (c *Client) Screen(s backend.Session) ([]string, error) {
+	if s.Handle == "" {
+		return nil, fmt.Errorf("orca Screen: no terminal handle")
+	}
+	return c.screenTail(s.Handle)
 }
 
 var (
