@@ -14,12 +14,12 @@ delivery: {{.Delivery.Style}}
 # {{.Title}}
 
 ## Read first
-- Contract: {{.EpicDir}}/DESIGN.md (sections <x>)
-- Leader handoff / rulings: {{.EpicDir}}/DESIGN.md and <ws>/docs/workflow.md (rulings section)
-- Your environment: {{.EpicDir}}/.env.{{.ID}} (port block, API_URL, SEED_PREFIX; backend stories also get their own
+- Contract: {{.EpicToken}}/DESIGN.md (sections <x>)
+- Leader handoff / rulings: {{.EpicToken}}/DESIGN.md and {{.WorkspaceToken}}/docs/workflow.md (rulings section)
+- Your environment: {{.EpicToken}}/.env.{{.ID}} (port block, API_URL, SEED_PREFIX; backend stories also get their own
   database DB_NAME and REDIS_PREFIX). Load it with `set -a; . <file>; set +a` before any server, test or migration; never
   edit the epic backend, never migrate any database but DB_NAME, never create a device, port or container.
-- Your checkpoint, if it exists: {{.EpicDir}}/handoffs/{{.ID}}.md (after a resume, read it first via `cox checkpoint inject`).
+- Your checkpoint, if it exists: {{.EpicToken}}/handoffs/{{.ID}}.md (after a resume, read it first via `cox checkpoint inject`).
 
 ## Goal
 <what this repo must do for the epic, in the captain's words>

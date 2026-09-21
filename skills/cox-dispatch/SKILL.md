@@ -14,6 +14,8 @@ cox story dispatch <id> --epic <epic>
 ```
 This verifies the worktree, builds the brief context, spawns the worker, records the transition, and starts the watcher.
 
+A story's `## Read first` block references workspace paths through the tokens `{{.EpicDir}}` and `{{.WorkspaceDir}}`, not an absolute path, so the story file never hard-codes one machine's layout. `cox checkpoint inject` (which the worker runs on launch and every resume) expands them to this machine's paths, so a workspace that has moved still resolves correctly - do not sed absolute paths into a story.
+
 ## 2. Supervise via wake
 The leader loop is identical for claude and codex: drain the watcher's wakes, handle each, ack through. The only
 difference is how an idle leader waits for the next wake, and the harness capability card (`docs/adapters/<harness>.md`)

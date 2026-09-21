@@ -41,6 +41,62 @@ func writeStory(t *testing.T, epic, story string) {
 	}
 }
 
+// readFirst resolves the story's workspace-path tokens at inject time: {{.EpicDir}} to the epic dir and
+// {{.WorkspaceDir}} to the workspace root, while an unknown token is left untouched (finding 1).
+func TestReadFirstExpandsTokens(t *testing.T) {
+	ws := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(ws, "cox"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ws, "cox", "workspace.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	epic := filepath.Join(ws, "proj", "epics", "e1")
+	dir := filepath.Join(epic, "stories")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := "---\nid: s\n---\n## Read first\n" +
+		"- Contract: {{.EpicDir}}/DESIGN.md\n" +
+		"- Rulings: {{.WorkspaceDir}}/docs/workflow.md\n" +
+		"- Unknown: {{.Foo}} stays\n\n## Goal\nBuild it.\n"
+	if err := os.WriteFile(filepath.Join(dir, "s.md"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got := readFirst(epic, "s")
+	if !strings.Contains(got, epic+"/DESIGN.md") {
+		t.Errorf("{{.EpicDir}} not expanded to %q:\n%s", epic, got)
+	}
+	if !strings.Contains(got, ws+"/docs/workflow.md") {
+		t.Errorf("{{.WorkspaceDir}} not expanded to %q:\n%s", ws, got)
+	}
+	if strings.Contains(got, "{{.EpicDir}}") || strings.Contains(got, "{{.WorkspaceDir}}") {
+		t.Errorf("a known token was left unexpanded:\n%s", got)
+	}
+	if !strings.Contains(got, "{{.Foo}}") {
+		t.Errorf("an unknown token must be left untouched:\n%s", got)
+	}
+}
+
+// When no workspace root can be resolved, {{.WorkspaceDir}} stays a token (never an empty path), while {{.EpicDir}}
+// still expands.
+func TestReadFirstWorkspaceTokenKeptWhenNoWorkspace(t *testing.T) {
+	epic := t.TempDir() // no cox/workspace.json above it
+	dir := filepath.Join(epic, "stories")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := "---\nid: s\n---\n## Read first\n- A: {{.EpicDir}} and {{.WorkspaceDir}}\n\n## Goal\ngo\n"
+	if err := os.WriteFile(filepath.Join(dir, "s.md"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := readFirst(epic, "s")
+	if !strings.Contains(got, epic) || !strings.Contains(got, "{{.WorkspaceDir}}") {
+		t.Errorf("want EpicDir expanded and WorkspaceDir kept as a token:\n%s", got)
+	}
+}
+
 func TestInjectRejectsWrongAttempt(t *testing.T) {
 	epic := t.TempDir()
 	writeCheckpoint(t, epic, "s", "2", "abc123")

@@ -194,7 +194,10 @@ func Inject(epicDir, story string, currentAttempt int, currentHead string) (Inje
 	return Injection{Text: out.String(), Stale: stale}, nil
 }
 
-// readFirst returns the story's "## Read first" section (through the next "## " heading), or empty when absent.
+// readFirst returns the story's "## Read first" section (through the next "## " heading), or empty when absent. The
+// story template leaves the workspace paths as the tokens {{.EpicDir}} and {{.WorkspaceDir}} so a created story never
+// hard-codes one machine's absolute path (finding 1); they are resolved here, at inject time, to this machine's paths.
+// An unknown {{.Token}} is left untouched, and {{.WorkspaceDir}} stays a token when no workspace root can be resolved.
 func readFirst(epicDir, story string) string {
 	f, err := os.Open(filepath.Join(epicDir, "stories", story+".md"))
 	if err != nil {
@@ -222,5 +225,35 @@ func readFirst(epicDir, story string) string {
 			b.WriteByte('\n')
 		}
 	}
-	return b.String()
+	return expandStoryTokens(b.String(), epicDir)
+}
+
+// expandStoryTokens resolves the workspace-path tokens a story's Read first block carries: {{.EpicDir}} to the epic dir
+// and {{.WorkspaceDir}} to the workspace root (the nearest ancestor with cox/workspace.json). {{.WorkspaceDir}} is left
+// as a token when no workspace root is found, and any other {{.Token}} is left untouched (an unknown token is not this
+// resolver's to expand).
+func expandStoryTokens(text, epicDir string) string {
+	text = strings.ReplaceAll(text, "{{.EpicDir}}", epicDir)
+	if ws := workspaceDir(epicDir); ws != "" {
+		text = strings.ReplaceAll(text, "{{.WorkspaceDir}}", ws)
+	}
+	return text
+}
+
+// workspaceDir walks up from the epic dir to the nearest ancestor holding cox/workspace.json, or "" when none is found.
+func workspaceDir(epicDir string) string {
+	dir, err := filepath.Abs(epicDir)
+	if err != nil {
+		return ""
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "cox", "workspace.json")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return ""
+		}
+		dir = parent
+	}
 }
