@@ -8,7 +8,7 @@ tests them with fakes. An adapter may expose a reduced mode, but it must never s
 | Boundary | Implementations | Executable authority |
 |---|---|---|
 | Backend | [Orca](orca.md), [herdr](herdr.md) | `internal/adapter/backend/backend.go` |
-| Harness | [Claude](claude.md), [Codex](codex.md) | `internal/adapter/harness/harness.go` and each `Card()` |
+| Harness | [Claude](claude.md), [Codex](codex.md), [Pi](pi.md) | `internal/adapter/harness/harness.go` and each `Card()` |
 | Forge | [GitHub](github.md) | `internal/adapter/forge/forge.go` |
 | Service | [Project service](service.md) | `internal/adapter/service/service.go` |
 | Review surface | [lavish-axi](lavish.md) | `internal/adapter/review/lavish/` |

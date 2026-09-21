@@ -9,6 +9,7 @@ import (
 	"github.com/nphattai/coxswain/internal/adapter/backend"
 	"github.com/nphattai/coxswain/internal/adapter/harness"
 	"github.com/nphattai/coxswain/internal/adapter/harness/registry"
+	"github.com/nphattai/coxswain/internal/protocol/busy"
 	"github.com/nphattai/coxswain/internal/protocol/control"
 )
 
@@ -44,6 +45,7 @@ func cmdControl(args []string) int {
 	fs.SetOutput(os.Stderr)
 	epicDir := fs.String("epic", "", "epic directory")
 	note := fs.String("note", "", "progress note (relaunch)")
+	allowUnsandboxed := fs.Bool("allow-unsandboxed", false, "authorize relaunching an unsandboxed harness (not a sandbox)")
 	if err := fs.Parse(rest); err != nil {
 		return 2
 	}
@@ -77,11 +79,52 @@ func cmdControl(args []string) int {
 	case "relaunch":
 		pol := loadPolicyQuiet(*epicDir)
 		hname := nonEmpty(meta.Harness, "claude")
-		spec := backend.HarnessSpec{Name: hname, Model: resolveWorkerModel(pol, hname, meta.Model), LaunchFlags: pol.LaunchFlags(hname)}
-		prior, _ := loadSession(*epicDir, story) // previous attempt's terminal, closed before the new spawn (zero value when none)
-		sess, err := ctl.Relaunch(story, readWorktree(*epicDir, story), *note, prior, spec, nil)
+		model := resolveWorkerModel(pol, hname, meta.Model)
+		wtPath := readWorktree(*epicDir, story)
+		storyPath := filepath.Join(*epicDir, "stories", story+".md")
+		if err := piPreSpawnValidate(hname, model, ""); err != nil {
+			return fail("%v", err)
+		}
+		// Same authorization + extension flow as dispatch: an unsandboxed relaunch is refused without
+		// --allow-unsandboxed, and a pi relaunch keeps push/auto via its verified extension (or downgrades via notice).
+		extension, notices, authority, err := authorizeWorker(hname, *epicDir, story, *allowUnsandboxed, true)
 		if err != nil {
 			return fail("%v", err)
+		}
+		for _, n := range notices {
+			fmt.Println(n)
+		}
+		if err := registry.PrepareWorktree(hname, wtPath); err != nil {
+			return fail("prepare worktree trust: %v", err)
+		}
+		argv, err := registry.LaunchArgs(hname, harness.Launch{
+			Role: harness.RoleWorker, Worktree: wtPath, Model: model, Extension: extension,
+			Flags: pol.LaunchFlags(hname), Brief: harness.Brief{StoryPath: storyPath, Note: *note},
+		})
+		if err != nil {
+			return fail("compose launch argv: %v", err)
+		}
+		var extra map[string]any
+		if authority == "flag" {
+			extra = map[string]any{"unsandboxed": map[string]any{"authorized_by": "--allow-unsandboxed", "harness": hname}}
+		}
+		spec := backend.HarnessSpec{Name: hname, Model: model, LaunchFlags: pol.LaunchFlags(hname), Argv: argv}
+		// Re-arm the busy record for the relaunched incarnation (DESIGN wave-3): a fresh gen invalidates any late event
+		// from the prior attempt and reaches the new worker via COX_BUSY_GEN.
+		if registry.Card(hname).BusyRecord {
+			g, err := busy.Arm(*epicDir, story)
+			if err != nil {
+				return fail("arm busy state: %v", err)
+			}
+			spec.BusyGen = g
+		}
+		prior, _ := loadSession(*epicDir, story) // previous attempt's terminal, closed before the new spawn (zero value when none)
+		sess, err := ctl.Relaunch(story, wtPath, *note, prior, spec, extra)
+		if err != nil {
+			return fail("%v", err)
+		}
+		if _, notice := confirmPiActivation(hname, extension, piExtDir(*epicDir, story)); notice != "" {
+			fmt.Println(notice)
 		}
 		if err := saveSession(*epicDir, story, sess); err != nil {
 			return fail("save session: %v", err)

@@ -11,6 +11,9 @@ import (
 
 	"github.com/nphattai/coxswain/internal/adapter/backend"
 	"github.com/nphattai/coxswain/internal/adapter/backend/orca"
+	"github.com/nphattai/coxswain/internal/adapter/harness"
+	"github.com/nphattai/coxswain/internal/adapter/harness/pi"
+	"github.com/nphattai/coxswain/internal/adapter/harness/registry"
 	"github.com/nphattai/coxswain/internal/state"
 	"github.com/nphattai/coxswain/internal/watch"
 	"github.com/nphattai/coxswain/internal/workspace"
@@ -62,6 +65,100 @@ func modelVendor(model string) string {
 	default:
 		return ""
 	}
+}
+
+// piPreSpawnValidate runs Pi's provider/model and thinking validation before spawn (DESIGN section 2), alongside
+// modelHarnessMismatch (which applies no check to a pi model, since modelVendor returns "" for it). It requires an
+// explicit provider/model and rejects an unsupported thinking level; it applies only to the pi harness, so every other
+// harness passes unchanged.
+func piPreSpawnValidate(harnessName, model, effort string) error {
+	if harnessName != "pi" {
+		return nil
+	}
+	if err := pi.ValidateModel(model); err != nil {
+		return err
+	}
+	return pi.ValidateThinking(effort)
+}
+
+// authorizeWorker runs the single card-notice authorization gate for a worker launch and, for pi, resolves the
+// out-of-tree packaged extension. It is the one place every launch path (dispatch, resume/reroute, control relaunch,
+// baseline) shares, so none can bypass the unsandboxed gate or silently omit the Pi extension. It returns the -e
+// extension path (empty for a non-pi harness or a reduced-mode downgrade), the notices to print, the recorded
+// unsandboxed authority ("flag"|"standing-ack"|""), and an error when the launch is refused (no adapter, role not
+// allowed, or an unauthorized unsandboxed harness).
+func authorizeWorker(harnessName, epic, story string, allowUnsandboxed, installExtension bool) (extension string, notices []string, authority string, err error) {
+	// Gate pi to the terminal plane: on the orchestration plane Orca's Spawn ignores HarnessSpec.Argv (it passes only
+	// agent+model), so the adapter-owned launch config (extension, --approve, model/thinking flags) is silently dropped
+	// and a worker would run without push/checkpoint while dispatch recorded the static card. Refuse before spawn.
+	if harnessName == "pi" && resolveOrcaPlane(epic) != workspace.PlaneTerminal {
+		return "", nil, "", fmt.Errorf("harness %q requires the terminal plane (backend.orca.plane=terminal): the orchestration plane drops the adapter-owned launch config (extension, --approve, model flags)", harnessName)
+	}
+	n, authority, err := registry.Notices(harnessName, harness.RoleWorker, allowUnsandboxed)
+	if err != nil {
+		return "", nil, "", err
+	}
+	notices = n
+	// installExtension is false for a bare baseline (which promises no cox hooks): the extension must not be installed or
+	// passed there, or it would infer leader, start wake supervision, and use the _leader checkpoint, contaminating the
+	// measurement.
+	if harnessName == "pi" && installExtension {
+		ext, extNotices := resolvePiExtension(piExtDir(epic, story), epic)
+		extension = ext
+		notices = append(notices, extNotices...)
+	}
+	return extension, notices, authority, nil
+}
+
+// piReducedModeNotice is the downgrade notice printed when the pi extension is not verified: the effective card falls
+// from push/auto to pull/manual, emitted through the notice path, never inferred from the static card (DESIGN AC6).
+const piReducedModeNotice = "reduced mode: pi extension not verified (%s); effective card pull/manual - leader must run cox wake wait, worker must write cox checkpoint facts at each phase boundary"
+
+// piExtDir is the out-of-tree install location for a worker's pi extension: under the epic's .cox, keyed by story. It is
+// deliberately NOT inside the story worktree, so a Pi dispatch never leaves untracked .pi runtime files in the tree the
+// worker commits from.
+func piExtDir(epic, story string) string { return filepath.Join(epic, ".cox", "pi-ext", story) }
+
+// resolvePiExtension installs the packaged pi extension into installDir (out-of-tree) with the epic binding and verifies
+// it. On success it returns the -e entry path (push/auto). On install/hash failure it returns entry="" plus a
+// reduced-mode downgrade notice, so pi launches without the extension in pull/manual mode rather than claiming the
+// static push/auto card over an unverified extension.
+func resolvePiExtension(installDir, epic string) (entry string, notices []string) {
+	if _, err := pi.InstallExtension(installDir, epic); err != nil {
+		return "", []string{fmt.Sprintf(piReducedModeNotice, "install failed: "+err.Error())}
+	}
+	entry, ok := pi.VerifyExtension(installDir)
+	if !ok {
+		return "", []string{fmt.Sprintf(piReducedModeNotice, "hash unverified")}
+	}
+	// Clear any stale activation marker so the post-spawn handshake confirms THIS launch, not a prior run's.
+	_ = pi.ClearActivation(installDir)
+	return entry, nil
+}
+
+// piActivateWait bounds the post-spawn extension-activation handshake. COX_PI_ACTIVATE_WAIT (a Go duration) overrides
+// the 20s default; 0 checks once without waiting.
+func piActivateWait() time.Duration {
+	if v := strings.TrimSpace(os.Getenv("COX_PI_ACTIVATE_WAIT")); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			return d
+		}
+	}
+	return 20 * time.Second
+}
+
+// confirmPiActivation is the runtime half of the extension guarantee: after spawn it waits (bounded) for the extension
+// to signal it actually loaded (the activation marker). It returns confirmed=true for a non-pi launch or one already in
+// reduced mode (extension==""), and otherwise whether Pi confirmed. When unconfirmed it returns a reduced-mode notice,
+// so a load/version/API failure downgrades the effective card to pull/manual instead of silently claiming push/auto.
+func confirmPiActivation(harnessName, extension, installDir string) (confirmed bool, notice string) {
+	if harnessName != "pi" || extension == "" {
+		return true, ""
+	}
+	if pi.WaitActivation(installDir, piActivateWait()) {
+		return true, ""
+	}
+	return false, fmt.Sprintf(piReducedModeNotice, "extension did not confirm activation at startup")
 }
 
 // modelHarnessMismatch reports whether `model` belongs to a different vendor than `harness` expects (a claude-family
@@ -123,6 +220,7 @@ func newBackend(epicDir string) (backend.Backend, string) {
 	}
 	c := orca.New(run)
 	c.Plane = resolveOrcaPlane(epicDir)
+	c.Epic = epicDir // so ringReady/Composer consult the harness-owned busy record (DESIGN wave-3)
 	c.LaunchConfirmS = loadPolicyQuiet(epicDir).LaunchConfirmS()
 	if h := os.Getenv("ORCA_TERMINAL_HANDLE"); h != "" {
 		c.From = h
@@ -161,6 +259,7 @@ func loadSession(epicDir, story string) (backend.Session, error) {
 	if err := json.Unmarshal(b, &s); err != nil {
 		return backend.Session{}, err
 	}
+	s.Story = story // stamp the story so the backend can consult the busy record even for a session persisted before this field existed
 	return s, nil
 }
 

@@ -76,7 +76,7 @@ func (c *Client) spawnTerminal(wt backend.Worktree, h backend.HarnessSpec, brief
 	if handle == "" {
 		return backend.Session{}, fmt.Errorf("orca spawnTerminal: terminal create returned no handle")
 	}
-	sess := backend.Session{Kind: SessionKindTerminal, ID: handle, Handle: handle}
+	sess := backend.Session{Kind: SessionKindTerminal, ID: handle, Handle: handle, Story: backend.StoryFromPath(brief.StoryPath)}
 
 	brief.Worktree = wt.Path // so the launch composer can grant the git common dir writable for a codex worker (M14)
 	line := backend.LaunchLine(h, brief)

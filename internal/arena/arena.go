@@ -133,9 +133,26 @@ func Run(b backend.Backend, o Options) (Result, error) {
 			continue
 		}
 		arenaModel, _ := o.Policy.WorkerModel(hname, o.Model)
+		if err := registry.PrepareWorktree(hname, wt.Path); err != nil {
+			rr.Err = err
+			pending(o.EpicDir, slug, rr.Story, rr.Attempt, rr.From, err)
+			res.Roles = append(res.Roles, rr)
+			continue
+		}
 		// An arena role launches with the read-only arena flags (harness.launch.arena.<h>), never the worker's bypass
-		// flags: in terminal mode the role runs plan/read-only so it can only write its report (ADR 0013).
-		sess, err := b.Spawn(wt, backend.HarnessSpec{Name: hname, Model: arenaModel, LaunchFlags: o.Policy.ArenaLaunchFlags(hname)}, backend.Brief{StoryPath: storyPath, Arena: true})
+		// flags: in terminal mode the role runs plan/read-only so it can only write its report (ADR 0013). Argv is
+		// adapter-owned and marked Arena so a sandboxed harness grants it no extra writable roots (ADR 0013).
+		argv, err := registry.LaunchArgs(hname, harness.Launch{
+			Role: harness.RoleWorker, Worktree: wt.Path, Model: arenaModel, Arena: true,
+			Flags: o.Policy.ArenaLaunchFlags(hname), Brief: harness.Brief{StoryPath: storyPath},
+		})
+		if err != nil {
+			rr.Err = err
+			pending(o.EpicDir, slug, rr.Story, rr.Attempt, rr.From, err)
+			res.Roles = append(res.Roles, rr)
+			continue
+		}
+		sess, err := b.Spawn(wt, backend.HarnessSpec{Name: hname, Model: arenaModel, LaunchFlags: o.Policy.ArenaLaunchFlags(hname), Argv: argv}, backend.Brief{StoryPath: storyPath, Arena: true})
 		if err != nil {
 			rr.Err = err
 			pending(o.EpicDir, slug, rr.Story, rr.Attempt, rr.From, err)
@@ -203,7 +220,9 @@ func prepare(o Options) (*prepData, Result, error) {
 	seen := map[string]bool{}
 	for _, role := range active {
 		hn := resolved[role]
-		notices, err := registry.Notices(hn, harness.RoleWorker)
+		// Arena roles need no --allow-unsandboxed: an unsandboxed harness used in arena is authorized only by a standing
+		// card ack (claude); a harness that lacks it (pi) is refused here, matching arena's explicit no-substitution rule.
+		notices, _, err := registry.Notices(hn, harness.RoleWorker, false)
 		if err != nil {
 			return nil, Result{}, fmt.Errorf("arena role %s: %w", role, err)
 		}

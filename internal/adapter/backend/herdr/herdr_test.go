@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/nphattai/coxswain/internal/adapter/backend"
+	"github.com/nphattai/coxswain/internal/protocol/busy"
 )
 
 var _ backend.Backend = New("sess")
@@ -93,7 +94,8 @@ func TestSpawnTypesLaunchIntoPane(t *testing.T) {
 	var calls []string
 	c := New("sess")
 	c.run = fakeHerdr(&calls)
-	sess, err := c.Spawn(backend.Worktree{Path: "/wt/m10"}, backend.HarnessSpec{Name: "claude"},
+	sess, err := c.Spawn(backend.Worktree{Path: "/wt/m10"},
+		backend.HarnessSpec{Name: "claude", Argv: []string{"claude", "Your task is the story file /epics/v2/stories/m10.md - read it in full and follow its Working rules exactly."}},
 		backend.Brief{StoryPath: "/epics/v2/stories/m10.md"})
 	if err != nil {
 		t.Fatal(err)
@@ -106,7 +108,7 @@ func TestSpawnTypesLaunchIntoPane(t *testing.T) {
 		"--session sess workspace create --cwd /wt/m10 --label m10 --no-focus",
 		"--session sess pane list --workspace ws_1",
 		"pane send-text pane_1 COX_EPIC=",
-		"COX_PLANE=terminal claude ",
+		"COX_PLANE=terminal 'claude'",
 		"pane send-keys pane_1 Enter",
 	} {
 		if !strings.Contains(joined, want) {
@@ -188,4 +190,31 @@ func gitInit(t *testing.T, dir string) {
 	}
 	run("init", "-b", "main")
 	run("commit", "--allow-empty", "-m", "root")
+}
+
+// --- Harness-owned busy state consult (DESIGN wave-3 item 3) ---
+// herdr has no text composer classifier (Composer was always "unknown"), so before this change a busy-reporting harness
+// on herdr could never be seen idle. Now Composer consults the busy record first, the same code path Orca uses.
+func TestComposerConsultsBusyRecord(t *testing.T) {
+	epic := t.TempDir()
+	gen, err := busy.Arm(epic, "w1")
+	if err != nil {
+		t.Fatalf("arm: %v", err)
+	}
+	c := New("sess")
+	c.Epic = epic
+	// armed (busy)
+	if cs, _ := c.Composer(backend.Session{Story: "w1"}); cs != backend.ComposerBusy {
+		t.Fatalf("armed busy -> Composer %q, want busy", cs)
+	}
+	if err := busy.Apply(epic, "w1", busy.Idle, gen, "pi-ext", "e"); err != nil {
+		t.Fatal(err)
+	}
+	if cs, _ := c.Composer(backend.Session{Story: "w1"}); cs != backend.ComposerEmpty {
+		t.Fatalf("harness idle -> Composer %q, want empty", cs)
+	}
+	// no record / no story -> unknown (fallback preserved)
+	if cs, _ := c.Composer(backend.Session{Story: "other"}); cs != backend.ComposerUnknown {
+		t.Fatalf("no record -> Composer %q, want unknown", cs)
+	}
 }

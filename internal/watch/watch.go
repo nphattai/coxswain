@@ -485,7 +485,7 @@ func (w *Watcher) idleNoDonePass() (int, bool, error) {
 		if w.firedIdleNoDone(s.ID) == steerTS.Unix() {
 			continue // already raised for this steer
 		}
-		if cs, _ := w.Backend.Composer(sess); cs != backend.ComposerEmpty {
+		if w.composerState(s.ID, sess) != backend.ComposerEmpty {
 			continue // still mid-turn, typing, or the backend cannot tell
 		}
 		if _, err := wake.Append(w.EpicDir, wake.Wake{
@@ -501,6 +501,18 @@ func (w *Watcher) idleNoDonePass() (int, bool, error) {
 		w.recordIdleNoDone(s.ID, steerTS)
 	}
 	return appended, urgent, nil
+}
+
+// composerState resolves a worker's composer verdict harness-first (DESIGN wave-3 item 3): the harness-owned busy record
+// wins (idle -> empty, busy -> busy), so a Pi worker whose TUI the backend classifier does not recognize is still seen
+// idle/busy; only when the harness reports no state does it fall back to the backend's own Composer. Same order the
+// backend ring path uses, so the idle/blocked passes and the doorbell never disagree.
+func (w *Watcher) composerState(story string, sess backend.Session) string {
+	if cs, ok := backend.BusyComposer(w.EpicDir, story); ok {
+		return cs
+	}
+	cs, _ := w.Backend.Composer(sess)
+	return cs
 }
 
 // blockedPass raises one urgent stuck wake when a working story's worker has been continuously blocked on a local prompt
@@ -525,7 +537,7 @@ func (w *Watcher) blockedPass() (int, bool, error) {
 		if !ok {
 			continue
 		}
-		if cs, _ := w.Backend.Composer(sess); cs != backend.ComposerBlocked {
+		if w.composerState(s.ID, sess) != backend.ComposerBlocked {
 			w.clearBlocked(s.ID) // no longer waiting: the interval ends, so a fresh block re-arms the wake
 			continue
 		}
@@ -701,8 +713,8 @@ func LoadSessions(epicDir string) map[string]backend.Session {
 		return out
 	}
 	for _, e := range entries {
-		if !strings.HasSuffix(e.Name(), ".json") {
-			continue
+		if !strings.HasSuffix(e.Name(), ".json") || strings.HasSuffix(e.Name(), ".busy.json") {
+			continue // skip the sibling harness-owned busy-state records that live in the same dir
 		}
 		b, err := os.ReadFile(filepath.Join(dir, e.Name()))
 		if err != nil {
@@ -712,7 +724,9 @@ func LoadSessions(epicDir string) map[string]backend.Session {
 		if err := json.Unmarshal(b, &s); err != nil {
 			continue
 		}
-		out[strings.TrimSuffix(e.Name(), ".json")] = s
+		story := strings.TrimSuffix(e.Name(), ".json")
+		s.Story = story // stamp the story so the backend can consult the busy record even for a session persisted before this field existed
+		out[story] = s
 	}
 	return out
 }

@@ -20,6 +20,7 @@ This table is checked against `internal/adapter/harness/codex.Harness.Card()` by
 | interrupt | true |
 | telemetry | false |
 | sandbox | true |
+| unsandboxed_ack | false |
 | instructions | AGENTS.md + markdown skills |
 
 ## Support contract

@@ -15,7 +15,7 @@ const usage = `cox - coxswain CLI
 usage:
   cox version
   cox workspace init --repo alias=path[:production] ... [--from-repos-md <path>] [--root <dir>]
-  cox workspace hooks [--root <dir>] --harness claude|codex
+  cox workspace hooks [--root <dir>] --harness claude|codex|pi
   cox workspace add-repo <alias>=<path>[:<production>] [--root <dir>]
   cox epic new <project> <slug> --repo alias=ref ... [--no-push]
   cox epic attach --epic <dir>
@@ -46,21 +46,22 @@ usage:
   cox board --epic <dir> (--out <file> | --serve :port) [--no-forge]
   cox lab new|assign|report|retire <name> --epic <dir> [--rule <k> --metric <m> | --story <id> | --json]
   cox scorecard --epic <dir> [--story <id>] [--json] [--no-forge]
-  cox baseline run --story <id> --epic <dir> --harness claude|codex --condition bare|v2 --before <sha> [--dry-run]
+  cox baseline run --story <id> --epic <dir> --harness claude|codex|pi --condition bare|v2 --before <sha> [--dry-run]
   cox doctor [--epic <dir>] [--json]
   cox migrate --epic <dir> [--apply]
   cox steer <story> "<text>" --epic <dir> [--fyi] [--override <why>]
   cox status <phase> "<note>" --epic <dir> --story <id>
   cox control <story> interrupt|park|relaunch [--note <progress>] --epic <dir>
   cox reconcile --epic <dir> [--apply] [--json]
-  cox story dispatch|done|park|resume <id> --epic <dir> [--harness claude|codex --model <id>]
+  cox story dispatch|done|park|resume <id> --epic <dir> [--harness claude|codex|pi --model <id>] [--allow-unsandboxed]
   cox story fail|cancel <id> --reason "<why>" --epic <dir> [--close-worktree] [--force]
   cox story report status|done|stuck --epic <dir> --story <id> --note "<summary>" [--evidence k=v ...]
   cox story report question --body "<question>" --epic <dir> --story <id>
   cox checkpoint facts|inject --epic <dir> --story <id>
   cox wake drain [--peek] | ack-through <gen> | wait [--max <dur>]  --epic <dir>
   cox watch --epic <dir> [--once]
-  cox inbox ack <record-path>
+  cox inbox ack <record-path> | interrupt-wait --epic <dir> --story <id>
+  cox busy arm|apply|read <story> --epic <dir>
   cox hook prompt-drain|stop-rewake|precompact|session-start
 `
 
@@ -115,6 +116,8 @@ func run(args []string) int {
 		return cmdStatus(args[1:])
 	case "control":
 		return cmdControl(args[1:])
+	case "busy":
+		return cmdBusy(args[1:])
 	case "reconcile":
 		return cmdReconcile(args[1:])
 	case "story":

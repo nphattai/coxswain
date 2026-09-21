@@ -176,6 +176,16 @@ func TestStoryDispatchRefusesUnadapteredHarness(t *testing.T) {
 	}
 }
 
+// story dispatch refuses an unsandboxed harness (pi: sandbox false, no standing ack) before spawn unless
+// --allow-unsandboxed authorizes it at the card-notice gate (Option C, AC3). The refusal happens before any backend.
+func TestStoryDispatchRefusesUnsandboxedWithoutAuthority(t *testing.T) {
+	t.Setenv("ORCA_RUN_ID", "")
+	epic := t.TempDir()
+	if rc := storyDispatch([]string{"s1", "--epic", epic, "--harness", "pi", "--model", "anthropic/claude-opus-4-8"}); rc != 1 {
+		t.Fatalf("dispatch --harness pi without --allow-unsandboxed rc=%d, want 1 (unsandboxed gate)", rc)
+	}
+}
+
 func writeStory(t *testing.T, epic, id, repo string) {
 	t.Helper()
 	dir := filepath.Join(epic, "stories")

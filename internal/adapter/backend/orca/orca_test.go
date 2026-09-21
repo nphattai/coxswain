@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/nphattai/coxswain/internal/adapter/backend"
+	"github.com/nphattai/coxswain/internal/protocol/busy"
 )
 
 var _ backend.Backend = New("run")
@@ -812,7 +813,8 @@ func TestSpawnTerminalPlaneCreatesAndTypesLaunch(t *testing.T) {
 	var calls []string
 	c := recorder(t, &calls)
 	brief := backend.Brief{StoryPath: "/epics/v2/stories/m10.md"}
-	sess, err := c.Spawn(backend.Worktree{Path: "/wt/m10"}, backend.HarnessSpec{Name: "claude"}, brief)
+	spec := backend.HarnessSpec{Name: "claude", Argv: []string{"claude", "Your task is the story file /epics/v2/stories/m10.md - read it in full and follow its Working rules exactly."}}
+	sess, err := c.Spawn(backend.Worktree{Path: "/wt/m10"}, spec, brief)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1110,5 +1112,85 @@ func TestTerminalPlaneReducedMailboxAndSend(t *testing.T) {
 		if strings.Contains(g, "orchestration") {
 			t.Fatalf("terminal plane must not call orchestration, got %q", g)
 		}
+	}
+}
+
+// --- Harness-owned busy state consult (DESIGN wave-3 item 3) ---
+// FAIL_TO_PASS: on the old code the doorbell/composer read only the UI signal (agents[] / screen classifier), so a Pi
+// worker (no agents[] entry, unrecognized TUI) was always "unknown" and never rang. Now the busy record is consulted
+// first: harness idle rings even when the screen is unreadable, harness busy skips even when the screen looks empty, and
+// only an absent/unknown record falls back to the UI signal.
+
+func TestRingConsultsBusyRecordFirst(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		busyState string // "", "busy", "idle"
+		tail      string // terminal read screen tail for the fallback
+		wantRang  bool
+	}{
+		{name: "harness idle rings even when the screen is unreadable", busyState: busy.Idle, tail: `["garbage that classifies unknown"]`, wantRang: true},
+		{name: "harness busy skips even when the screen looks empty", busyState: busy.Busy, tail: `["⏺ done","❯"]`, wantRang: false},
+		{name: "unknown record falls back to the screen (empty -> ring)", busyState: "", tail: `["⏺ done","❯"]`, wantRang: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			epic := t.TempDir()
+			gen, err := busy.Arm(epic, "w1")
+			if err != nil {
+				t.Fatalf("arm: %v", err)
+			}
+			switch tc.busyState {
+			case busy.Idle, busy.Busy:
+				if err := busy.Apply(epic, "w1", tc.busyState, gen, "pi-ext", "e"); err != nil {
+					t.Fatalf("apply: %v", err)
+				}
+			default:
+				// leave no usable state: re-arm invalidates, then remove the record so Read is unknown -> fallback
+				os.Remove(busy.Path(epic, "w1"))
+			}
+			sent := false
+			c := New("run_1")
+			c.Epic = epic
+			c.run = func(args ...string) ([]byte, error) {
+				j := strings.Join(args, " ")
+				switch {
+				case strings.Contains(j, "terminal read"):
+					return []byte(`{"ok":true,"result":{"terminal":{"tail":` + tc.tail + `}}}`), nil
+				case strings.Contains(j, "terminal send"):
+					sent = true
+					return []byte(`{"ok":true,"result":{}}`), nil
+				}
+				return nil, errors.New("no route: " + j)
+			}
+			rang, err := c.Send(backend.Session{Handle: "term_x", Story: "w1"}, "ring")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if rang != tc.wantRang || sent != tc.wantRang {
+				t.Fatalf("rang=%v sent=%v, want %v", rang, sent, tc.wantRang)
+			}
+		})
+	}
+}
+
+func TestComposerConsultsBusyRecordFirst(t *testing.T) {
+	epic := t.TempDir()
+	gen, _ := busy.Arm(epic, "w1")
+	c := New("run_1")
+	c.Epic = epic
+	// The composer read must never be consulted while the harness reports a state; route it to a fatal so a fallthrough
+	// is caught.
+	c.run = func(args ...string) ([]byte, error) {
+		t.Fatalf("Composer consulted the UI while the busy record was authoritative: %v", args)
+		return nil, nil
+	}
+	// armed (busy) -> ComposerBusy
+	if cs, _ := c.Composer(backend.Session{Handle: "term_x", Story: "w1"}); cs != backend.ComposerBusy {
+		t.Fatalf("armed busy -> Composer %q, want busy", cs)
+	}
+	if err := busy.Apply(epic, "w1", busy.Idle, gen, "pi-ext", "e"); err != nil {
+		t.Fatal(err)
+	}
+	if cs, _ := c.Composer(backend.Session{Handle: "term_x", Story: "w1"}); cs != backend.ComposerEmpty {
+		t.Fatalf("harness idle -> Composer %q, want empty", cs)
 	}
 }

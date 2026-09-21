@@ -8,8 +8,9 @@ import "github.com/nphattai/coxswain/internal/adapter/harness"
 type Harness struct {
 	Cap          harness.Capability
 	Ctx          harness.Context
-	Packaged     []string // dsts passed to Package
-	LaunchedWith []harness.Brief
+	Packaged     []string         // dsts passed to Package
+	LaunchedWith []harness.Launch // launches passed to LaunchArgs
+	Prepared     []string         // worktrees passed to PrepareWorktree
 }
 
 // New returns a fake with a minimal push card by default.
@@ -19,12 +20,13 @@ func New(name string, wake harness.WakeMode) *Harness {
 		cp = harness.CheckpointManual
 	}
 	return &Harness{Cap: harness.Capability{
-		Name:       name,
-		Roles:      []harness.Role{harness.RoleLeader, harness.RoleWorker},
-		Wake:       wake,
-		Checkpoint: cp,
-		Doorbell:   true,
-		Interrupt:  true,
+		Name:             name,
+		Roles:            []harness.Role{harness.RoleLeader, harness.RoleWorker},
+		Wake:             wake,
+		Checkpoint:       cp,
+		Doorbell:         true,
+		Interrupt:        true,
+		BackendInterrupt: true, // default: the backend keystroke interrupt works (as for claude/codex); a test sets it false to exercise the harness inbox interrupt path
 	}}
 }
 
@@ -35,9 +37,14 @@ func (h *Harness) Package(role harness.Role, dst string) error {
 	return nil
 }
 
-func (h *Harness) LaunchArgs(role harness.Role, wt string, b harness.Brief) []string {
-	h.LaunchedWith = append(h.LaunchedWith, b)
-	return []string{string(h.Cap.Name), string(role), wt, b.StoryPath}
+func (h *Harness) LaunchArgs(l harness.Launch) []string {
+	h.LaunchedWith = append(h.LaunchedWith, l)
+	return []string{h.Cap.Name, string(l.Role), l.Worktree, l.Brief.StoryPath}
+}
+
+func (h *Harness) PrepareWorktree(wt string) error {
+	h.Prepared = append(h.Prepared, wt)
+	return nil
 }
 
 func (h *Harness) Telemetry(session string) (harness.Context, error) {

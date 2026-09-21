@@ -14,12 +14,17 @@ import (
 	"github.com/nphattai/coxswain/internal/adapter/harness/registry"
 	"github.com/nphattai/coxswain/internal/arena/cite"
 	"github.com/nphattai/coxswain/internal/protocol/brief"
+	"github.com/nphattai/coxswain/internal/protocol/busy"
 	"github.com/nphattai/coxswain/internal/protocol/control"
 	"github.com/nphattai/coxswain/internal/routing"
 	"github.com/nphattai/coxswain/internal/state"
 	"github.com/nphattai/coxswain/internal/workspace"
 	"github.com/nphattai/coxswain/internal/worktree"
 )
+
+// harnessOptions is the registry-derived "claude|codex|pi" list for harness-neutral CLI help and usage, so adding an
+// adapter updates the help without editing every command string.
+func harnessOptions() string { return strings.Join(registry.Names(), "|") }
 
 // cmdStory implements `cox story dispatch|park|resume`.
 func cmdStory(args []string) int {
@@ -53,15 +58,16 @@ func storyDispatch(args []string) int {
 	fs := flag.NewFlagSet("story dispatch", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	epicDir := fs.String("epic", "", "epic directory")
-	harnessFlag := fs.String("harness", "", "harness (claude|codex); default from the story frontmatter")
+	harnessFlag := fs.String("harness", "", "harness ("+harnessOptions()+"); default from the story frontmatter")
 	model := fs.String("model", "", "model id or alias (opus -> claude-opus-4-8)")
 	forceModel := fs.Bool("force-model", false, "allow a model whose vendor does not match the harness")
 	forceQuota := fs.Bool("force-quota", false, "dispatch even when the chosen harness reads exhausted_now")
+	allowUnsandboxed := fs.Bool("allow-unsandboxed", false, "authorize dispatch of an unsandboxed harness (no host-filesystem confinement; not a sandbox)")
 	if err := fs.Parse(rest); err != nil {
 		return 2
 	}
 	if *epicDir == "" || story == "" {
-		return usageErr("cox story dispatch <id> --epic <dir> [--harness claude|codex --model <id>] [--force-quota]")
+		return usageErr("cox story dispatch <id> --epic <dir> [--harness " + harnessOptions() + " --model <id>] [--force-quota] [--allow-unsandboxed]")
 	}
 	meta := readStoryMeta(*epicDir, story)
 	// A story with `harness: auto` (and no --harness override) is routed: Decide picks the harness/model from policy,
@@ -77,9 +83,13 @@ func storyDispatch(args []string) int {
 		fmt.Printf("routed %s -> harness=%s (%s)\n", story, ch.Harness, strings.Join(ch.Reasons, "; "))
 	}
 	harnessName := nonEmpty(*harnessFlag, routedHarness(routeChoice, nonEmpty(meta.Harness, "claude")))
-	// Enforce the capability card before doing any work: a harness with no adapter (e.g. omp, opencode) is refused here,
-	// and a pull-wake or manual-checkpoint harness prints a reduced-mode notice and still dispatches (phase-07 item 4).
-	notices, err := registry.Notices(harnessName, harness.RoleWorker)
+	// Authorize the worker launch before doing any work at the single card-notice gate, and resolve the pi extension
+	// (out-of-tree): a harness with no adapter (e.g. omp, opencode) is refused here; a pull-wake or manual-checkpoint
+	// harness prints a reduced-mode notice and still dispatches; an unsandboxed harness (sandbox: false) is refused
+	// unless authorized by a standing card ack or --allow-unsandboxed (recorded in evidence); and a pi extension that
+	// cannot be verified downgrades the effective card to pull/manual. Extension install is out-of-tree, so this runs
+	// before the worktree is created.
+	extension, notices, unsandboxedAuthority, err := authorizeWorker(harnessName, *epicDir, story, *allowUnsandboxed, true)
 	if err != nil {
 		return fail("%v", err)
 	}
@@ -96,8 +106,14 @@ func storyDispatch(args []string) int {
 		}
 	}
 	// The model resolves per harness: explicit/routed/frontmatter, else the policy default for this harness, else
-	// claude-opus-4-8 for claude only. A harness with no default resolves to "" and LaunchLine omits --model.
+	// claude-opus-4-8 for claude only. A harness with no default resolves to "" and LaunchArgs omits --model.
 	modelID := resolveWorkerModel(pol, harnessName, explicitModel)
+	// Pi-specific pre-spawn validation (DESIGN section 2): require provider/model syntax and a supported thinking level
+	// before spawn. effort is threaded from policy once Pi launch config lands; empty means Pi's default thinking.
+	effort := ""
+	if err := piPreSpawnValidate(harnessName, modelID, effort); err != nil {
+		return fail("%v", err)
+	}
 	// Quota gate (observe-only, ADR 0011): it never changes the harness, it only refuses to send work into an
 	// exhausted_now harness (overridable with --force-quota) and warns on a low-but-not-exhausted one. The reading is
 	// printed so the decision is auditable.
@@ -125,13 +141,57 @@ func storyDispatch(args []string) int {
 		return fail("build brief: %v", err)
 	}
 	storyPath := filepath.Join(*epicDir, "stories", story+".md")
-	sess, err := b.Spawn(wt, backend.HarnessSpec{Name: harnessName, Model: modelID, LaunchFlags: pol.LaunchFlags(harnessName)}, backend.Brief{StoryPath: storyPath})
+	// Mark the fresh worktree trusted for this harness before spawn, so a dispatched worker never stalls on an
+	// interactive workspace-trust dialog it cannot answer (steer 002 / DESIGN obs #2). Harness-specific, no user-config
+	// mutation beyond this per-directory trust; pi's trust is a launch flag so this is a no-op for pi.
+	if err := registry.PrepareWorktree(harnessName, wt.Path); err != nil {
+		return fail("prepare worktree trust: %v", err)
+	}
+	// Compose the adapter-owned argv and thread it as data into the spawn spec (launch seam, ADR 0002): the backend
+	// types this argv, it never rebuilds it or imports the harness layer.
+	argv, err := registry.LaunchArgs(harnessName, harness.Launch{
+		Role: harness.RoleWorker, Worktree: wt.Path, Model: modelID, Effort: effort, Extension: extension,
+		Flags: pol.LaunchFlags(harnessName), Brief: harness.Brief{StoryPath: storyPath},
+	})
+	if err != nil {
+		return fail("compose launch argv: %v", err)
+	}
+	// Harness-owned busy state (DESIGN wave-3): a harness that reports its own idle/busy gets a fresh incarnation gen
+	// armed here and threaded to it via COX_BUSY_GEN, so its hook Applies against the record and a stale hook is rejected.
+	// A harness whose hook is not wired yet (claude/codex) is not armed, so it is never stranded "busy".
+	busyGen := ""
+	if registry.Card(harnessName).BusyRecord {
+		g, err := busy.Arm(*epicDir, story)
+		if err != nil {
+			return fail("arm busy state: %v", err)
+		}
+		busyGen = g
+	}
+	sess, err := b.Spawn(wt, backend.HarnessSpec{Name: harnessName, Model: modelID, Effort: effort, LaunchFlags: pol.LaunchFlags(harnessName), Argv: argv, BusyGen: busyGen}, backend.Brief{StoryPath: storyPath})
 	if err != nil {
 		return fail("spawn: %v", err)
 	}
 
 	attempt := currentAttempt(*epicDir, story)
-	if err := commitDispatch(b, *epicDir, slug, story, attempt, state.Leader, sess, wt.Path, routeEvidence(routeChoice), state.Submitted); err != nil {
+	// Record an explicit per-dispatch unsandboxed authorization in evidence (the standing-ack path records nothing, so an
+	// already-accepted harness's dispatch event is unchanged).
+	ev := routeEvidence(routeChoice)
+	if unsandboxedAuthority == "flag" {
+		if ev == nil {
+			ev = map[string]any{}
+		}
+		ev["unsandboxed"] = map[string]any{"authorized_by": "--allow-unsandboxed", "harness": harnessName}
+	}
+	// Confirm the pi extension actually loaded (startup handshake). An unconfirmed activation downgrades the effective
+	// card to pull/manual through the notice path and is recorded, so a load failure never leaves a silent push/auto.
+	if confirmed, notice := confirmPiActivation(harnessName, extension, piExtDir(*epicDir, story)); !confirmed {
+		fmt.Println(notice)
+		if ev == nil {
+			ev = map[string]any{}
+		}
+		ev["pi_extension"] = map[string]any{"activation": "unconfirmed", "effective_card": "pull/manual"}
+	}
+	if err := commitDispatch(b, *epicDir, slug, story, attempt, state.Leader, sess, wt.Path, ev, state.Submitted); err != nil {
 		return fail("%v", err)
 	}
 	if h := os.Getenv("ORCA_TERMINAL_HANDLE"); h != "" {
@@ -371,6 +431,7 @@ func storyControl(verb string, args []string) int {
 	harnessFlag := fs.String("harness", "", "resume on a different harness (reroute); default keeps the current harness")
 	modelFlag := fs.String("model", "", "model for the resumed harness (with --harness)")
 	forceModel := fs.Bool("force-model", false, "allow a model whose vendor does not match the harness")
+	allowUnsandboxed := fs.Bool("allow-unsandboxed", false, "authorize resuming an unsandboxed harness (not a sandbox)")
 	// park only: how long to wait for the worker's checkpoint before refusing to park blind. Defaults from COX_PARK_WAIT
 	// (0 => the controller's own default), so an E2E can shorten it and surface a checkpoint mismatch fast.
 	parkWait := fs.Duration("park-wait", envDuration("COX_PARK_WAIT", 0), "max wait for a matching checkpoint (park)")
@@ -416,11 +477,56 @@ func storyControl(verb string, args []string) int {
 		if rerouting {
 			extra = map[string]any{"reroute": map[string]any{"from": curHarness, "to": targetHarness, "reason": *note}}
 		}
-		spec := backend.HarnessSpec{Name: targetHarness, Model: targetModel}
-		prior, _ := loadSession(*epicDir, story) // previous attempt's terminal, closed before the new spawn (zero value when none)
-		sess, err := ctl.Relaunch(story, readWorktree(*epicDir, story), *note, prior, spec, extra)
+		// Resume runs the SAME authorization + extension flow as initial dispatch: the card-notice gate (an unsandboxed
+		// reroute to pi is refused without --allow-unsandboxed) and the pi extension resolution (so a resumed pi worker
+		// keeps push wake + auto checkpoint, or downgrades to pull/manual via the notice path). It preserves resume's
+		// historical launch shape otherwise: model only, no policy launch flags (the resumed harness keeps its autonomy).
+		if err := piPreSpawnValidate(targetHarness, targetModel, ""); err != nil {
+			return fail("%v", err)
+		}
+		extension, notices, authority, err := authorizeWorker(targetHarness, *epicDir, story, *allowUnsandboxed, true)
 		if err != nil {
 			return fail("%v", err)
+		}
+		for _, n := range notices {
+			fmt.Println(n)
+		}
+		// Record the explicit unsandboxed authorization in the relaunch event, the same evidence initial dispatch writes.
+		if authority == "flag" {
+			if extra == nil {
+				extra = map[string]any{}
+			}
+			extra["unsandboxed"] = map[string]any{"authorized_by": "--allow-unsandboxed", "harness": targetHarness}
+		}
+		wtPath := readWorktree(*epicDir, story)
+		resumeStoryPath := filepath.Join(*epicDir, "stories", story+".md")
+		if err := registry.PrepareWorktree(targetHarness, wtPath); err != nil {
+			return fail("prepare worktree trust: %v", err)
+		}
+		argv, err := registry.LaunchArgs(targetHarness, harness.Launch{
+			Role: harness.RoleWorker, Worktree: wtPath, Model: targetModel, Extension: extension,
+			Brief: harness.Brief{StoryPath: resumeStoryPath, Note: *note},
+		})
+		if err != nil {
+			return fail("compose launch argv: %v", err)
+		}
+		spec := backend.HarnessSpec{Name: targetHarness, Model: targetModel, Argv: argv}
+		// Re-arm the busy record for a fresh incarnation so a resumed worker's hook Applies against a new gen and any late
+		// event from the prior incarnation is rejected as stale (DESIGN wave-3).
+		if registry.Card(targetHarness).BusyRecord {
+			g, err := busy.Arm(*epicDir, story)
+			if err != nil {
+				return fail("arm busy state: %v", err)
+			}
+			spec.BusyGen = g
+		}
+		prior, _ := loadSession(*epicDir, story) // previous attempt's terminal, closed before the new spawn (zero value when none)
+		sess, err := ctl.Relaunch(story, wtPath, *note, prior, spec, extra)
+		if err != nil {
+			return fail("%v", err)
+		}
+		if _, notice := confirmPiActivation(targetHarness, extension, piExtDir(*epicDir, story)); notice != "" {
+			fmt.Println(notice)
 		}
 		if err := saveSession(*epicDir, story, sess); err != nil {
 			return fail("save session: %v", err)

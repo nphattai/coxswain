@@ -109,11 +109,20 @@ func Resolve(pol *workspace.Policy, leader string) (map[Role]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	return map[Role]string{
+	resolved := map[Role]string{
 		Adversary: notLeader,
 		Reviewer:  leader,
 		Domain:    notLeader,
-	}, nil
+	}
+	// Arena refuses Pi explicitly rather than silently substituting another harness (DESIGN section 3): Pi arena/headless
+	// argv and blinded-pack redaction are not implemented or tested, so a role that resolves to pi (or a pi leader) is a
+	// hard error naming the gap, not a fallback.
+	for role, hn := range resolved {
+		if hn == "pi" {
+			return nil, fmt.Errorf("arena does not support harness %q (role %s): Pi arena argv and blinded-pack redaction are not implemented or tested; use claude or codex for arena", hn, role)
+		}
+	}
+	return resolved, nil
 }
 
 // otherHarness returns the arena harness that is not the leader, honoring the adversary rule and default from policy.

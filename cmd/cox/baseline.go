@@ -8,37 +8,45 @@ import (
 	"time"
 
 	"github.com/nphattai/coxswain/internal/adapter/backend"
+	harnesspkg "github.com/nphattai/coxswain/internal/adapter/harness"
+	"github.com/nphattai/coxswain/internal/adapter/harness/registry"
 	"github.com/nphattai/coxswain/internal/baseline"
 	"github.com/nphattai/coxswain/internal/worktree"
 )
 
-// cmdBaseline implements `cox baseline run --story <id> --epic <dir> --harness claude|codex --condition bare|v2
+// cmdBaseline implements `cox baseline run --story <id> --epic <dir> --harness <name> --condition bare|v2
 // --before <sha> [--dry-run] [--repo <path>]`. It replays a story from the repo state before its solution so a
 // harness's unassisted performance can be measured. It never fetches PR refs and refuses when the before sha already
 // contains the story's solution branch (LeakCheck). --dry-run validates and records the plan without a worktree or a
 // worker (the safe smoke path; a real spawn must run from the leader, since a worker cannot dispatch a sub-worker).
 func cmdBaseline(args []string) int {
 	if len(args) == 0 || args[0] != "run" {
-		fmt.Fprintln(os.Stderr, "usage: cox baseline run --story <id> --epic <dir> --harness claude|codex --condition bare|v2 --before <sha> [--dry-run]")
+		fmt.Fprintln(os.Stderr, "usage: cox baseline run --story <id> --epic <dir> --harness "+harnessOptions()+" --condition bare|v2 --before <sha> [--dry-run]")
 		return 2
 	}
 	fs := flag.NewFlagSet("baseline run", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	epicDir := fs.String("epic", "", "epic directory")
 	story := fs.String("story", "", "story id to replay")
-	harness := fs.String("harness", "", "harness (claude|codex)")
+	harness := fs.String("harness", "", "harness ("+harnessOptions()+")")
 	condition := fs.String("condition", "", "bare|v2")
 	before := fs.String("before", "", "sha to check out before the solution")
 	repoFlag := fs.String("repo", "", "repo path to replay in (default: the story's repo alias)")
 	dryRun := fs.Bool("dry-run", false, "validate and record the plan without a worktree or a worker")
+	allowUnsandboxed := fs.Bool("allow-unsandboxed", false, "authorize a baseline run of an unsandboxed harness (not a sandbox)")
 	if err := fs.Parse(args[1:]); err != nil {
 		return 2
 	}
 	if *epicDir == "" || *story == "" || *harness == "" || *condition == "" || *before == "" {
-		return usageErr("cox baseline run --story <id> --epic <dir> --harness claude|codex --condition bare|v2 --before <sha> [--dry-run]")
+		return usageErr("cox baseline run --story <id> --epic <dir> --harness " + harnessOptions() + " --condition bare|v2 --before <sha> [--dry-run]")
 	}
 	if *condition != baseline.ConditionBare && *condition != baseline.ConditionV2 {
 		return fail("condition must be %q or %q, got %q", baseline.ConditionBare, baseline.ConditionV2, *condition)
+	}
+	// Validate the pi model + thinking before any spawn (or dry-run record), like dispatch/relaunch: a bare/empty or
+	// provider-less pi model must fail here, not record an unknown run after the terminal exists.
+	if err := piPreSpawnValidate(*harness, resolveWorkerModel(loadPolicyQuiet(*epicDir), *harness, readStoryMeta(*epicDir, *story).Model), ""); err != nil {
+		return fail("%v", err)
 	}
 
 	repo := *repoFlag
@@ -97,17 +105,45 @@ func cmdBaseline(args []string) int {
 	}
 
 	pol := loadPolicyQuiet(*epicDir)
-	spec := backend.HarnessSpec{Name: *harness, Model: resolveWorkerModel(pol, *harness, readStoryMeta(*epicDir, *story).Model), LaunchFlags: pol.LaunchFlags(*harness)}
+	model := resolveWorkerModel(pol, *harness, readStoryMeta(*epicDir, *story).Model)
 	brief := backend.Brief{}
-	if *condition == baseline.ConditionBare {
+	var hb harnesspkg.Brief
+	bare := *condition == baseline.ConditionBare
+	if bare {
 		// bare: the story text only, no cox AGENTS.md / hooks injected via the story path.
 		brief.Text = readStoryText(*epicDir, *story)
+		hb = harnesspkg.Brief{Note: brief.Text}
 	} else {
 		brief.StoryPath = filepath.Join(*epicDir, "stories", *story+".md")
+		hb = harnesspkg.Brief{StoryPath: brief.StoryPath}
 	}
+	// Same authorization + extension flow as story dispatch, EXCEPT bare installs no extension: bare promises no cox
+	// hooks, and a pi extension there would infer leader, start wake supervision, and use the _leader checkpoint,
+	// contaminating the measurement.
+	extension, notices, _, err := authorizeWorker(*harness, *epicDir, *story, *allowUnsandboxed, !bare)
+	if err != nil {
+		return fail("%v", err)
+	}
+	for _, n := range notices {
+		fmt.Println(n)
+	}
+	if err := registry.PrepareWorktree(*harness, wt.Path); err != nil {
+		return fail("prepare worktree trust: %v", err)
+	}
+	argv, err := registry.LaunchArgs(*harness, harnesspkg.Launch{
+		Role: harnesspkg.RoleWorker, Worktree: wt.Path, Model: model, Extension: extension,
+		Flags: pol.LaunchFlags(*harness), Brief: hb,
+	})
+	if err != nil {
+		return fail("compose launch argv: %v", err)
+	}
+	spec := backend.HarnessSpec{Name: *harness, Model: model, LaunchFlags: pol.LaunchFlags(*harness), Argv: argv}
 	sess, err := b.Spawn(wt, spec, brief)
 	if err != nil {
 		return fail("spawn baseline worker: %v", err)
+	}
+	if _, notice := confirmPiActivation(*harness, extension, piExtDir(*epicDir, *story)); notice != "" {
+		fmt.Println(notice)
 	}
 	fmt.Printf("baseline %s/%s spawned on %s -> %s\n", *story, *condition, wt.Path, sess.ID)
 	path, err := baseline.Record(baselinesDir, date, baseline.Row{

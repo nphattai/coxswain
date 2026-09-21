@@ -39,6 +39,23 @@ func TestResolveBothDirections(t *testing.T) {
 	}
 }
 
+// Arena refuses Pi explicitly (DESIGN section 3): a pi leader (reviewer resolves to pi) or a pi adversary default is a
+// hard error naming the gap, never a silent substitution.
+func TestResolveRefusesPi(t *testing.T) {
+	// A pi leader makes the reviewer pi -> refused.
+	pol := testPolicy()
+	pol.Harness.Leader = workspace.HarnessRole{Options: []string{"claude", "codex", "pi"}, Default: "claude"}
+	if _, err := Resolve(pol, "pi"); err == nil || !strings.Contains(err.Error(), "does not support harness \"pi\"") {
+		t.Fatalf("pi leader must be refused explicitly, got %v", err)
+	}
+	// A pi adversary default makes the adversary/domain pi -> refused.
+	pol2 := testPolicy()
+	pol2.Harness.Arena.Adversary.Default = "pi"
+	if _, err := Resolve(pol2, "claude"); err == nil || !strings.Contains(err.Error(), "does not support harness \"pi\"") {
+		t.Fatalf("pi adversary must be refused explicitly, got %v", err)
+	}
+}
+
 func TestTriggerLevels(t *testing.T) {
 	pol := testPolicy()
 

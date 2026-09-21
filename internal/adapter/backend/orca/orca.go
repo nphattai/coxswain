@@ -25,6 +25,7 @@ type Client struct {
 	Run            string
 	From           string // optional --from handle for mailbox sends
 	Plane          string // "orchestration" | "terminal"; "" behaves as orchestration
+	Epic           string // epic dir, so ringReady/Composer can consult the harness-owned busy record before the UI signal (DESIGN wave-3)
 	LaunchConfirmS int    // terminal-plane spawn confirm window in seconds (policy backend.orca.launch_confirm_s); 0 => 60
 	run            func(args ...string) ([]byte, error)
 	git            func(args ...string) ([]byte, error)
@@ -271,7 +272,7 @@ func (c *Client) Spawn(wt backend.Worktree, h backend.HarnessSpec, brief backend
 	if err != nil {
 		return backend.Session{}, err
 	}
-	return backend.Session{Kind: "orca", ID: dispatchID, Handle: c.terminalHandle(dispatchID)}, nil
+	return backend.Session{Kind: "orca", ID: dispatchID, Handle: c.terminalHandle(dispatchID), Story: backend.StoryFromPath(brief.StoryPath)}, nil
 }
 
 // workerRow is one entry of `orchestration worker-list --json` .result.workers[]. workerState is the dispatch's own
@@ -388,7 +389,7 @@ func (c *Client) terminalHandle(dispatchID string) string {
 // no handle to ring, and never counts as a ring.
 func (c *Client) Send(s backend.Session, text string) (bool, error) {
 	if s.Handle != "" {
-		return c.ringTerminal(s.Handle, text)
+		return c.ringTerminal(s.Handle, s.Story, text)
 	}
 	if c.terminalPlane() {
 		return false, nil // no handle to ring and no orchestration mail on this plane; nothing delivered
@@ -407,8 +408,8 @@ func (c *Client) Send(s backend.Session, text string) (bool, error) {
 // and would leave a codex worker un-rung forever (M14). A busy/pending/unknown composer is left alone (rang=false) so
 // the watcher defers; a pane blocked on a local permission prompt returns backend.ErrAgentPromptBlocked so the watcher
 // escalates instead of deferring silently.
-func (c *Client) ringTerminal(handle, text string) (bool, error) {
-	ready, err := c.ringReady(handle)
+func (c *Client) ringTerminal(handle, story, text string) (bool, error) {
+	ready, err := c.ringReady(handle, story)
 	if err != nil {
 		return false, err // skipped:permission (ErrAgentPromptBlocked), surfaced to the ladder
 	}
@@ -421,11 +422,14 @@ func (c *Client) ringTerminal(handle, text string) (bool, error) {
 	return true, nil
 }
 
-// ringReady decides whether the doorbell may be typed. On the terminal plane it prefers Orca's structured agents[] state
-// (M14): idle|done -> ready, working -> not ready (busy), waiting -> ErrAgentPromptBlocked (the pane is blocked on a
-// local permission prompt). Only an unreadable or unrecognized structured state falls back to the text composer
-// classification (empty -> ready), which is all the orchestration plane ever uses.
-func (c *Client) ringReady(handle string) (bool, error) {
+// ringReady decides whether the doorbell may be typed. It consults the harness-owned busy record FIRST (DESIGN wave-3
+// item 3): idle -> ready, busy -> not ready; only when the harness reports no state (unknown/absent) does it fall back to
+// Orca's structured agents[] state (M14: idle|done -> ready, working -> busy, waiting -> ErrAgentPromptBlocked) and then
+// the text composer classification (empty -> ready), which is all the orchestration plane ever uses.
+func (c *Client) ringReady(handle, story string) (bool, error) {
+	if cs, ok := backend.BusyComposer(c.Epic, story); ok {
+		return cs == backend.ComposerEmpty, nil // harness idle -> ring; harness busy -> skip
+	}
 	if c.terminalPlane() {
 		if st, found, err := c.agentStateForHandle(handle); err == nil && found {
 			switch strings.ToLower(strings.TrimSpace(st)) {
@@ -484,6 +488,11 @@ func (c *Client) typeDoorbell(handle, text string) error {
 // errors; if the agent state cannot be read it falls back to the text tail. Ringing uses the private composerState, so
 // this does not change the doorbell path.
 func (c *Client) Composer(s backend.Session) (string, error) {
+	// Consult the harness-owned busy record first (DESIGN wave-3 item 3): idle -> empty, busy -> busy. Only when the
+	// harness reports no state does it fall back to the structured agents[] state and the text classifier below.
+	if cs, ok := backend.BusyComposer(c.Epic, s.Story); ok {
+		return cs, nil
+	}
 	if s.Handle == "" {
 		return backend.ComposerUnknown, nil
 	}
