@@ -235,7 +235,10 @@ func (o *CloseOptions) removeWorktrees() error {
 		}
 		branch, _ := worktreeBranch(wt.Path) // "" when detached; the adapter guard has nothing to protect then
 		common := gitCommonDir(wt.Path)      // captured before removal; the checkout path is gone afterwards
-		if err := o.Runtime.WorktreeRemove(backend.Worktree{Path: wt.Path, Branch: branch, Force: o.Force}); err != nil {
+		// Reaching here means removal is authorized - either landed() proved containment or the operator passed --force.
+		// Pass Force: true so the adapter's B-16 origin guard, which cannot see close's richer landed() check, does not
+		// refuse a branch that is landed in production but no longer on origin (the squash-merge-then-delete flow).
+		if err := o.Runtime.WorktreeRemove(backend.Worktree{Path: wt.Path, Branch: branch, Force: true}); err != nil {
 			return fmt.Errorf("remove worktree %s: %w", wt.Path, err)
 		}
 		// (b) prove the worktree is actually gone; a remove that returned ok but left the path registered is a failure.
@@ -363,22 +366,27 @@ func (o *CloseOptions) landed(path string) (bool, string) {
 	if b == "" {
 		return true, "detached" // nothing to compare
 	}
-	// Refresh origin/<b> so containment is judged against the current remote. Only a real origin makes this meaningful;
-	// with no origin the fetch fails and we fall through to the production check.
+	// Refresh origin/<b> so containment is judged against the current remote. A failed fetch (no origin, or the branch
+	// was deleted on origin after a squash/merge) does NOT by itself mean unlanded: it only makes the origin/<b> path
+	// inconclusive, so we still check the production branches below. It is recorded and surfaced only when nothing
+	// proves containment (the "unknown fetch => not landed with the reason" case).
+	fetchErr := ""
 	if hasOrigin(path) {
 		if out, err := exec.Command("git", "-C", path, "fetch", "origin", b).CombinedOutput(); err != nil {
-			return false, fmt.Sprintf("fetch origin/%s failed: %s", b, strings.TrimSpace(string(out)))
+			fetchErr = strings.TrimSpace(string(out))
 		}
-		if isAncestor(path, b, "origin/"+b) {
+	}
+	// Landed when the branch tip is contained in origin/<b> (when we have it) or in a production branch: a branch merged
+	// into main and deleted on origin is landed even though it is no longer on origin (B-21 and the squash-merge flow).
+	for _, ref := range append([]string{"origin/" + b}, productionRefs(path)...) {
+		if isAncestor(path, b, ref) {
 			return true, ""
 		}
 	}
-	for _, prod := range productionRefs(path) {
-		if isAncestor(path, b, prod) {
-			return true, ""
-		}
+	if fetchErr != "" {
+		return false, fmt.Sprintf("not landed; fetch origin/%s failed: %s", b, fetchErr)
 	}
-	return false, "ahead of origin (not landed)"
+	return false, "not landed (no containment in origin or production)"
 }
 
 // dirtyReason returns "dirty" for uncommitted tracked changes or an untracked path outside owned, else "". Owned

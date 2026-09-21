@@ -377,6 +377,69 @@ func TestCloseRemovesLandedNoUpstreamBranch(t *testing.T) {
 	}
 }
 
+// guardedBackend mimics the Orca adapter's B-16 guard: WorktreeRemove refuses a branch not on origin unless Force. It
+// proves close authorizes a removal it has proven landed (passing Force:true) instead of stranding it (regression the
+// leader caught: a squash-merged branch deleted on origin is landed via production yet not on origin heads).
+type guardedBackend struct{ *gitBackend }
+
+func (b *guardedBackend) WorktreeRemove(wt backend.Worktree) error {
+	b.calls = append(b.calls, "WorktreeRemove")
+	if !wt.Force && wt.Branch != "" {
+		out, _ := exec.Command("git", "-C", b.repo, "ls-remote", "--heads", "origin", wt.Branch).Output()
+		if strings.TrimSpace(string(out)) == "" {
+			return errors.New("orca WorktreeRemove: branch not on origin (B-16)")
+		}
+	}
+	b.removed = append(b.removed, wt.Path)
+	_, _ = exec.Command("git", "-C", b.repo, "worktree", "remove", "--force", wt.Path).CombinedOutput()
+	return nil
+}
+
+// TestCloseRemovesSquashMergedBranchDeletedOnOrigin: a branch merged into origin/main and deleted on origin is landed
+// (contained in production) even though it is absent from origin heads; close authorizes its removal (Force:true) so the
+// adapter's B-16 origin guard does not refuse it. On the old code (Force:o.Force) this failed the close - a regression.
+func TestCloseRemovesSquashMergedBranchDeletedOnOrigin(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	git := func(dir string, args ...string) {
+		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	origin := t.TempDir()
+	git("", "init", "-q", "--bare", origin)
+	clone := makeRepo(t)
+	git(clone, "remote", "add", "origin", origin)
+	git(clone, "checkout", "-q", "-b", "epic/sq")
+	git(clone, "commit", "-q", "--allow-empty", "-m", "epic work")
+	git(clone, "checkout", "-q", "main")
+	git(clone, "merge", "-q", "--no-ff", "-m", "merge epic/sq", "epic/sq") // main now contains epic/sq
+	git(clone, "push", "-q", "origin", "main")                             // main pushed; epic/sq is NOT on origin
+
+	epicDir := t.TempDir()
+	cox := filepath.Join(epicDir, ".cox")
+	if err := os.MkdirAll(filepath.Join(cox, "wt"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	wtPath := filepath.Join(t.TempDir(), "wt-epic-sq")
+	git(clone, "worktree", "add", wtPath, "epic/sq")
+	if err := os.WriteFile(filepath.Join(cox, "wt", "s1"), []byte(wtPath), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rt := &guardedBackend{gitBackend: &gitBackend{t: t, repo: clone, wtBase: t.TempDir(), stopOK: true}}
+	alloc := &env.Allocator{EpicDir: epicDir, Ops: env.RealOps()}
+	if err := Close(CloseOptions{EpicDir: epicDir, Runtime: rt, Alloc: alloc, Yes: true, Force: false, StoriesOnly: true}); err != nil {
+		t.Fatalf("a branch landed in production but deleted on origin must be removed, not fail the close: %v", err)
+	}
+	if indexOf(rt.calls, "WorktreeRemove") < 0 {
+		t.Error("the landed worktree must be removed")
+	}
+	if _, err := os.Stat(wtPath); !os.IsNotExist(err) {
+		t.Errorf("landed worktree should be gone, err=%v", err)
+	}
+}
+
 // TestCloseKeepsBranchAheadOfOrigin: a branch with a commit beyond origin/<branch> is not landed and is kept.
 func TestCloseKeepsBranchAheadOfOrigin(t *testing.T) {
 	epicDir, rt, wtPath := originFixture(t, true)
