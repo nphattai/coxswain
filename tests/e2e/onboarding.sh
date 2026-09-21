@@ -161,6 +161,24 @@ if git -C "$REPO" show-ref --verify --quiet refs/heads/epic/hello; then no "prec
 git -C "$REPO" show-ref --verify --quiet refs/heads/epic/hello && ok "local epic/hello recreated from origin" || no "local epic/hello not recreated from origin"
 "$COX" doctor --root "$WS" --epic "$EPIC" >/dev/null 2>&1 && ok "doctor exit 0 after fresh-clone attach" || no "doctor non-zero after fresh-clone attach"
 
+step "9. a closed epic prints as 'closed', never 'active ... watcher dead' (finding 12)"
+# An archived epic: .cox.closed present, no .cox. doctor reads the archive, not the DESIGN Status text.
+CLOSED="$WS/proj/epics/donezo"
+mkdir -p "$CLOSED/.cox.closed"
+printf '# donezo\n\nStatus: active (signed 2026-09-21)\n' > "$CLOSED/DESIGN.md"
+OUT="$("$COX" doctor --root "$WS" 2>&1)"; code=$?
+echo "$OUT" | grep -qE "epic donezo +closed" && ok "closed epic printed as closed" || no "closed epic not printed as closed"
+echo "$OUT" | grep -q "epic donezo.*watcher dead" && no "closed epic wrongly shown as watcher dead" || ok "closed epic not shown as watcher dead"
+[ $code -eq 0 ] && ok "doctor exit 0 with a closed epic" || no "doctor exit $code with a closed epic (want 0)"
+rm -rf "$CLOSED"
+
+step "10. a duplicate PATH entry for cox still passes the 'exactly one cox' check (finding 15)"
+# A second PATH dir whose cox symlinks to the same real binary must resolve to one install, not fail as two.
+BIN2="$TMP/bin2"; mkdir -p "$BIN2"; ln -sf "$BIN/cox" "$BIN2/cox"
+OUT="$(PATH="$BIN:$BIN2:/usr/bin:/bin" "$COX" doctor --root "$WS" --epic "$EPIC" 2>&1)"; code=$?
+echo "$OUT" | grep -qE "cox on PATH +pass" && ok "duplicate PATH cox de-duplicated (pass)" || { echo "$OUT" | grep -i "cox on PATH"; no "duplicate PATH cox not de-duplicated"; }
+[ $code -eq 0 ] && ok "doctor exit 0 with a duplicate PATH entry" || no "doctor exit $code with a duplicate PATH entry (want 0)"
+
 echo
 echo "RESULT: $pass passed, $fail failed"
 [ $fail -eq 0 ]
