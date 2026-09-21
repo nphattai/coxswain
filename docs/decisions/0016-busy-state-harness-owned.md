@@ -29,7 +29,10 @@ Idle/busy is a fact the harness reports, for every harness, on every backend; th
 versioned by attempt; and the steer budget counts only the current attempt.
 
 1. **Every harness reports its own busy state.** The Claude capability card gains `BusyRecord: true`, and dispatch,
-   resume, and relaunch write worker hooks into the worktree's `.claude/settings.json`: `UserPromptSubmit` Applies
+   resume, and relaunch write worker hooks into the worktree's `.claude/settings.local.json` (the per-checkout,
+   not-committed settings slot, excluded via the worktree's `info/exclude` when it is not already gitignored, so the
+   runtime hooks never dirty the story worktree or touch a repo's tracked `.claude/settings.json`): `UserPromptSubmit`
+   Applies
    `busy`, `Stop` Applies `idle`, `SessionEnd` retires the record. Each command runs `${COX_BIN:-cox} busy apply|retire`
    with the incarnation gen from `$COX_BUSY_GEN` and ends with `|| true`, so a refused Apply never breaks the harness
    turn and a worker runs the same cox that launched it. Codex is armed only behind policy `harness.busy_verified`

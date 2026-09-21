@@ -59,9 +59,10 @@ doorbell or be replaced without losing the instruction. See [ADR 0012](decisions
 Whether a worker or leader is idle or busy is a fact the harness reports, not something a backend infers from a TUI. A
 harness whose card sets `BusyRecord` (Claude and Pi; Codex only behind policy `harness.busy_verified`) arms a per-story
 record at `<epic>/.cox/sessions/<story>.busy.json` at dispatch (incarnation gen threaded as `COX_BUSY_GEN`). Claude
-reports through worker hooks cox writes into the worktree's `.claude/settings.json` (`UserPromptSubmit` -> busy,
-`Stop` -> idle, `SessionEnd` -> retire, via `${COX_BIN:-cox} busy apply|retire ... || true`); Pi reports through its
-extension. Every backend ring/composer path and the watcher's idle/blocked passes consult this record FIRST and fall back
+reports through worker hooks cox writes into the worktree's `.claude/settings.local.json` (the per-checkout,
+not-committed settings slot, excluded via `info/exclude` when not already gitignored, so the story worktree stays clean)
+(`UserPromptSubmit` -> busy, `Stop` -> idle, `SessionEnd` -> retire, via `${COX_BIN:-cox} busy apply|retire ... || true`);
+Pi reports through its extension. Every backend ring/composer path and the watcher's idle/blocked passes consult this record FIRST and fall back
 to the backend's own signal only when the harness reports `unknown`.
 
 Each capability card carries a `BusySources` trust table (its own hook source plus the leader-side `dispatch`,

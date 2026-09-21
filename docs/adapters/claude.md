@@ -40,7 +40,10 @@ This table is checked against `internal/adapter/harness/claude.Harness.Card()` b
 - **Harness-owned busy state.** Idle/busy is a fact the harness reports, not something a backend infers from a TUI
   (DESIGN wave-2 item 6). Dispatch/resume/relaunch arm a per-story record at `<epic>/.cox/sessions/<story>.busy.json` and
   thread its incarnation gen to the worker as `COX_BUSY_GEN`, and write worker hooks into the worktree's
-  `.claude/settings.json`: `UserPromptSubmit` Applies `busy`, `Stop` Applies `idle`, `SessionEnd` retires the record
+  `.claude/settings.local.json` (Claude Code merges local settings and honours hooks there; the `.local` file is the
+  per-checkout, not-committed settings slot, so cox's runtime hooks never touch a repo's tracked `.claude/settings.json`,
+  and cox excludes the file via the worktree's `info/exclude` when it is not already gitignored, keeping the story
+  worktree clean): `UserPromptSubmit` Applies `busy`, `Stop` Applies `idle`, `SessionEnd` retires the record
   (`${COX_BIN:-cox} busy apply|retire`, `source=claude-hook`, `--gen "$COX_BUSY_GEN"`, each ending `|| true` so a refused
   Apply never breaks the turn). The card's `busy_sources` is the trust table: an Apply from a source it does not list is
   rejected, and a record written by an untrusted source reads as `unknown`, so a record the harness did not write never

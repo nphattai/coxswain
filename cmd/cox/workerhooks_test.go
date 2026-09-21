@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -39,7 +40,7 @@ func hookCommand(t *testing.T, hooks map[string]any, event string) string {
 }
 
 // armWorkerBusy on a Claude story arms the busy record and writes the three worker busy hooks into the worktree's
-// .claude/settings.json, each running `cox busy apply|retire` with the gen from $COX_BUSY_GEN and the claude-hook source.
+// .claude/settings.local.json, each running `cox busy apply|retire` with the gen from $COX_BUSY_GEN and the claude-hook source.
 // On the base sha there is no armWorkerBusy/worker-hook writer and the Claude card does not report busy state, so a
 // dispatched Claude worker never wrote a busy record - this is the behavior that changed.
 func TestArmWorkerBusyClaudeWritesHooks(t *testing.T) {
@@ -55,7 +56,7 @@ func TestArmWorkerBusyClaudeWritesHooks(t *testing.T) {
 	if got := busy.Read(epic, "s1"); got != busy.Busy {
 		t.Fatalf("busy record after arm = %q, want busy", got)
 	}
-	hooks := readSettingsHooks(t, filepath.Join(wt, ".claude", "settings.json"))
+	hooks := readSettingsHooks(t, filepath.Join(wt, ".claude", "settings.local.json"))
 	prompt := hookCommand(t, hooks, "UserPromptSubmit")
 	for _, want := range []string{"busy apply busy", "--source claude-hook", "--event prompt", "$COX_BUSY_GEN", "|| true"} {
 		if !strings.Contains(prompt, want) {
@@ -79,7 +80,7 @@ func TestWorkerBusyHooksIdempotentAndPreservesUserHooks(t *testing.T) {
 	}
 	// Seed a user hook on UserPromptSubmit that must survive.
 	seed := `{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"echo mine"}]}]}}`
-	if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte(seed), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "settings.local.json"), []byte(seed), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	for i := 0; i < 2; i++ {
@@ -87,7 +88,7 @@ func TestWorkerBusyHooksIdempotentAndPreservesUserHooks(t *testing.T) {
 			t.Fatalf("write #%d: %v", i, err)
 		}
 	}
-	hooks := readSettingsHooks(t, filepath.Join(dir, "settings.json"))
+	hooks := readSettingsHooks(t, filepath.Join(dir, "settings.local.json"))
 	groups := hooks["UserPromptSubmit"].([]any)
 	busyCount, userKept := 0, false
 	for _, g := range groups {
@@ -118,5 +119,49 @@ func TestWorkerBusyHooksCodexTarget(t *testing.T) {
 	hooks := readSettingsHooks(t, filepath.Join(wt, ".codex", "hooks.json"))
 	if cmd := hookCommand(t, hooks, "UserPromptSubmit"); !strings.Contains(cmd, "--source codex-hook") {
 		t.Errorf("codex UserPromptSubmit command = %q, want --source codex-hook", cmd)
+	}
+}
+
+// git runs a git command in dir for the test, failing the test on error.
+func gitInWt(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
+	}
+}
+
+// FOLD (leader review of PR #18): the worker hook file must never dirty the story worktree, even in a product repo that
+// tracks .claude/settings.json and has no gitignore. armWorkerBusy writes settings.local.json (not the tracked
+// settings.json) and excludes it via the repo's info/exclude, so `git status --porcelain` stays clean after dispatch.
+func TestWorkerBusyHooksKeepWorktreeClean(t *testing.T) {
+	wt := t.TempDir()
+	gitInWt(t, wt, "init", "-q")
+	gitInWt(t, wt, "config", "user.email", "t@example.com")
+	gitInWt(t, wt, "config", "user.name", "t")
+	// The repo TRACKS .claude/settings.json and has NO .gitignore - the worst case for a runtime write.
+	if err := os.MkdirAll(filepath.Join(wt, ".claude"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wt, ".claude", "settings.json"), []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitInWt(t, wt, "add", ".")
+	gitInWt(t, wt, "commit", "-q", "-m", "seed")
+
+	if _, err := armWorkerBusy(t.TempDir(), "s1", "claude", wt, &workspace.Policy{}); err != nil {
+		t.Fatalf("armWorkerBusy: %v", err)
+	}
+	// The hooks were written to settings.local.json (present) and the tracked settings.json is untouched.
+	if _, err := os.Stat(filepath.Join(wt, ".claude", "settings.local.json")); err != nil {
+		t.Fatalf("settings.local.json not written: %v", err)
+	}
+	out, err := exec.Command("git", "-C", wt, "status", "--porcelain").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(out)) != "" {
+		t.Fatalf("worktree is dirty after dispatch:\n%s", out)
 	}
 }

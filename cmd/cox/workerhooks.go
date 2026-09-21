@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/nphattai/coxswain/internal/adapter/harness/registry"
 	"github.com/nphattai/coxswain/internal/protocol/busy"
@@ -56,21 +58,65 @@ func writeWorkerBusyHooks(harnessName, wtPath, epicDir, story string) error {
 	if path == "" {
 		return nil // this harness reports busy some other way (e.g. pi's extension); no settings file to write
 	}
-	return mergeWorkerHookFile(path, busyHookGroups(epicDir, story, source))
+	if err := mergeWorkerHookFile(path, busyHookGroups(epicDir, story, source)); err != nil {
+		return err
+	}
+	// The hook file is cox runtime, not the worker's deliverable. In THIS repo the path is gitignored, but a product repo
+	// that tracks or does not ignore it would show a dirty worktree on every dispatch (the file would land in the story PR,
+	// and close's landed() would keep the worktree as dirty). So when the path is not already ignored, exclude it locally
+	// via the repo's shared info/exclude (never committed), keeping the worktree clean without touching .gitignore.
+	excludeFromGitIfNeeded(wtPath, path)
+	return nil
 }
 
 // workerHookTarget maps a harness to its worker settings file inside the worktree and the trusted source token its
-// worker hooks report as. An empty path means the harness has no settings-file hook target (its state comes from an
-// extension, not a settings hook).
+// worker hooks report as. Claude uses settings.local.json - Claude Code merges local settings and honours hooks there,
+// and the ".local" file is the per-checkout, not-committed settings slot, so cox's runtime hooks never touch the repo's
+// tracked .claude/settings.json. An empty path means the harness reports busy some other way (e.g. pi's extension).
 func workerHookTarget(harnessName, wtPath string) (path, source string) {
 	switch harnessName {
 	case "claude":
-		return filepath.Join(wtPath, ".claude", "settings.json"), "claude-hook"
+		return filepath.Join(wtPath, ".claude", "settings.local.json"), "claude-hook"
 	case "codex":
 		return filepath.Join(wtPath, ".codex", "hooks.json"), "codex-hook"
 	default:
 		return "", ""
 	}
+}
+
+// excludeFromGitIfNeeded keeps the worker hook file out of the worktree's git status. When the file is not already
+// ignored, it appends the worktree-relative path to the repo's shared info/exclude (under the git common dir, so it
+// covers every worktree and is never committed). It is idempotent and a no-op outside a git repo (a temp test dir).
+func excludeFromGitIfNeeded(wtPath, absPath string) {
+	rel, err := filepath.Rel(wtPath, absPath)
+	if err != nil {
+		return
+	}
+	// check-ignore exits 0 when the path is already ignored: nothing to add.
+	if exec.Command("git", "-C", wtPath, "check-ignore", "-q", rel).Run() == nil {
+		return
+	}
+	out, err := exec.Command("git", "-C", wtPath, "rev-parse", "--path-format=absolute", "--git-common-dir").Output()
+	if err != nil {
+		return // not a git repo: nothing to exclude
+	}
+	excludePath := filepath.Join(strings.TrimSpace(string(out)), "info", "exclude")
+	if data, err := os.ReadFile(excludePath); err == nil {
+		for _, line := range strings.Split(string(data), "\n") {
+			if strings.TrimSpace(line) == rel {
+				return // already excluded
+			}
+		}
+	}
+	if err := os.MkdirAll(filepath.Dir(excludePath), 0o755); err != nil {
+		return
+	}
+	f, err := os.OpenFile(excludePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	fmt.Fprintln(f, rel)
 }
 
 // busyHookGroups builds the three per-event busy hook groups (Claude Code settings shape: event -> [{hooks:[{type,command}]}]).

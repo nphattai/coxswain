@@ -201,7 +201,7 @@ func TestDispatchArmsClaudeNotCodexByDefault(t *testing.T) {
 	if gen == "" {
 		t.Fatal("claude must be armed at dispatch")
 	}
-	if _, err := os.Stat(filepath.Join(wt, ".claude", "settings.json")); err != nil {
+	if _, err := os.Stat(filepath.Join(wt, ".claude", "settings.local.json")); err != nil {
 		t.Fatalf("claude worker hooks not written: %v", err)
 	}
 
