@@ -40,10 +40,12 @@ const (
 	DefaultBlockedWait = 2 * time.Minute
 )
 
-// Watcher runs one epic's watch loop. Sessions maps a story to its worker session (for re-ring and interrupt). The
-// leader terminal handle for the pull-path doorbell is read FRESH from <epic>/.cox/leader every tick (never cached), so
-// a leader harness restart that re-binds the file is picked up on the next ring instead of ringing a dead handle
-// (finding 4). Now is injectable for tests.
+// Watcher runs one epic's watch loop. Sessions maps a story to its worker session (for re-ring and interrupt); Tick
+// reloads it from <epic>/.cox/sessions/ on every pass, so a story dispatched AFTER the watcher started is covered by
+// blockedPass, the doorbell ladder, liveness and runaway on the next tick instead of being invisible until a restart
+// (item 1). The leader terminal handle for the pull-path doorbell is read FRESH from <epic>/.cox/leader every tick
+// (never cached), so a leader harness restart that re-binds the file is picked up on the next ring instead of ringing a
+// dead handle (finding 4). Now is injectable for tests.
 type Watcher struct {
 	EpicDir        string
 	Backend        backend.Backend
@@ -89,6 +91,7 @@ func orDur(v, def time.Duration) time.Duration {
 // appended (0 when nothing was actionable). It never blocks; Run wraps it in a poll loop.
 func (w *Watcher) Tick() (int, error) {
 	w.tickCount++
+	w.Sessions = LoadSessions(w.EpicDir) // pick up any story dispatched since the last tick (item 1)
 	dispatchStory, err := w.dispatchStoryMap()
 	if err != nil {
 		return 0, err
@@ -640,6 +643,33 @@ func OpenStories(epicDir string) ([]string, error) {
 		}
 	}
 	return open, nil
+}
+
+// LoadSessions maps every story with a saved session file (<epic>/.cox/sessions/<story>.json) to its session. Tick
+// calls it each pass so a story dispatched after the watcher started is tracked without a restart (item 1). A missing
+// dir or an unreadable file yields an empty/partial map rather than an error: a watch pass must never die on it.
+func LoadSessions(epicDir string) map[string]backend.Session {
+	out := map[string]backend.Session{}
+	dir := filepath.Join(epicDir, state.ControlDir, "sessions")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return out
+	}
+	for _, e := range entries {
+		if !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			continue
+		}
+		var s backend.Session
+		if err := json.Unmarshal(b, &s); err != nil {
+			continue
+		}
+		out[strings.TrimSuffix(e.Name(), ".json")] = s
+	}
+	return out
 }
 
 // --- state files ---
