@@ -49,7 +49,8 @@ This table is checked against `internal/adapter/harness/pi.Harness.Card()` by
 The executable owners are `internal/adapter/harness/pi/` (card, launch, provider/model validation, telemetry,
 extension packaging), `internal/adapter/harness/pi/extension/` (the Pi extension + its deterministic lifecycle suite),
 `cmd/cox/` (argv composition, `--allow-unsandboxed`, `cox workspace hooks --harness pi`), and their tests. Dated CLI
-observations are in [Pi CLI 0.85.1 compatibility evidence](../evidence/compatibility/pi-cli-0.85.1.md).
+observations are in [Pi CLI 0.85.1 compatibility evidence](../evidence/compatibility/pi-cli-0.85.1.md) and the wave-2
+real-tool [Pi CLI 0.86.1 compatibility evidence](../evidence/compatibility/pi-cli-0.86.1.md).
 
 ## Known ceilings
 

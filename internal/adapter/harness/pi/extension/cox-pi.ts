@@ -10,7 +10,7 @@
 // reported as an automatic checkpoint success.
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { spawn, execFile, type ChildProcess } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Supervisor, TurnEndLatch } from "./cox-supervisor.ts";
 import { coxArgs, resolveEpic } from "./cox-commands.ts";
@@ -149,6 +149,15 @@ export default function (pi: ExtensionAPI): void {
   // session starts from the saved state. Absence/failure is visible (a notify), never a silent success.
   function injectCheckpoint(ctx: ExtensionContext): void {
     if (!epic) return; // no epic binding: nothing to inject
+    // A fresh session (no saved checkpoint) is already driven by its launch prompt. The hook still emits a
+    // "No checkpoint yet, start from the story" notice on stdout, and delivering that as a followUp would queue a
+    // SECOND turn behind the launch prompt - the worker then redoes the whole task and emits a duplicate completion
+    // (dogfood W1: two worker_done for one dispatch). Only inject when a checkpoint actually exists, i.e. a resume;
+    // absence stays visible via notify but never triggers a turn.
+    if (!existsSync(join(epic, "handoffs", `${identity}.md`))) {
+      ctx.ui?.notify?.("cox: no checkpoint yet (fresh start); running from the launch prompt", "info");
+      return;
+    }
     // Inject through `cox hook session-start` so the current git HEAD (from the worktree) drives the CHECKPOINT STALE
     // freshness check; a stale checkpoint exits non-zero with the warning on stderr, which we surface.
     execFile(cox, coxArgs.sessionStart(epic, identity, ctx.cwd), (err, stdout, stderr) => {

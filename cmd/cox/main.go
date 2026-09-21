@@ -15,7 +15,7 @@ const usage = `cox - coxswain CLI
 usage:
   cox version
   cox workspace init --repo alias=path[:production] ... [--from-repos-md <path>] [--root <dir>]
-  cox workspace hooks [--root <dir>] --harness claude|codex
+  cox workspace hooks [--root <dir>] --harness claude|codex|pi
   cox workspace add-repo <alias>=<path>[:<production>] [--root <dir>]
   cox epic new <project> <slug> --repo alias=ref ... [--no-push]
   cox epic attach --epic <dir>
