@@ -222,13 +222,10 @@ func (w *Watcher) nudgeLeader() {
 func (w *Watcher) nudgeWindow() time.Duration { return orDur(w.NudgeWindow, DefaultNudgeWindow) }
 func (w *Watcher) alarmWindow() time.Duration { return orDur(w.AlarmWindow, DefaultAlarmWindow) }
 
-// leaderHandle reads the current leader terminal handle from <epic>/.cox/leader, fresh each tick, or "" when unset.
+// leaderHandle reads the current leader terminal handle from <epic>/.cox/leader, fresh each tick, or "" when unset. It
+// routes through the single state reader, which accepts both the JSON leader record and the legacy plain handle (item 7).
 func (w *Watcher) leaderHandle() string {
-	b, err := os.ReadFile(filepath.Join(w.EpicDir, state.ControlDir, "leader"))
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(b))
+	return state.LeaderHandle(w.EpicDir)
 }
 
 // recordDoorbellFailure logs a failed leader doorbell (a stale handle after a restart, a dead terminal) and counts it

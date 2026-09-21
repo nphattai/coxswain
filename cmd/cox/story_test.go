@@ -75,10 +75,10 @@ func TestStoryDone(t *testing.T) {
 func TestReleaseStoryClosesTerminalBeforeWorktree(t *testing.T) {
 	epic := t.TempDir()
 	appendWorking(t, epic, "s1")
-	if err := saveSession(epic, "s1", backend.Session{Kind: "orca-terminal", ID: "term_1", Handle: "term_1"}); err != nil {
+	if err := saveSession(epic, "s1", backend.Session{Kind: "orca-terminal", ID: "term_1", Handle: "term_1"}, 1); err != nil {
 		t.Fatal(err)
 	}
-	if err := saveWorktree(epic, "s1", "/wt/s1"); err != nil {
+	if err := saveWorktree(epic, "s1", "/wt/s1", 1); err != nil {
 		t.Fatal(err)
 	}
 	events, _, _ := state.Load(epic)

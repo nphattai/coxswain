@@ -1,11 +1,13 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/nphattai/coxswain/internal/adapter/backend"
 	"github.com/nphattai/coxswain/internal/state"
 	"github.com/nphattai/coxswain/internal/workspace"
 )
@@ -199,5 +201,81 @@ func TestCurrentAttemptAfterCancel(t *testing.T) {
 	// No events: attempt 1.
 	if got := currentAttempt(t.TempDir(), "ghost"); got != 1 {
 		t.Fatalf("no-events attempt = %d, want 1", got)
+	}
+}
+
+// DESIGN wave-2 item 7: the session record is versioned by attempt and written by rename. After a relaunch bumps the
+// attempt to 2, a late write carrying the old attempt 1 (a straggler from the prior incarnation) is dropped, so it
+// never clobbers the newer session. On the base sha saveSession took no attempt and the last writer always won.
+func TestSaveSessionDropsLowerAttempt(t *testing.T) {
+	epic := t.TempDir()
+	if err := saveSession(epic, "s", backend.Session{Kind: "orca", ID: "attempt2"}, 2); err != nil {
+		t.Fatal(err)
+	}
+	// A late write from attempt 1 must be dropped (no error, but the file is unchanged).
+	if err := saveSession(epic, "s", backend.Session{Kind: "orca", ID: "attempt1"}, 1); err != nil {
+		t.Fatal(err)
+	}
+	sess, err := loadSession(epic, "s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sess.ID != "attempt2" {
+		t.Fatalf("session ID = %q, want attempt2 (the late attempt-1 write must be dropped)", sess.ID)
+	}
+	if a, _ := readSessionAttempt(epic, "s"); a != 2 {
+		t.Fatalf("stamped attempt = %d, want 2", a)
+	}
+	// A same-or-higher attempt still overwrites (a status re-save during the live attempt, or the next relaunch).
+	if err := saveSession(epic, "s", backend.Session{Kind: "orca", ID: "attempt3"}, 3); err != nil {
+		t.Fatal(err)
+	}
+	if sess, _ := loadSession(epic, "s"); sess.ID != "attempt3" {
+		t.Fatalf("session ID = %q, want attempt3 (a higher attempt overwrites)", sess.ID)
+	}
+}
+
+// The worktree record is versioned the same way: a stale attempt-1 write after a relaunch to attempt 2 is dropped.
+func TestSaveWorktreeDropsLowerAttempt(t *testing.T) {
+	epic := t.TempDir()
+	if err := saveWorktree(epic, "s", "/wt/attempt2", 2); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveWorktree(epic, "s", "/wt/attempt1", 1); err != nil {
+		t.Fatal(err)
+	}
+	if got := readWorktree(epic, "s"); got != "/wt/attempt2" {
+		t.Fatalf("worktree = %q, want /wt/attempt2 (late attempt-1 write dropped)", got)
+	}
+}
+
+// DESIGN wave-2 item 7: the leader record is written as JSON and read back by the single reader, which also accepts a
+// legacy plain-handle file. On the base sha the record was plain text only.
+func TestLeaderJSONAndLegacyRead(t *testing.T) {
+	epic := t.TempDir()
+	if err := state.WriteLeader(epic, "term_9"); err != nil {
+		t.Fatal(err)
+	}
+	if got := readLeader(epic); got != "term_9" {
+		t.Fatalf("readLeader after WriteLeader = %q, want term_9", got)
+	}
+	// The written form is JSON carrying handle + pid + ts.
+	b, err := os.ReadFile(filepath.Join(epic, ".cox", "leader"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(strings.TrimSpace(string(b)), "{") || !strings.Contains(string(b), `"handle":"term_9"`) {
+		t.Fatalf("leader file is not the JSON record: %s", b)
+	}
+	rec, ok := state.ReadLeaderRecord(epic)
+	if !ok || rec.PID == 0 || rec.TS == "" {
+		t.Fatalf("leader record missing pid/ts: %+v ok=%v", rec, ok)
+	}
+	// A legacy plain-handle file is still read.
+	if err := os.WriteFile(filepath.Join(epic, ".cox", "leader"), []byte("term_legacy\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := readLeader(epic); got != "term_legacy" {
+		t.Fatalf("readLeader of a legacy plain handle = %q, want term_legacy", got)
 	}
 }

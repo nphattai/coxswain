@@ -25,10 +25,10 @@ func commitDispatch(b backend.Backend, epicDir, slug, story string, attempt int,
 	if err := state.Append(epicDir, ev); err != nil {
 		return rollbackDispatch(b, epicDir, slug, story, attempt, actor, sess, fmt.Errorf("append dispatch event: %w", err))
 	}
-	if err := saveSession(epicDir, story, sess); err != nil {
+	if err := saveSession(epicDir, story, sess, attempt); err != nil {
 		return rollbackDispatch(b, epicDir, slug, story, attempt, actor, sess, fmt.Errorf("save session: %w", err))
 	}
-	if err := saveWorktree(epicDir, story, wtPath); err != nil {
+	if err := saveWorktree(epicDir, story, wtPath, attempt); err != nil {
 		return rollbackDispatch(b, epicDir, slug, story, attempt, actor, sess, fmt.Errorf("save worktree: %w", err))
 	}
 	return nil

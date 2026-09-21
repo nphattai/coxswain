@@ -30,7 +30,7 @@ func TestCommitDispatchPersistsAll(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(epic, ".cox", "sessions", "s1.json")); err != nil {
 		t.Fatalf("session not written: %v", err)
 	}
-	if got := readTrimmed(filepath.Join(epic, ".cox", "wt", "s1")); got != "/wt/s1" {
+	if got := readWorktree(epic, "s1"); got != "/wt/s1" {
 		t.Fatalf("worktree file = %q, want /wt/s1", got)
 	}
 	for _, c := range b.Calls {

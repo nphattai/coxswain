@@ -192,7 +192,7 @@ func storyDispatch(args []string) int {
 		return fail("%v", err)
 	}
 	if h := os.Getenv("ORCA_TERMINAL_HANDLE"); h != "" {
-		_ = writeCoxFile(*epicDir, "leader", h)
+		_ = state.WriteLeader(*epicDir, h)
 	}
 	startWatcher(*epicDir, story)
 	fmt.Printf("dispatched %s (attempt %d) as %s on %s -> %s\n", story, attempt, harnessName, wt.Path, sess.ID)
@@ -531,7 +531,9 @@ func storyControl(verb string, args []string) int {
 		if _, notice := confirmPiActivation(targetHarness, extension, piExtDir(*epicDir, story)); notice != "" {
 			fmt.Println(notice)
 		}
-		if err := saveSession(*epicDir, story, sess); err != nil {
+		// Relaunch appended the working event at the new attempt, so currentAttempt reads it; the session is stamped with
+		// it, so a late writer from the prior attempt can never clobber this one (item 7).
+		if err := saveSession(*epicDir, story, sess, currentAttempt(*epicDir, story)); err != nil {
 			return fail("save session: %v", err)
 		}
 		if rerouting {

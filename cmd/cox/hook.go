@@ -18,6 +18,7 @@ import (
 
 	"github.com/nphattai/coxswain/internal/adapter/backend"
 	"github.com/nphattai/coxswain/internal/protocol/checkpoint"
+	"github.com/nphattai/coxswain/internal/state"
 	"github.com/nphattai/coxswain/internal/wake"
 	"github.com/nphattai/coxswain/internal/watch"
 )
@@ -293,7 +294,7 @@ func leaderTerminal(epicDir string) (isLeader bool, rebound bool) {
 		return false, false // recorded handle is dead, but we are not in the epic's workspace
 	}
 	// Restart case: the recorded leader handle died and this terminal leads the epic's workspace. Re-bind to it.
-	_ = writeCoxFile(epicDir, "leader", handle)
+	_ = state.WriteLeader(epicDir, handle)
 	return true, true
 }
 

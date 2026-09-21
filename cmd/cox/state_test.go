@@ -120,7 +120,7 @@ func TestProbeLiveness(t *testing.T) {
 	}
 
 	// Saved session -> the backend's real liveness.
-	if err := saveSession(epic, "s", backend.Session{Kind: "fake", ID: "ctx_1"}); err != nil {
+	if err := saveSession(epic, "s", backend.Session{Kind: "fake", ID: "ctx_1"}, 1); err != nil {
 		t.Fatal(err)
 	}
 	if got := probeLiveness(b, epic, "s"); got != backend.Alive {
@@ -137,7 +137,7 @@ func TestProbeLiveness(t *testing.T) {
 func TestProbeComposer(t *testing.T) {
 	epic := t.TempDir()
 	working := &state.StorySnap{ID: "s", State: state.Working}
-	if err := saveSession(epic, "s", backend.Session{Kind: "fake", ID: "ctx_1"}); err != nil {
+	if err := saveSession(epic, "s", backend.Session{Kind: "fake", ID: "ctx_1"}, 1); err != nil {
 		t.Fatal(err)
 	}
 
