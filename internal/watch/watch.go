@@ -215,6 +215,43 @@ func (w *Watcher) Run(stop <-chan struct{}, poll time.Duration) {
 	}
 }
 
+// watcherExecutable resolves this process's own binary path. It is a package var so a test can point it at a deleted
+// path to exercise the "own binary gone" eviction branch (item 2) without deleting the test binary.
+var watcherExecutable = os.Executable
+
+// evictReason returns a non-empty reason when the watcher should stand down: its epic's .cox control tree is gone, the
+// epic has been closed (a .cox.closed marker exists), or its own binary no longer stats (B-37: disposable dogfood
+// worktrees were removed but their watchers kept polling for hours). "" means keep running.
+func (w *Watcher) evictReason() string {
+	if _, err := os.Stat(filepath.Join(w.EpicDir, state.ControlDir)); err != nil {
+		return "control tree " + state.ControlDir + " is gone"
+	}
+	if _, err := os.Stat(filepath.Join(w.EpicDir, state.ControlDir+".closed")); err == nil {
+		return "epic closed (" + state.ControlDir + ".closed present)"
+	}
+	if p, err := watcherExecutable(); err != nil {
+		return "own binary path unresolved: " + err.Error()
+	} else if _, err := os.Stat(p); err != nil {
+		return "own binary is gone"
+	}
+	return ""
+}
+
+// logEviction appends one self-eviction line to watch/log when the control tree still allows it (a .cox that just
+// vanished cannot hold a log, so the write is best-effort and its failure is ignored).
+func (w *Watcher) logEviction(reason string) {
+	dir := w.watchDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return
+	}
+	f, err := os.OpenFile(filepath.Join(dir, "log"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	fmt.Fprintf(f, "%s self-evict %s\n", w.now().UTC().Format(time.RFC3339), reason)
+}
+
 // markTick records the wall-clock time of the last completed watch pass to <epic>/.cox/watch/lasttick, so `cox doctor`
 // and `cox state` can report the watcher's last-tick age and flag a watcher that died while a story is still working
 // (M14, dogfood: the watcher stopped writing and nobody noticed - no watcher-alive line anywhere). Best-effort: a write
