@@ -39,6 +39,35 @@ func TestWatcherIssuesForWorkspaces(t *testing.T) {
 	}
 }
 
+// doctor flags a disagreement between an epic's DESIGN.md Status text and its ledger signed-state, and stays quiet when
+// they agree or the epic is closed (finding 2).
+func TestSignedDivergence(t *testing.T) {
+	// Status says signed, ledger unsigned: the dangerous case (a lost signature) is flagged.
+	if signedDivergence(doctor.EpicReport{Status: "active (signed 2026-09-21)", Signed: false}) == "" {
+		t.Error("status-signed + ledger-unsigned must be flagged")
+	}
+	// Ledger signed, status silent: also a mismatch.
+	if signedDivergence(doctor.EpicReport{Status: "active", Signed: true}) == "" {
+		t.Error("ledger-signed + status-silent must be flagged")
+	}
+	// Agreement raises nothing.
+	if signedDivergence(doctor.EpicReport{Status: "active (signed)", Signed: true}) != "" {
+		t.Error("agreement must raise nothing")
+	}
+	if signedDivergence(doctor.EpicReport{Status: "draft", Signed: false}) != "" {
+		t.Error("both unsigned must raise nothing")
+	}
+	// A closed epic's historical Status text is never flagged.
+	if signedDivergence(doctor.EpicReport{Status: "active (signed)", Signed: false, Closed: true}) != "" {
+		t.Error("a closed epic must not be flagged")
+	}
+	// The exit aggregator prefixes with the workspace root and epic slug.
+	reps := []doctor.WorkspaceReport{{Root: "/ws", Epics: []doctor.EpicReport{{Slug: "e1", Status: "signed", Signed: false}}}}
+	if got := workspaceSignedIssues(reps); len(got) != 1 || !strings.Contains(got[0], "e1") {
+		t.Fatalf("workspaceSignedIssues = %v, want one issue naming e1", got)
+	}
+}
+
 // A closed epic raises no watcher issue (nothing to deliver), so doctor never prints it as "active ... watcher dead"
 // (finding 12).
 func TestWatcherIssuesSkipsClosedEpic(t *testing.T) {

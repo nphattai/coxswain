@@ -74,7 +74,9 @@ func Sign(epicDir, by string) error {
 	if strings.TrimSpace(by) != "" {
 		evidence["by"] = strings.TrimSpace(by)
 	}
-	return state.Append(epicDir, state.Event{
+	// design_signed is durable epic history: write it to the committed ledger, not the machine-local .cox log, so the
+	// signature travels with git clone and a re-attach never loses it (finding 2).
+	return state.AppendLedger(epicDir, state.Event{
 		Type: state.DesignSigned, Epic: filepath.Base(epicDir), Story: state.EpicStory,
 		Actor: state.Captain, Evidence: evidence, ExternalConfirmed: true,
 	})
@@ -90,7 +92,8 @@ func Amend(epicDir, reason string) error {
 	if err != nil {
 		return err
 	}
-	return state.Append(epicDir, state.Event{
+	// design_amended is durable epic history too: append it to the committed ledger (finding 2).
+	return state.AppendLedger(epicDir, state.Event{
 		Type: state.DesignAmended, Epic: filepath.Base(epicDir), Story: state.EpicStory,
 		Actor: state.Captain, Evidence: map[string]any{"design_sha": designSha, "reason": strings.TrimSpace(reason)},
 		ExternalConfirmed: true,

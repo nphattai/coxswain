@@ -20,6 +20,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/nphattai/coxswain/internal/state"
 	"github.com/nphattai/coxswain/internal/workspace"
 )
 
@@ -51,6 +52,10 @@ type EpicReport struct {
 	// Closed is true for an archived epic: a .cox.closed exists and .cox does not. A closed epic has no live watcher and
 	// no open stories, so doctor prints it as "closed" rather than "active ... watcher dead" (finding 12).
 	Closed bool `json:"closed,omitempty"`
+	// Signed is the epic's signed state read from the durable log (the committed ledger, merged with the runtime log by
+	// state.Load), NOT from the free-text Status: line of DESIGN.md. doctor prints this and flags a disagreement with the
+	// Status: text, so a re-attach that lost the signature can no longer hide behind DESIGN.md still saying signed (finding 2).
+	Signed bool `json:"signed"`
 }
 
 // WorkspaceReport is one recognised v2 workspace: its validity, hook install state per leader harness, epics, and any
@@ -317,6 +322,7 @@ func InspectWorkspace(wsRoot string) WorkspaceReport {
 			WatcherPid:   pid,
 			WatcherAlive: pid > 0 && pidAlive(pid),
 			Closed:       closed,
+			Signed:       epicSigned(ep),
 		})
 	}
 
@@ -360,6 +366,22 @@ func hookTarget(wsRoot, harness string) string {
 	default:
 		return ""
 	}
+}
+
+// epicSigned reports whether the epic's durable log carries a design_signed event. state.Load merges the committed
+// ledger with the runtime log, so a signature written to either is seen (finding 2). Any read error is treated as
+// unsigned rather than crashing doctor.
+func epicSigned(epicDir string) bool {
+	events, _, err := state.Load(epicDir)
+	if err != nil {
+		return false
+	}
+	for _, ev := range events {
+		if ev.Type == state.DesignSigned {
+			return true
+		}
+	}
+	return false
 }
 
 // epicStatus reads the first `Status:` line from an epic's DESIGN.md, or "" when absent.

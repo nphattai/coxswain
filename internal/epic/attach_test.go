@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/nphattai/coxswain/internal/adapter/backend"
+	"github.com/nphattai/coxswain/internal/state"
 	"github.com/nphattai/coxswain/internal/workspace"
 )
 
@@ -92,6 +93,46 @@ func TestAttachRecreatesStateWithoutTouchingBranches(t *testing.T) {
 	// Refuse on an existing .cox/.
 	if err := Attach(AttachOptions{Runtime: &attachBackend{gitBackend: gitBackend{t: t, repo: repo, wtBase: t.TempDir()}}, Workspace: ws, WsRoot: wsRoot, EpicDir: epicDir}); err == nil {
 		t.Error("attach must refuse when .cox already exists")
+	}
+}
+
+// A clone of an epic dir that carries ledger.jsonl but no .cox reports signed after cox epic attach, without
+// re-signing: the signature travels with git in the committed ledger, and attach does not replay it (finding 2).
+func TestAttachOnCloneWithLedgerReportsSigned(t *testing.T) {
+	repo := makeRepo(t)
+	wsRoot, ws := setupWorkspace(t, repo)
+	if _, err := New(NewOptions{Runtime: &gitBackend{t: t, repo: repo, wtBase: t.TempDir()}, Workspace: ws, WsRoot: wsRoot,
+		Project: "proj", Slug: "att", Repos: []string{"app"}, NoPush: true}); err != nil {
+		t.Fatal(err)
+	}
+	epicDir := filepath.Join(wsRoot, "proj", "epics", "att")
+
+	// The signature lives in the committed ledger; the epic was never signed on this machine.
+	if err := state.AppendLedger(epicDir, state.Event{Type: state.DesignSigned, Epic: "att", Story: state.EpicStory, Actor: state.Captain, ExternalConfirmed: true}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate a fresh clone: remove the worktree, the alias symlink, and .cox - but keep the tracked ledger.jsonl.
+	link := filepath.Join(epicDir, "app")
+	target, _ := filepath.EvalSymlinks(link)
+	_, _ = exec.Command("git", "-C", repo, "worktree", "remove", "--force", target).CombinedOutput()
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(filepath.Join(epicDir, ".cox")); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Attach(AttachOptions{Runtime: &attachBackend{gitBackend: gitBackend{t: t, repo: repo, wtBase: t.TempDir()}}, Workspace: ws, WsRoot: wsRoot, EpicDir: epicDir}); err != nil {
+		t.Fatalf("attach: %v", err)
+	}
+	signed, err := isSigned(epicDir)
+	if err != nil || !signed {
+		t.Fatalf("a clone with a ledger must report signed after attach: signed=%v err=%v", signed, err)
+	}
+	// Attach did not replay the signature into the runtime log; the ledger is the source.
+	if b, err := os.ReadFile(state.EventsPath(epicDir)); err == nil && strings.Contains(string(b), "design_signed") {
+		t.Errorf("attach must not replay design_signed into .cox/events.jsonl:\n%s", b)
 	}
 }
 

@@ -142,6 +142,7 @@ func cmdDoctor(args []string) int {
 	// just those under the default installation scan (PR#3 review finding 5). Computed for both --json and human output.
 	wsWatcherIssues := watcherIssuesForWorkspaces(wsReports)
 	wsRepoIssues := workspaceRepoIssues(wsReports)
+	wsSignedIssues := workspaceSignedIssues(wsReports)
 
 	if *asJSON {
 		enc := json.NewEncoder(os.Stdout)
@@ -211,7 +212,14 @@ func cmdDoctor(args []string) int {
 				if status == "" {
 					status = "no Status:"
 				}
-				fmt.Printf("    epic %s  [%s]  %s\n", ep.Slug, status, watch)
+				signed := "unsigned"
+				if ep.Signed {
+					signed = "signed"
+				}
+				fmt.Printf("    epic %s  [%s]  %s  ledger=%s\n", ep.Slug, status, watch, signed)
+				if iss := signedDivergence(ep); iss != "" {
+					fmt.Fprintf(os.Stderr, "ISSUE: workspace %s epic %s %s\n", w.Root, ep.Slug, iss)
+				}
 			}
 			for _, alias := range w.PolicyInRepo {
 				fmt.Fprintf(os.Stderr, "WARN: repo %q checkout carries cox/policy.json; nothing reads it and it drifts from the workspace policy - delete it\n", alias)
@@ -264,7 +272,7 @@ func cmdDoctor(args []string) int {
 
 	// Exit code: any fail (an install issue, a dead watcher with open stories, an invalid workspace, or a failed check)
 	// is 1; any unknown with no fail (e.g. orca present but `orca status` unreachable) is 3; otherwise 0.
-	hasFail := len(rep.Issues) > 0 || len(watcherIssues) > 0 || len(wsWatcherIssues) > 0 || len(wsRepoIssues) > 0
+	hasFail := len(rep.Issues) > 0 || len(watcherIssues) > 0 || len(wsWatcherIssues) > 0 || len(wsRepoIssues) > 0 || len(wsSignedIssues) > 0
 	hasUnknown := false
 	for _, w := range wsReports {
 		if !w.Valid || w.PolicyError != "" {
@@ -293,6 +301,39 @@ func watcherIssuesForWorkspaces(reps []doctor.WorkspaceReport) []string {
 			}
 			if iss := watcherIssue(ep.Path, watcherInfo(ep.Path)); iss != "" {
 				issues = append(issues, iss)
+			}
+		}
+	}
+	return issues
+}
+
+// signedDivergence reports a disagreement between an epic's DESIGN.md Status: text and its durable ledger state: the
+// text claims signed while the ledger has no design_signed (a re-attach that lost the signature, finding 2), or the
+// ledger is signed while the text does not say so. It returns "" when they agree. A closed epic is skipped (its Status:
+// text is historical and the archive is the truth).
+func signedDivergence(ep doctor.EpicReport) string {
+	if ep.Closed {
+		return ""
+	}
+	textSaysSigned := strings.Contains(strings.ToLower(ep.Status), "signed")
+	switch {
+	case textSaysSigned && !ep.Signed:
+		return "DESIGN.md Status says signed but the ledger has no design_signed (signature lost - re-sign with cox epic design --sign, or fix the Status line)"
+	case !textSaysSigned && ep.Signed:
+		return "the ledger is signed but DESIGN.md Status does not say so (update the Status line)"
+	default:
+		return ""
+	}
+}
+
+// workspaceSignedIssues collects every epic whose DESIGN.md text and ledger disagree on the signature, so doctor fails
+// on the inconsistency rather than trusting the free-text Status line (finding 2).
+func workspaceSignedIssues(reps []doctor.WorkspaceReport) []string {
+	var issues []string
+	for _, w := range reps {
+		for _, ep := range w.Epics {
+			if iss := signedDivergence(ep); iss != "" {
+				issues = append(issues, w.Root+" epic "+ep.Slug+": "+iss)
 			}
 		}
 	}

@@ -13,5 +13,13 @@ confirms only the transitions it can prove; it never re-issues a side effect or 
 (`codex -a never -s danger-full-access` or `--dangerously-bypass-approvals-and-sandbox`); the leader must act outside the
 workspace sandbox to run the watcher and git.
 
-**Where is state?** The append-only `.cox/events.jsonl` per epic. It is the source of truth; `cox state` and `cox board`
-render it.
+**Where is state?** Two append-only logs per epic, merged by timestamp. Story lifecycle lives in the machine-local
+`.cox/events.jsonl` (git-ignored, discarded on attach/close). Durable epic facts - `design_signed`, `design_amended` -
+live in `<epic>/ledger.jsonl`, which is committed and travels with `git`, so a re-attached epic stays signed. `cox state`
+and `cox board` render the merged history.
+
+**`cox doctor` says signed/unsigned or `closed` unexpectedly.** doctor reads an epic's signed state from `ledger.jsonl`,
+not the `Status:` line of `DESIGN.md`, and flags the two when they disagree (a re-attach that lost the signature).
+An archived epic (`.cox.closed`, no `.cox`) prints as `closed`, not `active ... watcher dead`. doctor also fails when a
+`workspace.json` repo path is missing or is not a git checkout, when a policy default harness has no adapter, and when a
+second `cox` on `PATH` resolves to a different binary (a repeated PATH entry or a symlink to the same one is fine).
