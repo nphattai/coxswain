@@ -108,3 +108,7 @@ not, the PR body shows the new test failing on the base sha as evidence.
     forked verifiers). Run the item's own focused tests yourself and let the leader review. Write your checkpoint at
     {{.EpicDir}}/handoffs/{{.ID}}.md after EACH item boundary (codex `checkpoint=manual`: no PreCompact hook writes it
     for you), so a resume never loses a completed item.
+11. NO LOCAL DIALOGS. Every ruling and question goes ONLY through `cox story report question` + `cox question wait`
+    (orchestration plane: `orca orchestration ask`). NEVER ask through a harness dialog - AskUserQuestion, a permission
+    prompt, `/ask` - it is invisible to cox: the watcher cannot see it, the leader never receives it, and your turn
+    stalls on a dialog no one can answer. If a tool tries to open one, cancel it and report the question through cox.

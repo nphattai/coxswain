@@ -197,7 +197,7 @@ func storyDispatch(args []string) int {
 	if h := os.Getenv("ORCA_TERMINAL_HANDLE"); h != "" {
 		_ = writeCoxFile(*epicDir, "leader", h)
 	}
-	startWatcher(*epicDir)
+	startWatcher(*epicDir, story)
 	fmt.Printf("dispatched %s (attempt %d) as %s on %s -> %s\n", story, attempt, harnessName, wt.Path, sess.ID)
 	return 0
 }
@@ -567,9 +567,12 @@ func ensureRun(epicDir, slug string) (string, error) {
 
 // startWatcher launches `cox watch --epic <dir>` in the background once. It skips the launch when the watcher's own
 // pidfile (owned by `cox watch`, not written here) names a live process, so a second dispatch does not start a
-// duplicate. The spawned `cox watch` claims and later removes the pidfile itself.
-func startWatcher(epicDir string) {
+// duplicate. The spawned `cox watch` claims and later removes the pidfile itself. When a live watcher is reused it
+// prints one line naming the story, so a dispatch into a running epic is not silent about who will pick the story up:
+// the watcher now reloads its session set every tick (item 1), so the reused watcher covers this new story.
+func startWatcher(epicDir, story string) {
 	if pid := readPid(watchPidPath(epicDir)); pid > 0 && processAlive(pid) {
+		fmt.Println(watcherReuseLine(pid, story))
 		return
 	}
 	self, err := os.Executable()
@@ -583,6 +586,12 @@ func startWatcher(epicDir string) {
 		return
 	}
 	// Do not Wait: the watcher outlives this command.
+}
+
+// watcherReuseLine is the one line startWatcher prints when it reuses a live watcher instead of spawning one: the
+// watcher's pid and the story it will cover on its next reload (item 1). Pure, so a test asserts the text.
+func watcherReuseLine(pid int, story string) string {
+	return fmt.Sprintf("watcher pid %d alive; it picks up %s on its next tick", pid, story)
 }
 
 // repoName maps a story's repo alias to its concrete ref (path or backend name) via the epic's `repos` file, through the

@@ -146,6 +146,7 @@ func cmdDoctor(args []string) int {
 	wsRepoIssues := workspaceRepoIssues(wsReports)
 	wsSignedIssues := workspaceSignedIssues(wsReports)
 	wsLeaderIssues := leaderHandleIssues(wsReports)
+	wsDupLeaderIssues := duplicateLeaderIssues(wsReports)
 
 	if *asJSON {
 		enc := json.NewEncoder(os.Stdout)
@@ -274,11 +275,14 @@ func cmdDoctor(args []string) int {
 		for _, iss := range wsLeaderIssues {
 			fmt.Fprintln(os.Stderr, "ISSUE:", iss)
 		}
+		for _, iss := range wsDupLeaderIssues {
+			fmt.Fprintln(os.Stderr, "ISSUE:", iss)
+		}
 	}
 
 	// Exit code: any fail (an install issue, a dead watcher with open stories, an invalid workspace, or a failed check)
 	// is 1; any unknown with no fail (e.g. orca present but `orca status` unreachable) is 3; otherwise 0.
-	hasFail := len(rep.Issues) > 0 || len(watcherIssues) > 0 || len(wsWatcherIssues) > 0 || len(wsRepoIssues) > 0 || len(wsSignedIssues) > 0 || len(wsLeaderIssues) > 0
+	hasFail := len(rep.Issues) > 0 || len(watcherIssues) > 0 || len(wsWatcherIssues) > 0 || len(wsRepoIssues) > 0 || len(wsSignedIssues) > 0 || len(wsLeaderIssues) > 0 || len(wsDupLeaderIssues) > 0
 	hasUnknown := false
 	for _, w := range wsReports {
 		if !w.Valid || w.PolicyError != "" {
@@ -391,6 +395,101 @@ func leaderHandleIssues(reps []doctor.WorkspaceReport) []string {
 			if live, checked := leaderHandleLive(ep.Path); checked && !live {
 				issues = append(issues, fmt.Sprintf("%s epic %s: recorded .cox/leader handle is not live; open a leader terminal in the workspace so a hook re-binds it (cox hook prompt-drain)", w.Root, ep.Slug))
 			}
+		}
+	}
+	return issues
+}
+
+// epicTerminals lists the backend's terminals for an epic (for the duplicate-leader check). Package var so a test
+// injects a fake listing without a real Orca. ok=false when there is no backend or the listing is unreadable: the
+// check is skipped, never failed on doubt (F08).
+var epicTerminals = func(epicDir string) (terms []backend.Terminal, ok bool) {
+	b, _ := newBackend(epicDir)
+	if b == nil {
+		return nil, false
+	}
+	ts, err := b.Terminals()
+	if err != nil {
+		return nil, false
+	}
+	return ts, true
+}
+
+// leaderTerminalsIn returns the handles of connected terminals that run the leader harness and sit in the workspace
+// root. The leader runs the leader harness in the workspace root, which is the terminal's worktree or a directory inside
+// it (a cox workspace can live under a repo checkout); a worker's worktree is a sibling story dir, never an ancestor of
+// the root. When harness is "" (policy unknown) any connected terminal that runs some agent in the root counts.
+func leaderTerminalsIn(terms []backend.Terminal, wsRoot, harness string) []string {
+	var handles []string
+	for _, t := range terms {
+		if !t.Connected || !terminalInWorkspaceRoot(t.WorktreePath, wsRoot) {
+			continue
+		}
+		if harness != "" {
+			if !strings.EqualFold(t.Harness, harness) {
+				continue
+			}
+		} else if t.Harness == "" {
+			continue // no agent runs in this terminal
+		}
+		handles = append(handles, t.Handle)
+	}
+	return handles
+}
+
+// terminalInWorkspaceRoot reports whether a terminal whose git worktree is worktreePath sits in the epic's workspace
+// root (the worktree itself, or the root is a directory inside it).
+func terminalInWorkspaceRoot(worktreePath, wsRoot string) bool {
+	if worktreePath == "" || wsRoot == "" {
+		return false
+	}
+	wp := filepath.Clean(worktreePath)
+	root := filepath.Clean(wsRoot)
+	return root == wp || strings.HasPrefix(root, wp+string(filepath.Separator))
+}
+
+// duplicateLeaderHandles returns the handles of the connected leader-harness terminals in an epic's workspace root when
+// there is more than one - a duplicate leader, so a wake may reach the wrong terminal - else nil. Shared by doctor and
+// the prompt-drain hook.
+func duplicateLeaderHandles(epicDir, wsRoot string) []string {
+	terms, ok := epicTerminals(epicDir)
+	if !ok {
+		return nil
+	}
+	harness := ""
+	if pol, err := workspace.LoadPolicy(wsRoot); err == nil {
+		harness = pol.Harness.Leader.Default
+	}
+	handles := leaderTerminalsIn(terms, wsRoot, harness)
+	if len(handles) <= 1 {
+		return nil
+	}
+	return handles
+}
+
+// firstActiveEpicPath returns the path of the first non-closed epic in a workspace report, or "" when none is active.
+func firstActiveEpicPath(w doctor.WorkspaceReport) string {
+	for _, ep := range w.Epics {
+		if !ep.Closed {
+			return ep.Path
+		}
+	}
+	return ""
+}
+
+// duplicateLeaderIssues flags every workspace with an active epic where more than one connected Orca terminal in the
+// workspace root runs the leader harness: two leaders drive one epic and a wake may reach the wrong one. The recorded
+// .cox/leader handle is named as the one to keep. doctor fails on it (item 4).
+func duplicateLeaderIssues(reps []doctor.WorkspaceReport) []string {
+	var issues []string
+	for _, w := range reps {
+		active := firstActiveEpicPath(w)
+		if active == "" {
+			continue
+		}
+		if handles := duplicateLeaderHandles(active, w.Root); len(handles) > 1 {
+			issues = append(issues, fmt.Sprintf("%s: %d connected leader terminals in the workspace root (%s); keep the recorded .cox/leader (%s) and close the rest",
+				w.Root, len(handles), strings.Join(handles, ", "), orNone(readLeader(active))))
 		}
 	}
 	return issues

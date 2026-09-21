@@ -48,6 +48,12 @@ claude plugin install coxswain@coxswain
 The first command registers this repo's marketplace; the second installs the plugin (leader hooks, skills, and agent
 instructions).
 
+> **The plugin is optional - treat it as skills only.** `cox workspace init` already writes the leader hooks and skills
+> into your workspace (see [Create a workspace](workspace.md)), and that is the supported path; the Quick Start installs
+> no plugin. Install the Claude plugin only in a workspace that does **not** already have `cox`-written
+> `.claude/settings.json` hooks. If both are present, every leader hook fires twice (`UserPromptSubmit`, `Stop`,
+> `PreCompact`, `SessionStart`). Use one or the other - the workspace hooks or the plugin - never both.
+
 ### Codex (`AGENTS.md` and skills)
 
 Codex reads a project-level `AGENTS.md` and the Markdown workflows under `skills/` directly; `cox workspace init` writes

@@ -279,6 +279,18 @@ func (c *Client) Composer(s backend.Session) (string, error) {
 	return backend.ComposerUnknown, nil
 }
 
+// Screen is not reproduced for herdr (its terminal read shape is UI-specific and not ported): it returns an error so
+// the watcher records the stuck wake without a captured dialog rather than a wrong one.
+func (c *Client) Screen(s backend.Session) ([]string, error) {
+	return nil, fmt.Errorf("herdr: screen capture not supported")
+}
+
+// Terminals is not reproduced for herdr (no run-independent terminal listing): it returns an error, so the
+// duplicate-leader check skips a herdr backend rather than inferring one.
+func (c *Client) Terminals() ([]backend.Terminal, error) {
+	return nil, fmt.Errorf("herdr: terminal listing not supported")
+}
+
 // Probe maps herdr's native agent state to liveness. A registered agent (any agent_status: working, idle, done,
 // blocked) is Alive; a gone pane/agent (pane_not_found / agent_not_found) is Settled; an unreadable or unexpected
 // response is Unknown with an error (never inferred as gone, F08). A native "idle" agent is still a live, registered

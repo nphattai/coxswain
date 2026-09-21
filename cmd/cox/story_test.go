@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/nphattai/coxswain/internal/adapter/backend"
@@ -204,5 +205,14 @@ func appendWorking(t *testing.T, epic, id string) {
 		From: state.Submitted, To: state.Working, ExternalConfirmed: true,
 	}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// Item 1: the line startWatcher prints when it reuses a live watcher names the story that watcher will pick up on its
+// next tick (the watcher reloads its session set each tick), so a dispatch into a running epic is not silent.
+func TestWatcherReuseLineNamesStory(t *testing.T) {
+	line := watcherReuseLine(4242, "cox-wake-delivery-core")
+	if !strings.Contains(line, "4242") || !strings.Contains(line, "cox-wake-delivery-core") || !strings.Contains(line, "next tick") {
+		t.Fatalf("reuse line missing pid/story/next-tick: %q", line)
 	}
 }

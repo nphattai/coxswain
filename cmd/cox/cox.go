@@ -15,6 +15,7 @@ import (
 	"github.com/nphattai/coxswain/internal/adapter/harness/pi"
 	"github.com/nphattai/coxswain/internal/adapter/harness/registry"
 	"github.com/nphattai/coxswain/internal/state"
+	"github.com/nphattai/coxswain/internal/watch"
 	"github.com/nphattai/coxswain/internal/workspace"
 )
 
@@ -262,24 +263,10 @@ func loadSession(epicDir, story string) (backend.Session, error) {
 	return s, nil
 }
 
-// loadAllSessions maps every story with a saved session to it.
+// loadAllSessions maps every story with a saved session to it. It delegates to watch.LoadSessions so the watcher's
+// per-tick reload (item 1) and the dispatch/reconcile paths read sessions through one implementation.
 func loadAllSessions(epicDir string) map[string]backend.Session {
-	out := map[string]backend.Session{}
-	dir := filepath.Join(epicDir, controlDir, "sessions")
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return out
-	}
-	for _, e := range entries {
-		if !strings.HasSuffix(e.Name(), ".json") || strings.HasSuffix(e.Name(), ".busy.json") {
-			continue // skip the sibling busy-state records that live in the same dir
-		}
-		story := strings.TrimSuffix(e.Name(), ".json")
-		if s, err := loadSession(epicDir, story); err == nil {
-			out[story] = s
-		}
-	}
-	return out
+	return watch.LoadSessions(epicDir)
 }
 
 // currentAttempt reads the attempt a dispatch should run under from the event log (default 1). After a terminal

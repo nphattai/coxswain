@@ -1,6 +1,7 @@
 package watch
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -51,6 +52,22 @@ func TestMailPassAppendsWakeThenAcks(t *testing.T) {
 	}
 	if len(mb.Sent) != 0 {
 		t.Fatalf("leader doorbell must not go through orchestration mail, mb.Sent=%v", mb.Sent)
+	}
+}
+
+// writeSession writes <epic>/.cox/sessions/<story>.json so Tick's per-tick reload picks it up (item 1).
+func writeSession(t *testing.T, epic, story string, sess backend.Session) {
+	t.Helper()
+	dir := filepath.Join(epic, state.ControlDir, "sessions")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	b, err := json.Marshal(sess)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, story+".json"), b, 0o644); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -207,9 +224,9 @@ func TestStaleProbeErrorKeepsHeartbeat(t *testing.T) {
 	b := fake.New()
 	b.FailNext("Probe", nil)
 	now := time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC)
+	writeSession(t, epic, "s", backend.Session{ID: "ctx_1"}) // Tick reloads sessions from disk (item 1)
 	w := &Watcher{
 		EpicDir: epic, Backend: b,
-		Sessions: map[string]backend.Session{"s": {ID: "ctx_1"}},
 		StaleMin: 20 * time.Minute,
 		Now:      func() time.Time { return now },
 	}
@@ -526,6 +543,90 @@ func TestBlockedPassStuckWake(t *testing.T) {
 	now = now.Add(3 * time.Minute)
 	if n, _, _ := w.blockedPass(); n != 1 {
 		t.Fatalf("new interval should fire again after the window: %d", n)
+	}
+}
+
+// Item 2: when blockedPass raises the stuck wake it captures the worker terminal's screen (Backend.Screen) and carries
+// the visible prompt block in the note, the Full text, and the evidence, plus the remedy, so the leader answers from the
+// hook output without opening the terminal. A backend that cannot read the screen still gets the wake, minus the dialog.
+func TestBlockedPassStuckWakeCarriesDialog(t *testing.T) {
+	epic := t.TempDir()
+	must(t, state.Append(epic, ev(epic, "s", 1, state.Submitted, state.Working)))
+	now := time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC)
+	b := fake.New()
+	b.ComposerState = backend.ComposerBlocked
+	b.ScreenRows = []string{
+		"", "some earlier output", "",
+		"Ship to production now?",
+		"  1. Yes, deploy",
+		"  2. No, hold",
+		"❯ ",
+	}
+	w := &Watcher{EpicDir: epic, Backend: b, Sessions: map[string]backend.Session{"s": {ID: "ctx_1", Handle: "term_1"}}, BlockedWait: time.Minute, Now: func() time.Time { return now }}
+
+	if _, _, err := w.blockedPass(); err != nil { // first sight records the interval
+		t.Fatal(err)
+	}
+	now = now.Add(2 * time.Minute)
+	if n, urg, err := w.blockedPass(); err != nil || n != 1 || !urg {
+		t.Fatalf("want one urgent stuck wake, got n=%d urg=%v err=%v", n, urg, err)
+	}
+	wakes, _ := wake.Drain(epic, true)
+	if len(wakes) != 1 {
+		t.Fatalf("want one wake, got %+v", wakes)
+	}
+	wk := wakes[0]
+	if !strings.Contains(wk.Note, "Ship to production now?") {
+		t.Errorf("note must carry the captured question: %q", wk.Note)
+	}
+	if !strings.Contains(wk.Note, "Remedy:") {
+		t.Errorf("note must name the remedy: %q", wk.Note)
+	}
+	if prompt, _ := wk.Evidence["prompt"].(string); !strings.Contains(prompt, "1. Yes, deploy") || !strings.Contains(prompt, "2. No, hold") {
+		t.Errorf("evidence.prompt must carry the numbered options: %q", prompt)
+	}
+	if !strings.Contains(wk.Full, "visible prompt:") || !strings.Contains(wk.Full, "Ship to production now?") {
+		t.Errorf("Full must carry the untruncated dialog: %q", wk.Full)
+	}
+	if !containsCall(b.Calls, "Screen") {
+		t.Errorf("blockedPass must read the terminal screen, calls=%v", b.Calls)
+	}
+}
+
+// Item 1: a story whose session file is written AFTER the watcher's first tick is picked up on the next tick, so a
+// story dispatched into a running watcher is covered (before, Sessions was cached at start and the new story was
+// invisible). blockedPass is the proof: with the second session absent it cannot track the second story; once the file
+// exists, the next tick reloads it and blockedPass records the block for it.
+func TestTickReloadsSessionsForStoryDispatchedAfterStart(t *testing.T) {
+	epic := t.TempDir()
+	must(t, state.Append(epic, ev(epic, "s1", 1, state.Submitted, state.Working)))
+	must(t, state.Append(epic, ev(epic, "s2", 1, state.Submitted, state.Working)))
+	now := time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC)
+	b := fake.New()
+	b.ComposerState = backend.ComposerBlocked
+	writeSession(t, epic, "s1", backend.Session{ID: "ctx_1", Handle: "term_1"})
+	w := &Watcher{EpicDir: epic, Backend: b, BlockedWait: time.Minute, Now: func() time.Time { return now }}
+
+	if _, err := w.Tick(); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := w.Sessions["s2"]; ok {
+		t.Fatal("s2 has no session file yet; it must not be tracked")
+	}
+	if !w.blockedSince("s2").IsZero() {
+		t.Fatal("s2 must not be blocked-tracked before its session exists")
+	}
+
+	// s2 is dispatched after the watcher started: its session file appears now.
+	writeSession(t, epic, "s2", backend.Session{ID: "ctx_2", Handle: "term_2"})
+	if _, err := w.Tick(); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := w.Sessions["s2"]; !ok {
+		t.Fatal("a session written after the watcher started must be reloaded on the next tick (item 1)")
+	}
+	if w.blockedSince("s2").IsZero() {
+		t.Fatal("the reloaded s2 must be blocked-tracked on the next tick")
 	}
 }
 
