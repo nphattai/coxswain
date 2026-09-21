@@ -93,6 +93,18 @@ func (w Worker) Alive() bool {
 	return s == "ready" || s == "running"
 }
 
+// Terminal is one of the backend's terminals as reported by a run-independent listing, for duplicate-leader detection.
+// A leader runs the leader harness in the epic's workspace root; a second connected leader-harness terminal there means
+// two leaders drive one epic (finding: the wake never reaches the intended leader). Harness is the agent identity the
+// backend recognises for the terminal ("claude" | "codex" | "" when it runs no agent). WorktreePath is the terminal's
+// working tree.
+type Terminal struct {
+	Handle       string
+	WorktreePath string
+	Harness      string
+	Connected    bool
+}
+
 // Backend is the whole surface the core needs from a runtime. Small on purpose (decision 0002): a community tmux
 // backend can be added by satisfying this interface without touching the core.
 type Backend interface {
@@ -123,6 +135,9 @@ type Backend interface {
 	// WorkerList returns every dispatch in the backend's run with its state, so a caller can tell a live dispatch from a
 	// settled one without one Probe per story. A backend with no run listing runs reduced (herdr) and returns an error.
 	WorkerList() ([]Worker, error)
+	// Terminals lists the backend's terminals (run-independent), so a caller can detect a duplicate leader: more than one
+	// connected leader-harness terminal in the epic's workspace root. A backend with no terminal listing returns an error.
+	Terminals() ([]Terminal, error)
 	Mail() Mailbox
 }
 

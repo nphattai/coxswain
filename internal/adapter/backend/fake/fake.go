@@ -17,14 +17,15 @@ type Backend struct {
 	failNext map[string]error
 
 	// Knobs the test sets to control return values.
-	CreatedPath   string           // path WorktreeCreate returns (default derived from branch)
-	CreatedBranch string           // branch WorktreeCreate returns (default = requested branch)
-	Liveness      backend.Liveness // what Probe returns when it does not fail
-	StopConfirmed bool             // what Stop returns when it does not fail
-	SendRang      bool             // what Send returns for rang when it does not fail (default true)
-	ComposerState string           // what Composer returns (default "unknown")
-	ScreenRows    []string         // what Screen returns when it does not fail
-	Workers       []backend.Worker // what WorkerList returns when it does not fail
+	CreatedPath   string             // path WorktreeCreate returns (default derived from branch)
+	CreatedBranch string             // branch WorktreeCreate returns (default = requested branch)
+	Liveness      backend.Liveness   // what Probe returns when it does not fail
+	StopConfirmed bool               // what Stop returns when it does not fail
+	SendRang      bool               // what Send returns for rang when it does not fail (default true)
+	ComposerState string             // what Composer returns (default "unknown")
+	ScreenRows    []string           // what Screen returns when it does not fail
+	Workers       []backend.Worker   // what WorkerList returns when it does not fail
+	TerminalList  []backend.Terminal // what Terminals returns when it does not fail
 
 	mailbox *Mailbox
 }
@@ -126,6 +127,13 @@ func (b *Backend) WorkerList() ([]backend.Worker, error) {
 		return nil, err
 	}
 	return b.Workers, nil
+}
+
+func (b *Backend) Terminals() ([]backend.Terminal, error) {
+	if err := b.record("Terminals"); err != nil {
+		return nil, err
+	}
+	return b.TerminalList, nil
 }
 
 func (b *Backend) Mail() backend.Mailbox { return b.mailbox }
