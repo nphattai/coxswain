@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nphattai/coxswain/internal/adapter/backend"
 	"github.com/nphattai/coxswain/internal/adapter/harness/registry"
 	"github.com/nphattai/coxswain/internal/doctor"
 	"github.com/nphattai/coxswain/internal/quota"
@@ -144,6 +145,7 @@ func cmdDoctor(args []string) int {
 	wsWatcherIssues := watcherIssuesForWorkspaces(wsReports)
 	wsRepoIssues := workspaceRepoIssues(wsReports)
 	wsSignedIssues := workspaceSignedIssues(wsReports)
+	wsLeaderIssues := leaderHandleIssues(wsReports)
 
 	if *asJSON {
 		enc := json.NewEncoder(os.Stdout)
@@ -269,11 +271,14 @@ func cmdDoctor(args []string) int {
 		for _, iss := range wsWatcherIssues {
 			fmt.Fprintln(os.Stderr, "ISSUE:", iss)
 		}
+		for _, iss := range wsLeaderIssues {
+			fmt.Fprintln(os.Stderr, "ISSUE:", iss)
+		}
 	}
 
 	// Exit code: any fail (an install issue, a dead watcher with open stories, an invalid workspace, or a failed check)
 	// is 1; any unknown with no fail (e.g. orca present but `orca status` unreachable) is 3; otherwise 0.
-	hasFail := len(rep.Issues) > 0 || len(watcherIssues) > 0 || len(wsWatcherIssues) > 0 || len(wsRepoIssues) > 0 || len(wsSignedIssues) > 0
+	hasFail := len(rep.Issues) > 0 || len(watcherIssues) > 0 || len(wsWatcherIssues) > 0 || len(wsRepoIssues) > 0 || len(wsSignedIssues) > 0 || len(wsLeaderIssues) > 0
 	hasUnknown := false
 	for _, w := range wsReports {
 		if !w.Valid || w.PolicyError != "" {
@@ -341,6 +346,50 @@ func workspaceSignedIssues(reps []doctor.WorkspaceReport) []string {
 		for _, ep := range w.Epics {
 			if iss := signedDivergence(ep); iss != "" {
 				issues = append(issues, w.Root+" epic "+ep.Slug+": "+iss)
+			}
+		}
+	}
+	return issues
+}
+
+// leaderHandleLive probes whether an epic's recorded leader terminal handle is still live. checked is false when there is
+// no .cox/leader or no backend to probe (the check is skipped, not a failure). It is a package var so a test can inject a
+// fake prober without a real Orca.
+var leaderHandleLive = func(epicDir string) (live bool, checked bool) {
+	handle := readLeader(epicDir)
+	if handle == "" {
+		return false, false
+	}
+	b, _ := newBackend(epicDir)
+	if b == nil {
+		return false, false
+	}
+	l, err := b.Probe(backend.Session{Kind: "orca", Handle: handle})
+	if err != nil {
+		return false, false // probe could not determine liveness; never infer a dead leader from doubt (F08)
+	}
+	switch l {
+	case backend.Alive:
+		return true, true
+	case backend.Settled:
+		return false, true // the handle is definitively disconnected
+	default:
+		return false, false // Unknown: not determined, do not fail
+	}
+}
+
+// leaderHandleIssues flags every active (non-closed) epic whose recorded .cox/leader handle is not live: a leader
+// restart re-bound to a new Orca handle, or died, so wakes ring a dead terminal and every leader hook bails out
+// (finding 4). doctor fails on it with the hint to open a leader terminal in the workspace.
+func leaderHandleIssues(reps []doctor.WorkspaceReport) []string {
+	var issues []string
+	for _, w := range reps {
+		for _, ep := range w.Epics {
+			if ep.Closed {
+				continue
+			}
+			if live, checked := leaderHandleLive(ep.Path); checked && !live {
+				issues = append(issues, fmt.Sprintf("%s epic %s: recorded .cox/leader handle is not live; open a leader terminal in the workspace so a hook re-binds it (cox hook prompt-drain)", w.Root, ep.Slug))
 			}
 		}
 	}

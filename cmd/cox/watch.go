@@ -162,7 +162,6 @@ func cmdWatch(args []string) int {
 	w := &watch.Watcher{
 		EpicDir:  *epicDir,
 		Backend:  b,
-		Leader:   readLeader(*epicDir),
 		Sessions: loadAllSessions(*epicDir),
 		Quota:    newQuotaProbe(*epicDir),
 	}

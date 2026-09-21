@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/nphattai/coxswain/internal/adapter/backend"
 	"github.com/nphattai/coxswain/internal/protocol/checkpoint"
 	"github.com/nphattai/coxswain/internal/wake"
 	"github.com/nphattai/coxswain/internal/watch"
@@ -178,16 +179,70 @@ func codexBlock(out io.Writer, reason string) {
 	_ = json.NewEncoder(out).Encode(map[string]string{"decision": "block", "reason": reason})
 }
 
-// notLeaderTerminal reports whether this terminal is demonstrably NOT the epic's leader: <epic>/.cox/leader records a
-// handle (story dispatch writes it) that differs from this terminal's ORCA_TERMINAL_HANDLE. When .cox/leader is absent
-// the leader is unknown and it returns false (keep today's behavior). This stops the leader-only wake hooks from firing
-// in a worker session whose worktree happens to carry the repo's own .claude/settings.json pointing at the leader epic.
+// notLeaderTerminal reports whether this terminal is demonstrably NOT the epic's leader. It is the negation of
+// leaderTerminal, whose rebind side effect keeps a restarted leader from orphaning the epic (finding 4).
 func notLeaderTerminal(epicDir string) bool {
-	leader := readLeader(epicDir)
-	if leader == "" {
-		return false
+	isLeader, _ := leaderTerminal(epicDir)
+	return !isLeader
+}
+
+// leaderTerminal reports whether THIS terminal is the epic's leader, and whether it re-bound <epic>/.cox/leader in the
+// process. The leader is identified by what survives a harness restart, not by one Orca pty handle:
+//   - .cox/leader absent  -> leader unknown, treat this terminal as leader (keep today's behavior).
+//   - recorded handle == this terminal's ORCA_TERMINAL_HANDLE -> leader, no rebind.
+//   - recorded handle differs but is no longer live (Backend.Probe) AND this terminal runs in the epic's workspace ->
+//     this terminal is the leader; re-bind .cox/leader to ORCA_TERMINAL_HANDLE so the watcher rings it next tick.
+//   - otherwise -> not the leader.
+//
+// With no live backend (no run) or no ORCA_TERMINAL_HANDLE, liveness cannot be probed, so it falls back to plain handle
+// equality and never re-binds. prompt-drain, stop-rewake and session-start all reach this through filterLeaderEpics /
+// notLeaderTerminal, so a restarted leader re-binds on its first turn (finding 4).
+func leaderTerminal(epicDir string) (isLeader bool, rebound bool) {
+	recorded := readLeader(epicDir)
+	if recorded == "" {
+		return true, false // leader unknown; do not gate the hooks out
 	}
-	return strings.TrimSpace(os.Getenv("ORCA_TERMINAL_HANDLE")) != leader
+	handle := strings.TrimSpace(os.Getenv("ORCA_TERMINAL_HANDLE"))
+	if handle != "" && handle == recorded {
+		return true, false
+	}
+	if handle == "" {
+		return false, false // no handle to identify or re-bind to
+	}
+	live, canProbe := probeLeaderHandle(epicDir, recorded)
+	if !canProbe {
+		return false, false // no backend (no run): equality only, and equality already failed above
+	}
+	if live {
+		return false, false // a different, still-live leader owns the epic; do not steal it
+	}
+	if !sameWorkspaceAsEpic(epicDir) {
+		return false, false // recorded handle is dead, but we are not in the epic's workspace
+	}
+	// Restart case: the recorded leader handle died and this terminal leads the epic's workspace. Re-bind to it.
+	_ = writeCoxFile(epicDir, "leader", handle)
+	return true, true
+}
+
+// probeLeaderHandle reports whether the epic's recorded leader handle is live (Probe == Alive) and whether it could be
+// probed at all (canProbe=false when there is no live backend, i.e. no run). It is a package var so a test can inject a
+// fake prober without a real Orca. A probe error or any non-Alive liveness counts as not live.
+var probeLeaderHandle = func(epicDir, handle string) (live bool, canProbe bool) {
+	b, _ := newBackend(epicDir)
+	if b == nil {
+		return false, false
+	}
+	l, err := b.Probe(backend.Session{Kind: "orca", Handle: handle})
+	return err == nil && l == backend.Alive, true
+}
+
+// sameWorkspaceAsEpic reports whether this terminal's cwd and the epic dir resolve to the same workspace root (the
+// nearest ancestor holding cox/workspace.json). This is the restart-surviving identity: a leader that restarts is still
+// running in the same workspace even though Orca hands it a new pty handle.
+func sameWorkspaceAsEpic(epicDir string) bool {
+	cwdWs, err1 := findWorkspaceRoot(".")
+	epicWs, err2 := findWorkspaceRoot(epicDir)
+	return err1 == nil && err2 == nil && cwdWs == epicWs
 }
 
 // runPromptDrain drains one epic's unacked wakes and attaches them as context; it is the single-epic core. It never

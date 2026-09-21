@@ -76,6 +76,34 @@ func TestSignedDivergence(t *testing.T) {
 	}
 }
 
+// doctor fails an active epic whose recorded .cox/leader handle is not live (a leader restart left a dead handle), skips
+// an epic with a live handle or no probe, and never flags a closed epic (finding 4). The prober is injected - no Orca.
+func TestLeaderHandleIssues(t *testing.T) {
+	restore := leaderHandleLive
+	t.Cleanup(func() { leaderHandleLive = restore })
+
+	reps := []doctor.WorkspaceReport{{Root: "/ws", Epics: []doctor.EpicReport{
+		{Slug: "dead", Path: "/ws/proj/epics/dead"},
+		{Slug: "live", Path: "/ws/proj/epics/live"},
+		{Slug: "norun", Path: "/ws/proj/epics/norun"},
+		{Slug: "gone", Path: "/ws/proj/epics/gone", Closed: true},
+	}}}
+	leaderHandleLive = func(epicDir string) (bool, bool) {
+		switch {
+		case strings.HasSuffix(epicDir, "/dead"):
+			return false, true // recorded handle not live
+		case strings.HasSuffix(epicDir, "/live"):
+			return true, true
+		default:
+			return false, false // no leader file / no backend to probe
+		}
+	}
+	got := leaderHandleIssues(reps)
+	if len(got) != 1 || !strings.Contains(got[0], "dead") || !strings.Contains(got[0], "not live") {
+		t.Fatalf("leaderHandleIssues = %v, want one issue naming the dead-handle epic", got)
+	}
+}
+
 // A closed epic raises no watcher issue (nothing to deliver), so doctor never prints it as "active ... watcher dead"
 // (finding 12).
 func TestWatcherIssuesSkipsClosedEpic(t *testing.T) {

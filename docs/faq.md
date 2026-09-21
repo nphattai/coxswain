@@ -23,3 +23,9 @@ not the `Status:` line of `DESIGN.md`, and flags the two when they disagree (a r
 An archived epic (`.cox.closed`, no `.cox`) prints as `closed`, not `active ... watcher dead`. doctor also fails when a
 `workspace.json` repo path is missing or is not a git checkout, when a policy default harness has no adapter, and when a
 second `cox` on `PATH` resolves to a different binary (a repeated PATH entry or a symlink to the same one is fine).
+
+**The leader restarted and stopped getting wakes.** A leader is identified by the workspace it runs in, not by one Orca
+pty handle, so a harness restart no longer orphans the epic: the first `cox hook prompt-drain` / `stop-rewake` from the
+restarted terminal re-binds `<epic>/.cox/leader` to the new handle (when the recorded handle is no longer live and this
+terminal is in the epic's workspace), the watcher reads `.cox/leader` fresh every tick and logs a failed leader doorbell
+to `.cox/watch/log`, and `cox doctor` fails an active epic whose recorded leader handle is disconnected.

@@ -19,6 +19,9 @@ export HOME="$TMP/home"                       # temp HOME so trust writes and de
 export ORCA_WORKSPACES="$TMP/orca-empty"      # a default root that stays empty
 export ORCA_RUN_ID="run_onboarding"           # a backend run id so cox never shells out to create one
 export COX_SPAWN_CONFIRM="1s"                 # the spawn confirm window is best-effort; keep it short
+# Hermetic: do not inherit a real leader terminal handle from the launching session (it would make dispatch write a
+# .cox/leader whose liveness the fake Orca cannot confirm).
+unset ORCA_TERMINAL_HANDLE ORCA_WORKTREE_ID COX_PLANE COX_STORY COX_EPIC 2>/dev/null || true
 mkdir -p "$HOME" "$ORCA_WORKSPACES"
 WS="$TMP/ws"                                  # the workspace, deliberately NOT under $HOME/Work
 REPO="$TMP/throwaway-repo"                    # one throwaway git checkout
