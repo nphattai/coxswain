@@ -36,6 +36,7 @@ Every guarantee below is enforced by the `cox` binary and its tests, not by conv
 - **The captain merges everything** - Coxswain never merges and never pushes a default branch. Design approval, releases, and every merge are the human's call.
 - **Arena design review that can block** - an adversary in a *different* harness reads a blinded pack and raises machine-checked, verified claims against a design before it is signed.
 - **Event-driven, zero-token supervision** - a watcher sleeps on the fleet and wakes the leader only when something changes: push harnesses through hooks, pull harnesses through `cox wake wait`.
+- **No leader turn ends blind** - before the leader waits, the Stop and session-start hooks check that every led epic with an open story has a live, fresh watcher and restart a dead one, or reopen the turn with the exact `cox watch --replace` repair line (bounded by a per-turn block budget so a broken watcher can never wedge the leader). A watcher whose epic or binary has vanished evicts itself, and an unreachable leader raises a `stuck` wake, a `cox doctor` ISSUE, and - when `policy.alerts.channel` is set - one rate-limited out-of-band notification.
 - **Workspace-level hooks** - leader hooks belong to the workspace, not to an epic, so one leader terminal drains and rewakes for every active epic under it.
 - **Orca backend** - worktrees and terminals come from an Orca backend through a thin adapter, keeping the core independent of any one backend.
 

@@ -15,3 +15,4 @@ The decisions behind coxswain, as ADRs.
 - [0011 - Captain ruling opens routing, board, and lab; tmux backend is dropped](0011-captain-opens-routing-board-lab-drops-tmux.md)
 - [0012 - Handoff belongs to cox; backends only provide worktrees and terminals](0012-handoff-belongs-to-cox-backends-provide-terminals.md)
 - [0013 - Arena v3: evidence tiers, verified claims, adversarial round 2, read-only roles](0013-arena-v3-evidence-tiers-verify-rounds.md)
+- [0014 - The leader turn boundary is guarded; no turn ends blind](0014-turn-boundary-guarded.md)

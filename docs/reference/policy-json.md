@@ -31,6 +31,7 @@ Every *justified* section (`workers_per_repo`, `waves`, `context`, `arena`, `del
 | `backend` | Per-backend switches (today only Orca). |
 | `quota` | Observe-only quota thresholds. |
 | `review` | Visual-review surface. |
+| `alerts` | Out-of-band notification channel for a leader that has gone unreachable. |
 
 ### `workers_per_repo`
 
@@ -112,6 +113,16 @@ Observe-only; `cox` never reroutes automatically.
 | `binary` | string | Overrides the PATH lookup for `lavish-axi`. |
 | `npx` | object or null | The explicit npx opt-in: `version` and `integrity`. |
 | `share` | bool | Whether outward-facing publishing is allowed (defaults false). |
+
+### `alerts`
+
+Optional. The watcher fires this channel, rate-limited to one notification per 30 minutes, when the leader terminal has
+gone unreachable for three consecutive doorbell nudges (a dead handle after a restart, a closed terminal). Unset means
+`off`, so `cox` never posts a notification unless the captain opts in.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `channel` | string | `"off"` (default), `"osascript"` (a macOS Notification Center banner), or `"command:<cmd>"` (runs `<cmd>` via `sh -c` with the alarm summary as `$1` and on stdin, for a phone or pager). |
 
 For exact defaults, read `templates/policy.json`. For where a change belongs, see
 [Configuration authority](configuration.md).

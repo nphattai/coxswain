@@ -338,3 +338,46 @@ func TestResolveWorkerModelTemplateFallback(t *testing.T) {
 		t.Errorf("explicit model = %q, want gpt-x", got)
 	}
 }
+
+// item 2: cox doctor lists a live cox-watch process whose epic dir is outside every known workspace root (B-37), via
+// the injectable process lister.
+func TestDoctorListsOrphanWatcher(t *testing.T) {
+	orig := doctor.ListWatchProcs
+	doctor.ListWatchProcs = func() []doctor.WatchProc {
+		return []doctor.WatchProc{{Pid: 4242, Epic: "/tmp/pi-dogfood.abc/epic"}}
+	}
+	defer func() { doctor.ListWatchProcs = orig }()
+
+	issues := doctor.OrphanWatchers([]string{t.TempDir()})
+	if len(issues) != 1 || !strings.Contains(issues[0], "orphan watcher pid 4242") {
+		t.Fatalf("expected the orphan watcher to be listed, got %v", issues)
+	}
+}
+
+// item 3: cox doctor raises an ISSUE for an epic whose leader doorbell has failed DoorbellFailAlarm+ consecutive times.
+func TestDoorbellFailIssues(t *testing.T) {
+	epic := t.TempDir()
+	failDir := filepath.Join(epic, controlDir, "watch", "doorbell-fail")
+	if err := os.MkdirAll(failDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(failDir, "term_dead"), []byte("3"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	reps := []doctor.WorkspaceReport{{
+		Root:  "/ws",
+		Valid: true,
+		Epics: []doctor.EpicReport{{Path: epic, Slug: "e1"}},
+	}}
+	issues := doorbellFailIssues(reps)
+	if len(issues) != 1 || !strings.Contains(issues[0], "leader doorbell failed 3") {
+		t.Fatalf("expected a doorbell-fail ISSUE, got %v", issues)
+	}
+	// Below the threshold: no issue.
+	if err := os.WriteFile(filepath.Join(failDir, "term_dead"), []byte("2"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := doorbellFailIssues(reps); len(got) != 0 {
+		t.Fatalf("below the alarm threshold must raise no issue, got %v", got)
+	}
+}

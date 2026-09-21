@@ -18,6 +18,7 @@ import (
 	"github.com/nphattai/coxswain/internal/adapter/harness/registry"
 	"github.com/nphattai/coxswain/internal/doctor"
 	"github.com/nphattai/coxswain/internal/quota"
+	"github.com/nphattai/coxswain/internal/watch"
 	"github.com/nphattai/coxswain/internal/workspace"
 )
 
@@ -147,6 +148,10 @@ func cmdDoctor(args []string) int {
 	wsSignedIssues := workspaceSignedIssues(wsReports)
 	wsLeaderIssues := leaderHandleIssues(wsReports)
 	wsDupLeaderIssues := duplicateLeaderIssues(wsReports)
+	// Item 2: live cox-watch processes whose epic dir is gone or outside every known workspace root (B-37). Item 3: an
+	// epic whose leader has been unreachable for DoorbellFailAlarm+ consecutive doorbell nudges.
+	orphanIssues := doctor.OrphanWatchers(roots)
+	doorbellIssues := doorbellFailIssues(wsReports)
 
 	if *asJSON {
 		enc := json.NewEncoder(os.Stdout)
@@ -278,11 +283,17 @@ func cmdDoctor(args []string) int {
 		for _, iss := range wsDupLeaderIssues {
 			fmt.Fprintln(os.Stderr, "ISSUE:", iss)
 		}
+		for _, iss := range orphanIssues {
+			fmt.Fprintln(os.Stderr, "ISSUE:", iss)
+		}
+		for _, iss := range doorbellIssues {
+			fmt.Fprintln(os.Stderr, "ISSUE:", iss)
+		}
 	}
 
 	// Exit code: any fail (an install issue, a dead watcher with open stories, an invalid workspace, or a failed check)
 	// is 1; any unknown with no fail (e.g. orca present but `orca status` unreachable) is 3; otherwise 0.
-	hasFail := len(rep.Issues) > 0 || len(watcherIssues) > 0 || len(wsWatcherIssues) > 0 || len(wsRepoIssues) > 0 || len(wsSignedIssues) > 0 || len(wsLeaderIssues) > 0 || len(wsDupLeaderIssues) > 0
+	hasFail := len(rep.Issues) > 0 || len(watcherIssues) > 0 || len(wsWatcherIssues) > 0 || len(wsRepoIssues) > 0 || len(wsSignedIssues) > 0 || len(wsLeaderIssues) > 0 || len(wsDupLeaderIssues) > 0 || len(orphanIssues) > 0 || len(doorbellIssues) > 0
 	hasUnknown := false
 	for _, w := range wsReports {
 		if !w.Valid || w.PolicyError != "" {
@@ -394,6 +405,24 @@ func leaderHandleIssues(reps []doctor.WorkspaceReport) []string {
 			}
 			if live, checked := leaderHandleLive(ep.Path); checked && !live {
 				issues = append(issues, fmt.Sprintf("%s epic %s: recorded .cox/leader handle is not live; open a leader terminal in the workspace so a hook re-binds it (cox hook prompt-drain)", w.Root, ep.Slug))
+			}
+		}
+	}
+	return issues
+}
+
+// doorbellFailIssues flags every active workspace epic whose leader terminal has been unreachable for DoorbellFailAlarm
+// or more consecutive doorbell nudges (item 3): the watcher has raised a _leader stuck wake, and doctor mirrors it so a
+// leader that is not reading its wakes still sees the unreachability from a health check.
+func doorbellFailIssues(reps []doctor.WorkspaceReport) []string {
+	var issues []string
+	for _, w := range reps {
+		for _, ep := range w.Epics {
+			if ep.Closed {
+				continue
+			}
+			if n := watch.DoorbellFailMax(ep.Path); n >= watch.DoorbellFailAlarm {
+				issues = append(issues, fmt.Sprintf("%s epic %s: leader doorbell failed %d consecutive times; open a leader terminal in the workspace or run cox hook prompt-drain", w.Root, ep.Slug, n))
 			}
 		}
 	}

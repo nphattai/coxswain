@@ -114,6 +114,28 @@ local harness dialog; that channel is invisible to cox, so a question always goe
 A plain status is progress, not completion. A completion signal must follow the active backend plane's contract. The
 watcher classification in `internal/wake/classify.go` and integration tests own the exact compatibility behavior.
 
+### No turn ends blind (the turn-boundary guard)
+
+Before the leader waits, the Stop and `session-start` hooks verify that every led epic with an open story has a live,
+fresh watcher: `.cox/watch.pid` names a live process and `watch/lasttick` is younger than three tick intervals. A dead
+watcher is restarted (a detached `cox watch --epic <dir>`). A restart that cannot take over - a live-but-wedged watcher,
+or a launch error - reopens the turn with the exact repair line `cox watch --epic <dir> --replace`, bounded by a
+per-turn block budget (3) so a broken watcher can never wedge the leader: once the budget is spent the turn ends loudly
+instead. The guard sees an epic even when its watcher has died, so the failure that would hide the epic is the one it
+fixes. See [ADR 0014](decisions/0014-turn-boundary-guarded.md).
+
+A watcher whose epic dir, `.cox` tree, or own binary has vanished - or whose epic has a `.cox.closed` marker - evicts
+itself, and `cox doctor` lists any live `cox watch` process whose epic is outside every known workspace.
+
+### Leader reachability and the alerts channel
+
+The watcher nudges the leader terminal for a standing unacked urgent backlog, rate-limited so an unchanged backlog is
+re-nudged at most once per window (no nudge storm). When the doorbell fails three times in a row the leader is
+unreachable: the watcher raises one `_leader` stuck wake, `cox doctor` raises an ISSUE, and, when `policy.alerts.channel`
+is set, one out-of-band notification fires per 30 minutes. `alerts.channel` is `off` (default), `osascript` (a macOS
+banner), or `command:<cmd>` (runs `<cmd>` via `sh -c` with the alarm summary as `$1` and on stdin, for a phone or
+pager). See [Policy JSON](reference/policy-json.md#alerts).
+
 ## Operator loop
 
 1. Drain wakes at the start of a leader turn.

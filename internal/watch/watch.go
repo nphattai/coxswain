@@ -6,10 +6,12 @@
 package watch
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -70,7 +72,13 @@ type Watcher struct {
 	BlockedWait    time.Duration // how long a worker may be blocked on a local prompt before a stuck wake; 0 => default
 	ReconcileEvery int           // ticks between reconcile passes; 0 => DefaultReconcileEvery
 	Quota          QuotaProbe    // quota source + targets + thresholds; nil disables the quota pass
-	Now            func() time.Time
+	NudgeWindow    time.Duration // leader re-nudge rate limit for an unchanged backlog; 0 => DefaultNudgeWindow (B-33)
+	AlarmChannel   string        // policy.alerts.channel: off|osascript|command:<cmd>; "" or "off" disables the alarm (item 3)
+	AlarmWindow    time.Duration // out-of-band leader-unreachable alarm rate limit; 0 => DefaultAlarmWindow (item 3)
+	// AlarmRun runs the out-of-band alarm channel with the summary. nil => runAlarmChannel (the real osascript/command
+	// dispatcher); a test injects a recorder so no real notification fires and channel selection can be asserted (item 3).
+	AlarmRun func(channel, summary string) error
+	Now      func() time.Time
 
 	tickCount int // ticks since start, for pacing the reconcile pass
 }
@@ -108,22 +116,21 @@ func (w *Watcher) Tick() (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	urgent := false
 	appended := 0
 
-	n, urg, err := w.mailPass(dispatchStory)
+	// Per-tick urgency no longer gates the doorbell; nudgeLeader reads the standing unacked backlog and rate-limits the
+	// re-nudge itself (item 3, B-33), so the urg return of each pass is discarded here.
+	n, _, err := w.mailPass(dispatchStory)
 	if err != nil {
 		return appended, err
 	}
 	appended += n
-	urgent = urgent || urg
 
-	n, urg, err = w.inboxLadder()
+	n, _, err = w.inboxLadder()
 	if err != nil {
 		return appended, err
 	}
 	appended += n
-	urgent = urgent || urg
 
 	n, err = w.stalePass()
 	if err != nil {
@@ -131,19 +138,17 @@ func (w *Watcher) Tick() (int, error) {
 	}
 	appended += n
 
-	n, urg, err = w.idleNoDonePass()
+	n, _, err = w.idleNoDonePass()
 	if err != nil {
 		return appended, err
 	}
 	appended += n
-	urgent = urgent || urg
 
-	n, urg, err = w.blockedPass()
+	n, _, err = w.blockedPass()
 	if err != nil {
 		return appended, err
 	}
 	appended += n
-	urgent = urgent || urg
 
 	if n, err := w.reconcilePass(); err != nil {
 		return appended, err
@@ -151,25 +156,57 @@ func (w *Watcher) Tick() (int, error) {
 		appended += n
 	}
 
-	n, urg, err = w.quotaPass()
+	n, _, err = w.quotaPass()
 	if err != nil {
 		return appended, err
 	}
 	appended += n
-	urgent = urgent || urg
 
-	if urgent {
-		if handle := w.leaderHandle(); handle != "" {
-			// Pull-path doorbell: knock on the leader terminal to drain (mail only lands on the leader's own next check, so
-			// it wakes no one). Fixed text (brief G). The handle is read fresh so a re-bound .cox/leader is honoured, and a
-			// failed doorbell is logged (with the handle and error) instead of vanishing to /dev/null (finding 4).
-			if _, err := w.Backend.Send(backend.Session{Kind: "orca", Handle: handle}, "Wake waiting: run `cox wake drain`"); err != nil {
-				w.logLeaderDoorbellFailure(handle, err)
-			}
-		}
-	}
+	w.nudgeLeader()
 	return appended, nil
 }
+
+// nudgeLeader rings the leader terminal when an unacked urgent wake backlog is standing, so a leader that missed the
+// push still gets knocked to drain (the mail wakes no one; the doorbell is the pull-path nudge). It is rate-limited so a
+// backlog whose max gen is unchanged is re-nudged at most once per NudgeWindow (B-33): the last-nudged gen and time live
+// in watch/nudged. A backlog that GREW (a higher max gen) always nudges. The handle is read fresh each tick so a
+// re-bound .cox/leader is honoured; a failed doorbell is counted and logged (item 3), a delivered one resets the count.
+func (w *Watcher) nudgeLeader() {
+	handle := w.leaderHandle()
+	if handle == "" {
+		return
+	}
+	wakes, err := wake.Drain(w.EpicDir, true)
+	if err != nil {
+		return
+	}
+	maxGen, urgent := 0, false
+	for _, wk := range wakes {
+		if wk.Gen > maxGen {
+			maxGen = wk.Gen
+		}
+		if wake.IsUrgent(wk.Kind) {
+			urgent = true
+		}
+	}
+	if !urgent {
+		return
+	}
+	lastGen, lastTS := w.readNudged()
+	now := w.now()
+	if maxGen <= lastGen && now.Sub(lastTS) < w.nudgeWindow() {
+		return // unchanged backlog, within the window: suppress the re-nudge (B-33)
+	}
+	if _, err := w.Backend.Send(backend.Session{Kind: "orca", Handle: handle}, "Wake waiting: run `cox wake drain`"); err != nil {
+		w.recordDoorbellFailure(handle, err)
+		return
+	}
+	w.resetDoorbellFail(handle)
+	w.recordNudge(maxGen, now)
+}
+
+func (w *Watcher) nudgeWindow() time.Duration { return orDur(w.NudgeWindow, DefaultNudgeWindow) }
+func (w *Watcher) alarmWindow() time.Duration { return orDur(w.AlarmWindow, DefaultAlarmWindow) }
 
 // leaderHandle reads the current leader terminal handle from <epic>/.cox/leader, fresh each tick, or "" when unset.
 func (w *Watcher) leaderHandle() string {
@@ -180,8 +217,30 @@ func (w *Watcher) leaderHandle() string {
 	return strings.TrimSpace(string(b))
 }
 
-// logLeaderDoorbellFailure appends one "<ts> <handle> <err>" line to <epic>/.cox/watch/log so a leader doorbell that
-// never reached its terminal (e.g. a stale handle after a restart) is visible instead of discarded. Best-effort.
+// recordDoorbellFailure logs a failed leader doorbell (a stale handle after a restart, a dead terminal) and counts it
+// per handle under watch/doorbell-fail/<handle>. At DoorbellFailAlarm consecutive failures the leader is unreachable, so
+// it raises exactly one _leader stuck wake (on the transition to that count) and, while the count stays at or above it,
+// fires the out-of-band alarm channel at most once per AlarmWindow (item 3, adapts firstmate's wedge alarm). A delivered
+// doorbell resets the count (resetDoorbellFail), so the streak must be consecutive.
+func (w *Watcher) recordDoorbellFailure(handle string, cause error) {
+	w.logLeaderDoorbellFailure(handle, cause)
+	count := w.bumpDoorbellFail(handle)
+	if count < DoorbellFailAlarm {
+		return
+	}
+	summary := fmt.Sprintf("leader doorbell failed %dx at %s; open a leader terminal in the workspace or run cox hook prompt-drain", count, handle)
+	if count == DoorbellFailAlarm {
+		// One _leader stuck wake on the transition, so doctor and the next leader turn both see the unreachability once.
+		_, _ = wake.Append(w.EpicDir, wake.Wake{
+			Epic: filepath.Base(w.EpicDir), Story: "_leader", Kind: wake.KindStuck, Note: summary,
+			Evidence: map[string]any{"handle": handle, "failures": count},
+		})
+	}
+	w.fireAlarm(summary)
+}
+
+// logLeaderDoorbellFailure appends one "<ts> leader-doorbell <handle> <err>" line to <epic>/.cox/watch/log so a leader
+// doorbell that never reached its terminal is visible instead of discarded. Best-effort.
 func (w *Watcher) logLeaderDoorbellFailure(handle string, cause error) {
 	dir := w.watchDir()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -195,14 +254,45 @@ func (w *Watcher) logLeaderDoorbellFailure(handle string, cause error) {
 	fmt.Fprintf(f, "%s leader-doorbell %s %v\n", w.now().UTC().Format(time.RFC3339), handle, cause)
 }
 
+// fireAlarm runs the configured out-of-band alarm channel with the summary, rate-limited to one per AlarmWindow via
+// watch/alarm-last. An unset or "off" channel is a no-op. The runner is w.AlarmRun (a test recorder) or the real
+// osascript/command dispatcher; a runner error is logged but never disturbs the loop.
+func (w *Watcher) fireAlarm(summary string) {
+	ch := strings.TrimSpace(w.AlarmChannel)
+	if ch == "" || ch == "off" {
+		return
+	}
+	last := w.readAlarmLast()
+	now := w.now()
+	if !last.IsZero() && now.Sub(last) < w.alarmWindow() {
+		return // already alarmed within the window
+	}
+	run := w.AlarmRun
+	if run == nil {
+		run = runAlarmChannel
+	}
+	if err := run(ch, summary); err != nil {
+		w.logLeaderDoorbellFailure("alarm:"+ch, err)
+	}
+	w.recordAlarmLast(now)
+}
+
 // Run polls Tick every poll interval until the context-like stop channel is closed. Polling is mandatory (no fsnotify;
 // macOS symlink risk). It logs Tick errors to stderr and keeps going, since a transient backend error must not kill
 // the watcher.
 func (w *Watcher) Run(stop <-chan struct{}, poll time.Duration) {
 	if poll <= 0 {
-		poll = 5 * time.Second
+		poll = DefaultPoll
 	}
 	for {
+		// Self-eviction (item 2, B-37): a watcher whose epic dir, .cox control tree, or own binary has vanished, or whose
+		// epic has been closed (.cox.closed), keeps polling a temp root forever otherwise. Check before Tick so the pass
+		// that would read a missing .cox is never run; log one line (best-effort) and return so the deferred pidfile
+		// release runs and the process exits.
+		if reason := w.evictReason(); reason != "" {
+			w.logEviction(reason)
+			return
+		}
 		if _, err := w.Tick(); err != nil {
 			fmt.Fprintln(os.Stderr, "watch:", err)
 		}
@@ -783,6 +873,122 @@ func LoadSessions(epicDir string) map[string]backend.Session {
 // --- state files ---
 
 func (w *Watcher) watchDir() string { return filepath.Join(w.EpicDir, state.ControlDir, "watch") }
+
+// bumpDoorbellFail increments the consecutive-failure counter for a leader handle (watch/doorbell-fail/<handle>) and
+// returns the new count. A read/write failure returns DoorbellFailAlarm so an unwriteable state dir still surfaces the
+// unreachability rather than silently never alarming.
+func (w *Watcher) bumpDoorbellFail(handle string) int {
+	dir := filepath.Join(w.watchDir(), "doorbell-fail")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return DoorbellFailAlarm
+	}
+	path := filepath.Join(dir, handle)
+	n := 0
+	if b, err := os.ReadFile(path); err == nil {
+		n, _ = strconv.Atoi(strings.TrimSpace(string(b)))
+	}
+	n++
+	if err := os.WriteFile(path, []byte(strconv.Itoa(n)), 0o644); err != nil {
+		return DoorbellFailAlarm
+	}
+	return n
+}
+
+// resetDoorbellFail clears a handle's failure counter after a delivered doorbell, so the alarm counts only consecutive
+// failures.
+func (w *Watcher) resetDoorbellFail(handle string) {
+	_ = os.Remove(filepath.Join(w.watchDir(), "doorbell-fail", handle))
+}
+
+// DoorbellFailMax returns the highest consecutive-doorbell-failure count across the epic's leader handles (0 when none),
+// so cox doctor can raise an ISSUE while a leader has been unreachable for DoorbellFailAlarm or more nudges (item 3).
+func DoorbellFailMax(epicDir string) int {
+	dir := filepath.Join(epicDir, state.ControlDir, "watch", "doorbell-fail")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return 0
+	}
+	max := 0
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		if b, err := os.ReadFile(filepath.Join(dir, e.Name())); err == nil {
+			if n, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil && n > max {
+				max = n
+			}
+		}
+	}
+	return max
+}
+
+// readNudged returns the max wake gen the leader was last nudged for and when, or (0, zero time) when unset. The record
+// is "<gen> <rfc3339>" in watch/nudged.
+func (w *Watcher) readNudged() (gen int, ts time.Time) {
+	b, err := os.ReadFile(filepath.Join(w.watchDir(), "nudged"))
+	if err != nil {
+		return 0, time.Time{}
+	}
+	fields := strings.Fields(string(b))
+	if len(fields) != 2 {
+		return 0, time.Time{}
+	}
+	gen, _ = strconv.Atoi(fields[0])
+	ts, _ = time.Parse(time.RFC3339, fields[1])
+	return gen, ts
+}
+
+// recordNudge stamps the backlog gen and time the leader was just nudged for, so an unchanged backlog is not re-nudged
+// within NudgeWindow (B-33).
+func (w *Watcher) recordNudge(gen int, ts time.Time) {
+	if err := os.MkdirAll(w.watchDir(), 0o755); err != nil {
+		return
+	}
+	_ = os.WriteFile(filepath.Join(w.watchDir(), "nudged"), []byte(fmt.Sprintf("%d %s", gen, ts.UTC().Format(time.RFC3339))), 0o644)
+}
+
+// readAlarmLast / recordAlarmLast bound the out-of-band alarm to one per AlarmWindow (watch/alarm-last).
+func (w *Watcher) readAlarmLast() time.Time {
+	b, err := os.ReadFile(filepath.Join(w.watchDir(), "alarm-last"))
+	if err != nil {
+		return time.Time{}
+	}
+	t, _ := time.Parse(time.RFC3339, strings.TrimSpace(string(b)))
+	return t
+}
+
+func (w *Watcher) recordAlarmLast(ts time.Time) {
+	if err := os.MkdirAll(w.watchDir(), 0o755); err != nil {
+		return
+	}
+	_ = os.WriteFile(filepath.Join(w.watchDir(), "alarm-last"), []byte(ts.UTC().Format(time.RFC3339)), 0o644)
+}
+
+// runAlarmChannel is the real out-of-band notifier for a leader-unreachable alarm (item 3, adapts firstmate's
+// wedge-alarm channels). "osascript" posts a macOS Notification Center banner with the summary passed as an argv item
+// (never interpolated into the AppleScript source, so summary text cannot alter the script). "command:<cmd>" runs <cmd>
+// through sh -c with the summary as $1 and on stdin, for delivery to a phone or pager. Every invocation is bounded to 10s.
+func runAlarmChannel(channel, summary string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	switch {
+	case channel == "osascript":
+		cmd := exec.CommandContext(ctx, "osascript",
+			"-e", "on run argv", "-e", `display notification (item 1 of argv) with title "coxswain"`, "-e", "end run",
+			"--", summary)
+		return cmd.Run()
+	case strings.HasPrefix(channel, "command:"):
+		script := strings.TrimSpace(strings.TrimPrefix(channel, "command:"))
+		if script == "" {
+			return fmt.Errorf("alerts channel command: empty command")
+		}
+		cmd := exec.CommandContext(ctx, "sh", "-c", script, "sh", summary)
+		cmd.Stdin = strings.NewReader(summary)
+		return cmd.Run()
+	default:
+		return fmt.Errorf("alerts channel %q not recognized (want off|osascript|command:<cmd>)", channel)
+	}
+}
 
 func (w *Watcher) idleNoDoneWait() time.Duration {
 	return orDur(w.IdleNoDoneWait, DefaultIdleNoDoneWait)
