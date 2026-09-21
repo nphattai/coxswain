@@ -117,7 +117,9 @@ func FindWorkspaces(roots, explicit []string) []string {
 }
 
 // SingleOnPATH is the `which -a <bin>` check: exactly one executable named bin on PATH passes; none fails; more than one
-// fails (an ambiguous driver, F09's classic hazard).
+// fails (an ambiguous driver, F09's classic hazard). Results are de-duplicated by RESOLVED path, so a PATH entry listed
+// twice, or two entries that symlink to the same real binary, count as one install; only a genuine second binary (a
+// distinct real file) fails (finding 15).
 func SingleOnPATH(bin string) Check {
 	var found []string
 	seen := map[string]bool{}
@@ -126,11 +128,15 @@ func SingleOnPATH(bin string) Check {
 			dir = "."
 		}
 		p := filepath.Join(dir, bin)
-		if seen[p] {
-			continue
-		}
 		if fi, err := os.Stat(p); err == nil && !fi.IsDir() && fi.Mode()&0o111 != 0 {
-			seen[p] = true
+			key := p
+			if real, err := filepath.EvalSymlinks(p); err == nil {
+				key = real // a symlink and its target, or the same dir listed twice, resolve to one real binary
+			}
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
 			found = append(found, p)
 		}
 	}

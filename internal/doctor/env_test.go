@@ -38,6 +38,37 @@ func TestSingleOnPATH(t *testing.T) {
 	}
 }
 
+// SingleOnPATH de-duplicates by resolved path: the same dir listed twice, or a second dir that symlinks to the same real
+// binary, is one install (pass); only a distinct real binary fails (finding 15).
+func TestSingleOnPATHResolvesDuplicates(t *testing.T) {
+	d1 := t.TempDir()
+	writeExec(t, d1, "coxbin")
+
+	// Same directory listed twice on PATH.
+	t.Setenv("PATH", d1+string(os.PathListSeparator)+d1)
+	if c := SingleOnPATH("coxbin"); c.Status != StatusPass {
+		t.Errorf("a PATH dir listed twice = %v, want pass (one resolved binary)", c)
+	}
+
+	// A second dir whose coxbin is a symlink to the first: still one real binary.
+	d2 := t.TempDir()
+	if err := os.Symlink(filepath.Join(d1, "coxbin"), filepath.Join(d2, "coxbin")); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", d1+string(os.PathListSeparator)+d2)
+	if c := SingleOnPATH("coxbin"); c.Status != StatusPass {
+		t.Errorf("a symlink to the same binary = %v, want pass", c)
+	}
+
+	// A genuinely distinct second binary still fails.
+	d3 := t.TempDir()
+	writeExec(t, d3, "coxbin")
+	t.Setenv("PATH", d1+string(os.PathListSeparator)+d3)
+	if c := SingleOnPATH("coxbin"); c.Status != StatusFail {
+		t.Errorf("two distinct binaries = %v, want fail", c)
+	}
+}
+
 // Present passes for a binary on PATH and fails (with a fix) otherwise; Reachable passes on exit 0 and is unknown on a
 // non-zero probe.
 func TestPresentAndReachable(t *testing.T) {
