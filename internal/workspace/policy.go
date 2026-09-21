@@ -147,6 +147,14 @@ type Routing struct {
 	ReviewWhen string `json:"review_when"` // the baseline-row bar that unlocks a non-default choice
 }
 
+// Alerts is the optional out-of-band notification policy (item 3, adapts firstmate's wedge alarm). channel is
+// off|osascript|command:<cmd>; the default (unset) is off, so cox never posts a notification unless the captain opts in.
+// The watcher fires it, rate-limited, when the leader terminal has been unreachable for three consecutive doorbell
+// nudges (see docs/reference/policy-json.md).
+type Alerts struct {
+	Channel string `json:"channel"`
+}
+
 // QuotaNPX is the explicit npx opt-in for the quota-axi adapter (policy quota.npx): an exact version and integrity value.
 // null (the default) means npx is never used - the installed binary is the trustworthy default (M11).
 type QuotaNPX struct {
@@ -235,6 +243,16 @@ type Policy struct {
 	Backend        Backend        `json:"backend"`
 	Quota          Quota          `json:"quota"`
 	Review         Review         `json:"review"`
+	Alerts         Alerts         `json:"alerts"`
+}
+
+// AlertsChannel returns the configured out-of-band alarm channel (off|osascript|command:<cmd>), or "off" when policy is
+// nil or the channel is unset, so a caller that could not load policy never fires a notification (item 3).
+func (p *Policy) AlertsChannel() string {
+	if p == nil || strings.TrimSpace(p.Alerts.Channel) == "" {
+		return "off"
+	}
+	return strings.TrimSpace(p.Alerts.Channel)
 }
 
 // QuotaLowPercent/QuotaOKPercent/QuotaMinRunwayHours/QuotaPollMinutes return the quota thresholds, falling back to the
