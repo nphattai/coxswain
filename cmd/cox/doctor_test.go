@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nphattai/coxswain/internal/adapter/backend"
 	"github.com/nphattai/coxswain/internal/adapter/harness/registry"
 	"github.com/nphattai/coxswain/internal/doctor"
 	"github.com/nphattai/coxswain/internal/state"
@@ -102,6 +103,74 @@ func TestLeaderHandleIssues(t *testing.T) {
 	got := leaderHandleIssues(reps)
 	if len(got) != 1 || !strings.Contains(got[0], "dead") || !strings.Contains(got[0], "not live") {
 		t.Fatalf("leaderHandleIssues = %v, want one issue naming the dead-handle epic", got)
+	}
+}
+
+// Item 4: leaderTerminalsIn counts only connected leader-harness terminals sitting in the workspace root; a
+// disconnected terminal, a worker in a story worktree, and a non-leader harness are all excluded.
+func TestLeaderTerminalsIn(t *testing.T) {
+	terms := []backend.Terminal{
+		{Handle: "lead1", WorktreePath: "/ws", Harness: "claude", Connected: true},
+		{Handle: "lead2", WorktreePath: "/ws", Harness: "claude", Connected: true}, // duplicate leader
+		{Handle: "dead", WorktreePath: "/ws", Harness: "claude", Connected: false}, // not connected
+		{Handle: "codex", WorktreePath: "/ws", Harness: "codex", Connected: true},  // not the leader harness
+		{Handle: "worker", WorktreePath: "/ws/proj/worktrees/story-a", Harness: "claude", Connected: true},
+	}
+	got := leaderTerminalsIn(terms, "/ws", "claude")
+	if len(got) != 2 {
+		t.Fatalf("want the two connected claude leader terminals in the root, got %v", got)
+	}
+	// A cox workspace nested under a repo checkout: the root is inside the terminal's worktree.
+	nested := []backend.Terminal{
+		{Handle: "a", WorktreePath: "/repo", Harness: "claude", Connected: true},
+		{Handle: "b", WorktreePath: "/repo", Harness: "claude", Connected: true},
+	}
+	if len(leaderTerminalsIn(nested, "/repo/ops", "claude")) != 2 {
+		t.Error("a workspace root inside the terminal's worktree must still match")
+	}
+	// harness "" (policy unknown): any connected terminal that runs an agent in the root counts.
+	if len(leaderTerminalsIn(terms, "/ws", "")) < 2 {
+		t.Error("with no known leader harness, connected agent terminals in the root must still count")
+	}
+}
+
+// Item 4: doctor fails when more than one connected leader terminal runs in a workspace root that has an active epic,
+// naming the recorded .cox/leader as the one to keep; a single leader raises nothing.
+func TestDuplicateLeaderIssues(t *testing.T) {
+	restore := epicTerminals
+	t.Cleanup(func() { epicTerminals = restore })
+
+	reps := []doctor.WorkspaceReport{{Root: "/ws", Epics: []doctor.EpicReport{{Slug: "e", Path: "/ws/proj/epics/e"}}}}
+
+	epicTerminals = func(string) ([]backend.Terminal, bool) {
+		return []backend.Terminal{
+			{Handle: "term_leader", WorktreePath: "/ws", Harness: "claude", Connected: true},
+			{Handle: "term_dupe", WorktreePath: "/ws", Harness: "claude", Connected: true},
+		}, true
+	}
+	got := duplicateLeaderIssues(reps)
+	if len(got) != 1 || !strings.Contains(got[0], "2 connected") || !strings.Contains(got[0], "/ws") {
+		t.Fatalf("want one duplicate-leader issue for /ws, got %v", got)
+	}
+
+	// One leader: no issue.
+	epicTerminals = func(string) ([]backend.Terminal, bool) {
+		return []backend.Terminal{{Handle: "term_leader", WorktreePath: "/ws", Harness: "claude", Connected: true}}, true
+	}
+	if got := duplicateLeaderIssues(reps); len(got) != 0 {
+		t.Fatalf("a single leader must raise nothing, got %v", got)
+	}
+
+	// A closed-only workspace is skipped.
+	closed := []doctor.WorkspaceReport{{Root: "/ws", Epics: []doctor.EpicReport{{Slug: "e", Path: "/ws/proj/epics/e", Closed: true}}}}
+	epicTerminals = func(string) ([]backend.Terminal, bool) {
+		return []backend.Terminal{
+			{Handle: "a", WorktreePath: "/ws", Harness: "claude", Connected: true},
+			{Handle: "b", WorktreePath: "/ws", Harness: "claude", Connected: true},
+		}, true
+	}
+	if got := duplicateLeaderIssues(closed); len(got) != 0 {
+		t.Fatalf("a workspace with no active epic must raise nothing, got %v", got)
 	}
 }
 

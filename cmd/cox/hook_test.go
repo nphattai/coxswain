@@ -11,9 +11,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nphattai/coxswain/internal/adapter/backend"
 	"github.com/nphattai/coxswain/internal/protocol/checkpoint"
 	"github.com/nphattai/coxswain/internal/state"
 	"github.com/nphattai/coxswain/internal/wake"
+	"github.com/nphattai/coxswain/internal/workspace"
 )
 
 // gitInitRepo makes a git repo with one commit, so checkpoint.Facts (which reads HEAD) works against it.
@@ -418,5 +420,38 @@ func TestLeaderTerminalRebindsAfterRestart(t *testing.T) {
 	}
 	if got := readLeader(epic); got != "term_old" {
 		t.Errorf("out-of-workspace must not re-bind: %q", got)
+	}
+}
+
+// Item 4: prompt-drain prints one warning line (to the leader's turn context) when more than one connected leader
+// terminal runs in the workspace root, naming the recorded .cox/leader as the one to keep. The turn is not suppressed.
+func TestPromptDrainWarnsDuplicateLeader(t *testing.T) {
+	restore := epicTerminals
+	t.Cleanup(func() { epicTerminals = restore })
+
+	wsRoot := t.TempDir()
+	if _, err := workspace.Init(wsRoot, nil); err != nil {
+		t.Fatal(err)
+	}
+	epic := filepath.Join(wsRoot, "proj", "epics", "e")
+	if err := os.MkdirAll(filepath.Join(epic, ".cox"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(epic, ".cox", "leader"), []byte("term_leader"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	epicTerminals = func(string) ([]backend.Terminal, bool) {
+		return []backend.Terminal{
+			{Handle: "term_leader", WorktreePath: wsRoot, Harness: "claude", Connected: true},
+			{Handle: "term_dupe", WorktreePath: wsRoot, Harness: "claude", Connected: true},
+		}, true
+	}
+	var out, errW bytes.Buffer
+	code := runPromptDrainAll([]string{epic}, "claude", promptJSON("continue"), &out, &errW)
+	if code != 0 {
+		t.Fatalf("a normal prompt must exit 0, got %d", code)
+	}
+	if !strings.Contains(out.String(), "duplicate leader") || !strings.Contains(out.String(), "term_dupe") || !strings.Contains(out.String(), "term_leader") {
+		t.Fatalf("expected a duplicate-leader warning naming both handles on stdout, got %q", out.String())
 	}
 }
