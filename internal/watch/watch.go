@@ -38,6 +38,18 @@ const (
 	// DefaultBlockedWait is how long a worker's agent must be continuously blocked on a local prompt (approval or input
 	// it cannot answer itself) before the watcher raises a stuck wake for the leader (M10b, ADR 0012).
 	DefaultBlockedWait = 2 * time.Minute
+	// DefaultPoll is the watch loop tick interval. It is the single source the turn-boundary guard reads to size its
+	// freshness window (a watcher is fresh when watch/lasttick is younger than 3 ticks, item 1), so the guard and the
+	// loop can never disagree on how often a healthy watcher writes its beacon.
+	DefaultPoll = 5 * time.Second
+	// DefaultNudgeWindow rate-limits leader re-nudges: while the unacked wake backlog's max gen is unchanged, the leader
+	// doorbell rings at most once per window (B-33). It mirrors the hook-side WAKE_BATCH default (300s).
+	DefaultNudgeWindow = 5 * time.Minute
+	// DefaultAlarmWindow rate-limits the out-of-band leader-unreachable alarm to one notification per window (item 3).
+	DefaultAlarmWindow = 30 * time.Minute
+	// DoorbellFailAlarm is the consecutive-doorbell-failure count at which the watcher raises one _leader stuck wake and
+	// begins alarming an out-of-band channel: the leader terminal has been unreachable for three straight nudges (item 3).
+	DoorbellFailAlarm = 3
 )
 
 // Watcher runs one epic's watch loop. Sessions maps a story to its worker session (for re-ring and interrupt); Tick
