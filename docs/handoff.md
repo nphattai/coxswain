@@ -27,11 +27,11 @@ instruction, acknowledgement, or result always has a disk-backed owner under the
 <figure class="cox-diagram">
   <div class="cox-diagram__surface">
     <picture>
-      <source media="(max-width: 640px)" srcset="../assets/diagrams/handoff-channels-mobile.svg">
-      <img src="../assets/diagrams/handoff-channels.svg" alt="Leader-to-worker, worker-to-leader, and worker-to-future-self channels stay separate and durable.">
+      <source media="(max-width: 640px)" srcset="assets/diagrams/handoff-channels-mobile.svg">
+      <img src="assets/diagrams/handoff-channels.svg" alt="Leader-to-worker, worker-to-leader, and worker-to-future-self channels stay separate and durable.">
     </picture>
   </div>
-  <figcaption>Each direction has a distinct record and acknowledgement. The terminal carries only the wake-up signal. <a href="../assets/diagrams/handoff-channels.svg">Open full size</a></figcaption>
+  <figcaption>Each direction has a distinct record and acknowledgement. The terminal carries only the wake-up signal. <a href="assets/diagrams/handoff-channels.svg">Open full size</a></figcaption>
 </figure>
 
 The record formats and executable owners are indexed in [Protocol model](protocol/index.md). The CLI entry points are
