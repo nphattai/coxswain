@@ -266,6 +266,7 @@ func runPromptDrainAll(epics []string, harnessName string, in io.Reader, out, er
 	for _, ep := range epics {
 		total += runPromptDrain(ep, out)
 	}
+	total += warnDuplicateLeaders(epics, out)
 	if total == 0 {
 		// Orca types its doorbell with a leading newline ("\nYou have 1 orchestration message. Run ..."), so the ^-anchored
 		// regex never matches the raw prompt; trim first (A12) or every stale bell costs the leader a turn.
@@ -280,6 +281,28 @@ func runPromptDrainAll(epics []string, harnessName string, in io.Reader, out, er
 		}
 	}
 	return 0
+}
+
+// warnDuplicateLeaders prints one warning line (to the leader's turn context) per workspace where more than one
+// connected leader-harness terminal runs in the workspace root: two leaders drive one epic, so a wake may reach the
+// wrong one (item 4). It returns the number of warnings printed, so a warning keeps the turn from being suppressed as an
+// empty doorbell. Deduped by workspace root, since several epics share one leader.
+func warnDuplicateLeaders(epics []string, out io.Writer) int {
+	seen := map[string]bool{}
+	warned := 0
+	for _, ep := range epics {
+		wsRoot, err := findWorkspaceRoot(ep)
+		if err != nil || seen[wsRoot] {
+			continue
+		}
+		seen[wsRoot] = true
+		if handles := duplicateLeaderHandles(ep, wsRoot); len(handles) > 1 {
+			fmt.Fprintf(out, "cox: duplicate leader - %d connected leader terminals in %s (%s); keep .cox/leader %s and close the rest\n",
+				len(handles), wsRoot, strings.Join(handles, ", "), orNone(readLeader(ep)))
+			warned++
+		}
+	}
+	return warned
 }
 
 // hookPrompt reads the UserPromptSubmit hook stdin JSON and returns its `prompt` field, or "" when stdin is empty or not

@@ -59,6 +59,16 @@ func TestStoriesDefaultStyleWithProvenance(t *testing.T) {
 	if !strings.Contains(s, "LOOK at every frame") {
 		t.Errorf("frame-look rule missing")
 	}
+	// Item 3: the rendered brief forbids local dialogs and points at the cox channel.
+	if !strings.Contains(s, "NO LOCAL DIALOGS") {
+		t.Errorf("no-dialog rule missing from the rendered brief:\n%s", s)
+	}
+	if !strings.Contains(s, "AskUserQuestion") || !strings.Contains(s, "invisible to cox") {
+		t.Errorf("no-dialog rule must name the dialog kinds and why they are forbidden:\n%s", s)
+	}
+	if !strings.Contains(s, "cox story report question") {
+		t.Errorf("no-dialog rule must point at the cox question channel:\n%s", s)
+	}
 }
 
 func TestStoriesPipoStyleFromProjectOverride(t *testing.T) {

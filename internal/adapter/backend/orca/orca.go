@@ -315,6 +315,33 @@ func (c *Client) WorkerList() ([]backend.Worker, error) {
 	return out, nil
 }
 
+// Terminals lists Orca's terminals (`terminal list`, run-independent) so the duplicate-leader check can count the
+// connected leader-harness terminals in a workspace root. It reads the fields observed live on Orca 1.4.197: handle,
+// worktreePath, connected, and agentIdentity (absent when the terminal runs no agent). Recorded as a ceiling in
+// docs/adapters/orca.md - re-verify the shape on an Orca upgrade.
+func (c *Client) Terminals() ([]backend.Terminal, error) {
+	res, err := c.call("terminal", "list", "--json")
+	if err != nil {
+		return nil, err
+	}
+	var r struct {
+		Terminals []struct {
+			Handle        string `json:"handle"`
+			WorktreePath  string `json:"worktreePath"`
+			Connected     bool   `json:"connected"`
+			AgentIdentity string `json:"agentIdentity"`
+		} `json:"terminals"`
+	}
+	if err := json.Unmarshal(res, &r); err != nil {
+		return nil, fmt.Errorf("parse terminal list result: %w", err)
+	}
+	out := make([]backend.Terminal, 0, len(r.Terminals))
+	for _, t := range r.Terminals {
+		out = append(out, backend.Terminal{Handle: t.Handle, WorktreePath: t.WorktreePath, Harness: t.AgentIdentity, Connected: t.Connected})
+	}
+	return out, nil
+}
+
 // dispatchForTask resolves the dispatch id of a just-started worker by listing the run's workers and taking the last
 // entry whose taskId matches (v1 bin/dispatch.sh line 104). A task with no worker is a real error: the caller must not
 // end up with an empty dispatch id.
@@ -474,9 +501,20 @@ func (c *Client) Composer(s backend.Session) (string, error) {
 // --screen so the tail is the rendered screen rows (the prompt and status line) rather than the raw stream tail, which
 // is truncated and classifies as unknown, so the doorbell would never ring an empty composer.
 func (c *Client) composerState(handle string) string {
-	res, err := c.call("terminal", "read", "--terminal", handle, "--screen", "--json")
+	tail, err := c.screenTail(handle)
 	if err != nil {
 		return "unknown"
+	}
+	return classifyComposer(tail)
+}
+
+// screenTail reads a terminal's rendered screen rows (the prompt and status line), the same `terminal read --screen`
+// call Composer classifies. It is shared with Screen so the blocked-worker dialog capture reads the exact rows the
+// composer classifier sees.
+func (c *Client) screenTail(handle string) ([]string, error) {
+	res, err := c.call("terminal", "read", "--terminal", handle, "--screen", "--json")
+	if err != nil {
+		return nil, err
 	}
 	var r struct {
 		Terminal struct {
@@ -484,9 +522,18 @@ func (c *Client) composerState(handle string) string {
 		} `json:"terminal"`
 	}
 	if err := json.Unmarshal(res, &r); err != nil {
-		return "unknown"
+		return nil, err
 	}
-	return classifyComposer(r.Terminal.Tail)
+	return r.Terminal.Tail, nil
+}
+
+// Screen returns the worker terminal's rendered screen rows, so the watcher can put a blocked worker's visible prompt in
+// the stuck wake. An empty handle or an unreadable read is an error (the caller omits the dialog, never fails on it).
+func (c *Client) Screen(s backend.Session) ([]string, error) {
+	if s.Handle == "" {
+		return nil, fmt.Errorf("orca Screen: no terminal handle")
+	}
+	return c.screenTail(s.Handle)
 }
 
 var (

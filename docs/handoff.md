@@ -80,6 +80,16 @@ Use `cox reconcile` to probe and complete only a provable transition. Never hand
 The watcher rings only when the worker can receive input. Repeated lack of acknowledgement becomes a `stuck` wake.
 An unknown composer or liveness result remains unknown rather than being treated as idle or gone.
 
+### Worker blocked on a local prompt
+
+A worker waiting on a local prompt (an approval or an input request it cannot answer itself) is alive, not gone, so the
+blocked pass, not liveness, surfaces it. After the block persists past the blocked window the watcher raises a `stuck`
+wake that carries the worker terminal's on-screen prompt: the question and its numbered options are captured from the
+screen (never the environment, so no secret is included) into the wake note, its full text, and `evidence.prompt`. The
+leader answers from the hook output without opening the terminal - `cox steer <story> "<ruling>"`, then dismiss the
+prompt from the worker's terminal (`orca terminal send --enter`, or the option number). Workers never ask through a
+local harness dialog; that channel is invisible to cox, so a question always goes through `cox story report question`.
+
 ### Worker completion after a follow-up
 
 A plain status is progress, not completion. A completion signal must follow the active backend plane's contract. The

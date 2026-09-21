@@ -473,7 +473,7 @@ func arenaTerminalRun(opts arena.Options, explicit bool) int {
 		}
 		fmt.Printf("dispatched %s as %s on %s -> %s\n", r.Story, r.Harness, r.Worktree.Path, r.Session.ID)
 	}
-	startWatcher(opts.EpicDir)
+	startWatcher(opts.EpicDir, "the arena roles")
 	if failed {
 		return 1
 	}
