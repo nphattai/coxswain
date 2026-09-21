@@ -17,11 +17,11 @@ same epic state. Workers do not coordinate with each other.
 <figure class="cox-diagram">
   <div class="cox-diagram__surface">
     <picture>
-      <source media="(max-width: 640px)" srcset="../assets/diagrams/orchestration-map-mobile.svg">
-      <img src="../assets/diagrams/orchestration-map.svg" alt="Captain authority flows through a leader and Coxswain to isolated workers and external adapters.">
+      <source media="(max-width: 640px)" srcset="assets/diagrams/orchestration-map-mobile.svg">
+      <img src="assets/diagrams/orchestration-map.svg" alt="Captain authority flows through a leader and Coxswain to isolated workers and external adapters.">
     </picture>
   </div>
-  <figcaption>Authority moves from captain to leader; execution fans out through Coxswain without creating worker-to-worker coordination. <a href="../assets/diagrams/orchestration-map.svg">Open full size</a></figcaption>
+  <figcaption>Authority moves from captain to leader; execution fans out through Coxswain without creating worker-to-worker coordination. <a href="assets/diagrams/orchestration-map.svg">Open full size</a></figcaption>
 </figure>
 
 Dependencies point inward:

@@ -19,11 +19,11 @@ hide:
 <figure class="cox-diagram">
   <div class="cox-diagram__surface">
     <picture>
-      <source media="(max-width: 640px)" srcset="../../assets/diagrams/story-lifecycle-mobile.svg">
-      <img src="../../assets/diagrams/story-lifecycle.svg" alt="A story moves from submitted through working, may pause for input or parking, and ends completed, failed, or canceled.">
+      <source media="(max-width: 640px)" srcset="../assets/diagrams/story-lifecycle-mobile.svg">
+      <img src="../assets/diagrams/story-lifecycle.svg" alt="A story moves from submitted through working, may pause for input or parking, and ends completed, failed, or canceled.">
     </picture>
   </div>
-  <figcaption>The event log records each transition. Live observations refine the view but never replace that history. <a href="../../assets/diagrams/story-lifecycle.svg">Open full size</a></figcaption>
+  <figcaption>The event log records each transition. Live observations refine the view but never replace that history. <a href="../assets/diagrams/story-lifecycle.svg">Open full size</a></figcaption>
 </figure>
 
 The lifecycle is: define the epic, approve its design, render repo-scoped stories, dispatch workers, supervise through
