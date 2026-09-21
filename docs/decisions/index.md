@@ -16,3 +16,4 @@ The decisions behind coxswain, as ADRs.
 - [0012 - Handoff belongs to cox; backends only provide worktrees and terminals](0012-handoff-belongs-to-cox-backends-provide-terminals.md)
 - [0013 - Arena v3: evidence tiers, verified claims, adversarial round 2, read-only roles](0013-arena-v3-evidence-tiers-verify-rounds.md)
 - [0014 - The leader turn boundary is guarded; no turn ends blind](0014-turn-boundary-guarded.md)
+- [0015 - Close and attach are fail-closed](0015-close-attach-fail-closed.md)
