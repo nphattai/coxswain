@@ -2,6 +2,7 @@ package integration
 
 import (
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -11,7 +12,10 @@ import (
 // command key (up to the first two non-flag tokens after a cox invocation) from the pages and from tests/e2e/onboarding.sh
 // and asserts the page set is a subset of the E2E set. Adding an untested command to a Set up page fails the build.
 
+// The README is the user guide now (DESIGN item 1), so it joins the Set up pages: every `cox` command in its Quick
+// Start fences must be exercised by the onboarding E2E, exactly as the three getting-started pages are.
 var setupPages = []string{
+	"../../README.md",
 	"../../docs/getting-started/install.md",
 	"../../docs/getting-started/workspace.md",
 	"../../docs/getting-started/first-epic.md",
@@ -139,27 +143,26 @@ func readFile(t *testing.T, path string) string {
 	return string(b)
 }
 
-// TestNavStartsWithSetUp checks the docs contract behind AC 1, 2, and 5: the nav starts with Set up, the three pages
-// exist, both workspace shapes each end in a dispatched story, the QUICKSTART pointer survives for old links, and the
-// README no longer implies single-repo use is out of scope.
+// TestNavStartsWithSetUp checks the docs contract behind AC 1, 2, and 5. The generated site nav is gone (DESIGN item 2), so the
+// README's Documentation index is the nav now: it must list the three Set up pages first, in order. The rest of the
+// contract is unchanged - the pages exist, both workspace shapes each end in a dispatched story, the QUICKSTART pointer
+// survives for old links, and the README affirms single-repo use.
 func TestNavStartsWithSetUp(t *testing.T) {
-	nav := readFile(t, "../../mkdocs.yml")
-	setUp := strings.Index(nav, "- Set up:")
-	operate := strings.Index(nav, "- Operate:")
-	reference := strings.Index(nav, "- Reference:")
-	understand := strings.Index(nav, "- Understand:")
-	if setUp < 0 {
-		t.Fatal("mkdocs.yml nav has no top-level 'Set up' section")
+	readme := readFile(t, "../../README.md")
+
+	// DESIGN item 3: the README Documentation index lists the three Set up pages first, in order.
+	sec := docSection(readme, "## Documentation")
+	if sec == "" {
+		t.Fatal("README has no '## Documentation' section")
 	}
-	if !(setUp < operate && operate < reference && reference < understand) {
-		t.Errorf("nav order wrong: want Set up < Operate < Reference < Understand, got offsets %d, %d, %d, %d", setUp, operate, reference, understand)
-	}
-	for _, p := range []string{"getting-started/install.md", "getting-started/workspace.md", "getting-started/first-epic.md"} {
-		if !strings.Contains(nav, p) {
-			t.Errorf("nav does not list %s", p)
+	links := docSectionLinks(sec)
+	want := []string{"docs/getting-started/install.md", "docs/getting-started/workspace.md", "docs/getting-started/first-epic.md"}
+	for i, w := range want {
+		if i >= len(links) || links[i] != w {
+			t.Fatalf("README Documentation index must list the Set up pages first, in order; want %v as the first links, got %v", want, links)
 		}
-		if _, err := os.Stat("../../docs/" + p); err != nil {
-			t.Errorf("Set up page missing on disk: docs/%s (%v)", p, err)
+		if _, err := os.Stat("../../" + w); err != nil {
+			t.Errorf("Set up page missing on disk: %s (%v)", w, err)
 		}
 	}
 
@@ -180,12 +183,47 @@ func TestNavStartsWithSetUp(t *testing.T) {
 		t.Error("QUICKSTART.md pointer does not link to the Set up pages")
 	}
 
-	// AC 5: README no longer implies single-repo use is out of scope.
-	readme := strings.ToLower(readFile(t, "../../README.md"))
-	if strings.Contains(readme, "designed for work that crosses repositories") {
+	// AC 5: README affirms single-repo support and does not imply it is out of scope.
+	lower := strings.ToLower(readme)
+	if strings.Contains(lower, "designed for work that crosses repositories") {
 		t.Error("README still implies single-repo use is out of scope (\"designed for work that crosses repositories\")")
 	}
-	if !strings.Contains(readme, "single repo") {
+	if !strings.Contains(lower, "single repo") {
 		t.Error("README does not affirm single-repo support")
 	}
+}
+
+// TestInstallPluginNote guards DESIGN item 4 (backlog B-26): the install page must say the Claude plugin is optional and
+// must not be installed alongside a workspace that already has cox-written hooks, or every leader hook fires twice.
+func TestInstallPluginNote(t *testing.T) {
+	install := readFile(t, "../../docs/getting-started/install.md")
+	for _, want := range []string{"optional", ".claude/settings.json", "fires twice"} {
+		if !strings.Contains(install, want) {
+			t.Errorf("install.md §3 is missing the plugin-optional note fragment %q (B-26)", want)
+		}
+	}
+}
+
+// docSection returns the body of a top-level `## ` section, from its heading to the next top-level heading.
+func docSection(md, heading string) string {
+	i := strings.Index(md, heading)
+	if i < 0 {
+		return ""
+	}
+	rest := md[i+len(heading):]
+	if j := strings.Index(rest, "\n## "); j >= 0 {
+		rest = rest[:j]
+	}
+	return rest
+}
+
+var docLinkRe = regexp.MustCompile(`\]\((docs/[^)#\s]+)`)
+
+// docSectionLinks returns the ordered docs/* markdown link targets in a section.
+func docSectionLinks(section string) []string {
+	var out []string
+	for _, m := range docLinkRe.FindAllStringSubmatch(section, -1) {
+		out = append(out, m[1])
+	}
+	return out
 }
