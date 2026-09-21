@@ -130,6 +130,24 @@ func TestHarnessBinaries(t *testing.T) {
 	if len(got) != 1 || got[0].Status != StatusFail || got[0].Fix == "" {
 		t.Errorf("missing default harness = %v, want a single fail with fix", got)
 	}
+
+	// A DEFAULT harness with no adapter is a fail (cannot dispatch); a non-default no-adapter option stays info (finding 8).
+	pol3 := &workspace.Policy{}
+	pol3.Harness.Leader.Default = "noad"
+	pol3.Harness.Worker.Default = "hpresent"
+	pol3.Harness.Leader.Options = []string{"noad"}
+	pol3.Harness.Worker.Options = []string{"hpresent", "otherad"}
+	adaptered3 := func(n string) bool { return n == "hpresent" } // noad and otherad have no adapter
+	by3 := map[string]Check{}
+	for _, c := range HarnessBinaries(pol3, adaptered3) {
+		by3[c.Name] = c
+	}
+	if by3["harness noad"].Status != StatusFail || by3["harness noad"].Fix == "" {
+		t.Errorf("default harness with no adapter = %v, want fail with fix", by3["harness noad"])
+	}
+	if by3["harness otherad"].Status != StatusInfo {
+		t.Errorf("non-default harness with no adapter = %v, want info", by3["harness otherad"])
+	}
 }
 
 // Roots merges the defaults, $COX_ROOTS and explicit --root values, de-duplicated.

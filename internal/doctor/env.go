@@ -198,6 +198,13 @@ func HarnessBinaries(pol *workspace.Policy, adaptered func(string) bool) []Check
 	var checks []Check
 	for _, n := range names {
 		if !adaptered(n) {
+			// A default harness with no adapter cannot dispatch, so it is a hard fail; a non-default option with no adapter
+			// stays info (a harness you listed but do not drive) - finding 8.
+			if required[n] {
+				checks = append(checks, Check{Name: "harness " + n, Status: StatusFail, Detail: "policy default harness has no adapter, cannot dispatch",
+					Fix: "set harness." + roleOf(pol, n) + ".default to an adaptered harness (claude or codex)"})
+				continue
+			}
 			checks = append(checks, Check{Name: "harness " + n, Status: StatusInfo, Detail: "no adapter, cannot dispatch"})
 			continue
 		}
@@ -213,6 +220,20 @@ func HarnessBinaries(pol *workspace.Policy, adaptered func(string) bool) []Check
 		}
 	}
 	return checks
+}
+
+// roleOf names which default role(s) a harness fills in a policy, for the fix hint on a no-adapter default.
+func roleOf(pol *workspace.Policy, name string) string {
+	leader := strings.TrimSpace(pol.Harness.Leader.Default) == name
+	worker := strings.TrimSpace(pol.Harness.Worker.Default) == name
+	switch {
+	case leader && worker:
+		return "leader/worker"
+	case worker:
+		return "worker"
+	default:
+		return "leader"
+	}
 }
 
 // OptionalBinary checks a named optional tool (quota-axi, lavish-axi) only when policy names it: present->pass,
