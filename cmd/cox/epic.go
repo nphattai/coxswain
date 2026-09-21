@@ -222,19 +222,21 @@ func epicClose(args []string) int {
 	fs.SetOutput(os.Stderr)
 	epicDir := fs.String("epic", "", "epic directory")
 	yes := fs.Bool("yes", false, "execute (default is a dry run)")
-	force := fs.Bool("force", false, "remove dirty/unpushed worktrees")
+	force := fs.Bool("force", false, "remove unlanded worktrees")
 	storiesOnly := fs.Bool("stories-only", false, "skip epic backend and epic worktrees")
+	captain := fs.Bool("captain", false, "close from a terminal that is not the epic's leader")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 	if *epicDir == "" {
-		return usageErr("cox epic close --epic <dir> [--yes] [--force] [--stories-only]")
+		return usageErr("cox epic close --epic <dir> [--yes] [--force] [--stories-only] [--captain]")
 	}
 	rt, _ := newBackend(*epicDir) // may be nil; dry run and no-session close tolerate it
 	alloc := &env.Allocator{EpicDir: *epicDir, Ops: env.RealOps()}
 	err := epic.Close(epic.CloseOptions{
 		EpicDir: *epicDir, Runtime: rt, Alloc: alloc,
 		Yes: *yes, Force: *force, StoriesOnly: *storiesOnly,
+		Captain: *captain, TerminalHandle: os.Getenv("ORCA_TERMINAL_HANDLE"),
 	})
 	if err != nil {
 		return fail("%v", err)

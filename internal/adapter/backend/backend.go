@@ -19,6 +19,10 @@ var ErrAgentPromptBlocked = errors.New("agent prompt blocked (worker waiting on 
 type Worktree struct {
 	Path   string
 	Branch string
+	// Force authorizes WorktreeRemove to remove a checkout whose branch an adapter would otherwise protect (the Orca
+	// adapter refuses a branch not present on origin, B-16). The caller sets it only after it has proven removal is
+	// safe (epic close's landed() decision, or an operator --force). Adapters that never delete branches ignore it.
+	Force bool
 }
 
 // HarnessSpec names the harness a worker runs under. The core is model-agnostic (decision 0008): it passes what

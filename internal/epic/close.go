@@ -20,9 +20,14 @@ type CloseOptions struct {
 	Runtime     backend.Backend // stops workers, removes worktrees (may be nil in dry-run)
 	Alloc       *env.Allocator  // stops the backend, releases resources
 	Yes         bool            // execute; default is a dry run that only prints the plan
-	Force       bool            // remove a dirty/unpushed worktree (default: KEEP it, F01/close safety)
+	Force       bool            // remove an unlanded worktree anyway (default: KEEP it, F01/close safety)
 	StoriesOnly bool            // skip the epic backend/services and epic worktrees
 	Out         io.Writer       // plan/progress output; nil => os.Stdout
+	// Captain bypasses the leader-terminal guard: close is refused from a terminal that is not the epic's recorded
+	// leader (item 4d) unless the captain runs it. TerminalHandle is this terminal's handle (ORCA_TERMINAL_HANDLE),
+	// injected by the command layer so the guard is testable; empty means "cannot tell", which never refuses.
+	Captain        bool
+	TerminalHandle string
 }
 
 func (o *CloseOptions) out() io.Writer {
@@ -47,6 +52,21 @@ type closeIncomplete struct {
 func Close(o CloseOptions) error {
 	if !o.Yes {
 		return o.dryRun()
+	}
+	// (d) Only the epic's leader terminal (or the captain) may close it. The guard fires only when it can prove a
+	// mismatch - both a recorded leader handle and this terminal's handle are known and differ - so a close from a
+	// machine that records neither is never blocked (B-38 v1 dirs have no .cox/leader at all).
+	if !o.Captain {
+		if owner := o.leaderHandle(); owner != "" && o.TerminalHandle != "" && owner != o.TerminalHandle {
+			return fmt.Errorf("cox epic close: this terminal (%s) is not the leader of %s (owned by %s); rerun from the leader terminal or pass --captain",
+				o.TerminalHandle, filepath.Base(o.EpicDir), owner)
+		}
+	}
+	// (a) A v1-migrated / never-attached epic has no .cox/ runtime: there is nothing to stop or remove, so steps 1-5
+	// are vacuous and step 6 writes the .cox.closed marker (B-38: the old code failed at the archive rename because
+	// .cox did not exist, and could not even record the failure).
+	if !pathExists(filepath.Join(o.EpicDir, ".cox")) {
+		return o.closeNoRuntime()
 	}
 	steps := []struct {
 		name string
@@ -84,6 +104,49 @@ func Close(o CloseOptions) error {
 	return nil
 }
 
+// closeNoRuntime handles an epic with no .cox/ runtime (B-38): steps 1-5 have nothing to act on, so it prints them as
+// vacuous and writes the .cox.closed marker with closed.json noting no_runtime, so the epic is archived rather than
+// left in a half-state the old code could not even record.
+func (o *CloseOptions) closeNoRuntime() error {
+	for _, step := range []string{"stop-workers", "stop-backend", "release-resources", "remove-worktrees", "stop-watcher"} {
+		fmt.Fprintf(o.out(), "ok: %s (no runtime)\n", step)
+	}
+	closed := filepath.Join(o.EpicDir, ".cox.closed")
+	if err := os.MkdirAll(closed, 0o755); err != nil {
+		return err
+	}
+	rec := struct {
+		NoRuntime bool   `json:"no_runtime"`
+		At        string `json:"at"`
+	}{NoRuntime: true, At: time.Now().UTC().Format(time.RFC3339)}
+	b, _ := json.MarshalIndent(rec, "", "  ")
+	if err := os.WriteFile(filepath.Join(closed, "closed.json"), append(b, '\n'), 0o644); err != nil {
+		return err
+	}
+	fmt.Fprintf(o.out(), "ok: archived (no runtime) -> .cox.closed\n")
+	return nil
+}
+
+// leaderHandle reads the epic's recorded leader terminal handle from .cox/leader, or "" when unset/unreadable. The
+// record is the plain handle text the watcher and hooks write (cmd/cox); it tolerates a future JSON {"handle":...}
+// shape so the guard does not silently open up if the record format is versioned later (DESIGN item 7).
+func (o *CloseOptions) leaderHandle() string {
+	b, err := os.ReadFile(filepath.Join(o.EpicDir, ".cox", "leader"))
+	if err != nil {
+		return ""
+	}
+	s := strings.TrimSpace(string(b))
+	if strings.HasPrefix(s, "{") {
+		var rec struct {
+			Handle string `json:"handle"`
+		}
+		if json.Unmarshal(b, &rec) == nil {
+			return strings.TrimSpace(rec.Handle)
+		}
+	}
+	return s
+}
+
 func (o *CloseOptions) dryRun() error {
 	w := o.out()
 	fmt.Fprintf(w, "close plan for %s (dry run; pass --yes to execute):\n", filepath.Base(o.EpicDir))
@@ -92,7 +155,7 @@ func (o *CloseOptions) dryRun() error {
 		fmt.Fprintln(w, "  2. stop the epic backend (owned pid only)")
 	}
 	fmt.Fprintln(w, "  3. release each story's db/sim/env (ownership cleared only on confirmed delete)")
-	fmt.Fprintf(w, "  4. detach + remove each worktree (branch kept; dirty/unpushed KEPT unless --force=%v)\n", o.Force)
+	fmt.Fprintf(w, "  4. detach + remove each worktree (branch kept; unlanded work KEPT unless --force=%v)\n", o.Force)
 	fmt.Fprintln(w, "  5. stop this epic's watcher (refuses to archive while a provable watcher is alive)")
 	fmt.Fprintln(w, "  6. archive .cox -> .cox.closed (only if 1-5 all succeed)")
 	return nil
@@ -154,21 +217,30 @@ func (o *CloseOptions) releaseResources() error {
 	return nil
 }
 
-// removeWorktrees detaches and removes each worktree, keeping the branch. A dirty or unpushed worktree is kept (a
-// warning, not a failure) unless Force, so unlanded work is never destroyed.
+// removeWorktrees detaches and removes each worktree, keeping the branch. A worktree whose work has not landed (dirty
+// tracked files, or a branch not contained in origin/production) is kept - a warning, not a failure - unless Force, so
+// unlanded work is never destroyed. After a removal it re-reads the repo's worktree list and fails the step when the
+// path is still registered, so a backend that reports success without actually removing (B-39) is caught rather than
+// archived over.
 func (o *CloseOptions) removeWorktrees() error {
 	if o.Runtime == nil {
 		return nil
 	}
 	for _, wt := range o.worktrees() {
 		if !o.Force {
-			if reason := dirtyOrUnpushed(wt.Path); reason != "" {
+			if ok, reason := o.landed(wt.Path); !ok {
 				fmt.Fprintf(o.out(), "  keep %s (%s): pass --force to remove\n", wt.Path, reason)
 				continue
 			}
 		}
-		if err := o.Runtime.WorktreeRemove(backend.Worktree{Path: wt.Path}); err != nil {
+		branch, _ := worktreeBranch(wt.Path) // "" when detached; the adapter guard has nothing to protect then
+		common := gitCommonDir(wt.Path)      // captured before removal; the checkout path is gone afterwards
+		if err := o.Runtime.WorktreeRemove(backend.Worktree{Path: wt.Path, Branch: branch, Force: o.Force}); err != nil {
 			return fmt.Errorf("remove worktree %s: %w", wt.Path, err)
+		}
+		// (b) prove the worktree is actually gone; a remove that returned ok but left the path registered is a failure.
+		if common != "" && worktreeRegistered(common, wt.Path) {
+			return fmt.Errorf("%s still registered", wt.Path)
 		}
 		if wt.Link != "" {
 			_ = os.Remove(wt.Link)
@@ -274,25 +346,144 @@ func (o *CloseOptions) worktrees() []worktreeRef {
 	return out
 }
 
-// dirtyOrUnpushed returns a non-empty reason when the worktree has uncommitted changes or commits not on its upstream.
-func dirtyOrUnpushed(path string) string {
-	if out, err := exec.Command("git", "-C", path, "status", "--porcelain").Output(); err == nil && strings.TrimSpace(string(out)) != "" {
-		return "dirty"
+// landed reports whether a worktree's work is safely landed, so its checkout can be removed without losing anything,
+// and a short reason when it is not (printed as "keep <path> (<reason>)"). It replaces dirtyOrUnpushed (B-21, B-39):
+//   - Uncommitted TRACKED changes, or an untracked file that is NOT under a backend-owned path, => not landed. A
+//     backend-owned untracked artifact (Orca's .orca/ screenshot drops) is ignored, so it never makes a clean
+//     worktree look dirty.
+//   - A detached worktree has no branch to strand => landed.
+//   - Otherwise the branch is landed when its tip is contained in origin/<branch> (fetched first) or in a production
+//     branch. A branch with no upstream but contained in origin/<branch> IS landed (B-21). A fetch that cannot resolve
+//     origin/<branch> leaves it not-landed with the reason, so uncertainty keeps the worktree rather than removing it.
+func (o *CloseOptions) landed(path string) (bool, string) {
+	if reason := dirtyReason(path, ownedPaths(o.Runtime)); reason != "" {
+		return false, reason
 	}
-	branch, err := exec.Command("git", "-C", path, "branch", "--show-current").Output()
+	b, _ := worktreeBranch(path)
+	if b == "" {
+		return true, "detached" // nothing to compare
+	}
+	// Refresh origin/<b> so containment is judged against the current remote. Only a real origin makes this meaningful;
+	// with no origin the fetch fails and we fall through to the production check.
+	if hasOrigin(path) {
+		if out, err := exec.Command("git", "-C", path, "fetch", "origin", b).CombinedOutput(); err != nil {
+			return false, fmt.Sprintf("fetch origin/%s failed: %s", b, strings.TrimSpace(string(out)))
+		}
+		if isAncestor(path, b, "origin/"+b) {
+			return true, ""
+		}
+	}
+	for _, prod := range productionRefs(path) {
+		if isAncestor(path, b, prod) {
+			return true, ""
+		}
+	}
+	return false, "ahead of origin (not landed)"
+}
+
+// dirtyReason returns "dirty" for uncommitted tracked changes or an untracked path outside owned, else "". Owned
+// prefixes (e.g. ".orca/") are backend-scratch and ignored, so a screenshot drop never blocks close (B-39).
+func dirtyReason(path string, owned []string) string {
+	out, err := exec.Command("git", "-C", path, "status", "--porcelain").Output()
 	if err != nil {
 		return ""
 	}
-	b := strings.TrimSpace(string(branch))
-	if b == "" {
-		return "" // detached; nothing to compare
-	}
-	// No upstream => unpublished work; treat as unpushed.
-	if err := exec.Command("git", "-C", path, "rev-parse", "--abbrev-ref", b+"@{u}").Run(); err != nil {
-		return "unpushed (no upstream)"
-	}
-	if out, err := exec.Command("git", "-C", path, "rev-list", b+"@{u}.."+b).Output(); err == nil && strings.TrimSpace(string(out)) != "" {
-		return "unpushed"
+	for _, line := range strings.Split(strings.TrimRight(string(out), "\n"), "\n") {
+		if line == "" {
+			continue
+		}
+		// Porcelain v1: XY<space>path. Untracked entries are "?? path"; everything else is a tracked change.
+		if strings.HasPrefix(line, "?? ") {
+			p := strings.TrimPrefix(line, "?? ")
+			if isOwnedPath(p, owned) {
+				continue
+			}
+		}
+		return "dirty"
 	}
 	return ""
+}
+
+// isOwnedPath reports whether an untracked path (as git prints it, worktree-relative) sits under a backend-owned prefix.
+func isOwnedPath(p string, owned []string) bool {
+	p = strings.TrimPrefix(strings.TrimSpace(p), "./")
+	for _, prefix := range owned {
+		if prefix != "" && strings.HasPrefix(p, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// ownedPather is the optional capability a backend implements to declare the worktree-relative path prefixes it owns
+// (its scratch/artifact dirs). close consults it so the ignore list comes from the backend's capability card rather
+// than a constant; a backend that does not implement it falls back to the Orca default (.orca/).
+type ownedPather interface{ OwnedPaths() []string }
+
+func ownedPaths(rt backend.Backend) []string {
+	if op, ok := rt.(ownedPather); ok {
+		if p := op.OwnedPaths(); len(p) > 0 {
+			return p
+		}
+	}
+	return []string{".orca/"}
+}
+
+// hasOrigin reports whether the checkout has an `origin` remote configured.
+func hasOrigin(path string) bool {
+	return exec.Command("git", "-C", path, "remote", "get-url", "origin").Run() == nil
+}
+
+// isAncestor reports whether branch's tip is contained in ref (ref exists and branch is an ancestor of it).
+func isAncestor(path, branch, ref string) bool {
+	return exec.Command("git", "-C", path, "merge-base", "--is-ancestor", branch, ref).Run() == nil
+}
+
+// productionRefs lists the refs a landed branch may have merged into: origin/HEAD's target when set, then the common
+// main/master names locally and on origin. Nonexistent refs are harmless - isAncestor just returns false for them.
+func productionRefs(path string) []string {
+	var refs []string
+	if out, err := exec.Command("git", "-C", path, "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD").Output(); err == nil {
+		if r := strings.TrimPrefix(strings.TrimSpace(string(out)), "refs/remotes/"); r != "" {
+			refs = append(refs, r)
+		}
+	}
+	return append(refs, "origin/main", "origin/master", "main", "master")
+}
+
+// gitCommonDir returns the absolute shared git dir for the worktree at path (the main repo's .git), or "" on error.
+// It is read before a worktree is removed so worktreeRegistered can query the repo once the checkout path is gone.
+func gitCommonDir(path string) string {
+	out, err := exec.Command("git", "-C", path, "rev-parse", "--path-format=absolute", "--git-common-dir").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// worktreeRegistered reports whether path is still listed as a worktree of the repo whose git dir is common. It is the
+// post-remove proof: a backend that returned ok without actually detaching the worktree leaves it listed here (B-39).
+func worktreeRegistered(commonDir, path string) bool {
+	out, err := exec.Command("git", "--git-dir="+commonDir, "worktree", "list", "--porcelain").Output()
+	if err != nil {
+		return false
+	}
+	want := resolvePath(path)
+	for _, line := range strings.Split(string(out), "\n") {
+		if p, ok := strings.CutPrefix(line, "worktree "); ok {
+			if resolvePath(strings.TrimSpace(p)) == want {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// resolvePath canonicalizes a path for comparison, resolving symlinks when it still exists (git prints resolved paths;
+// /tmp is a symlink to /private/tmp on macOS) and falling back to a clean of the original when it does not.
+func resolvePath(p string) string {
+	if r, err := filepath.EvalSymlinks(p); err == nil {
+		return r
+	}
+	return filepath.Clean(p)
 }
