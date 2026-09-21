@@ -222,12 +222,33 @@ func (c *Client) WorktreeRemove(wt backend.Worktree) error {
 	if wt.Path == "" {
 		return fmt.Errorf("orca WorktreeRemove: empty worktree path")
 	}
+	// B-16: `orca worktree rm` can delete the local branch. Detaching HEAD below protects it, but as a fail-closed
+	// second guard refuse a caller-named branch that is not on origin unless it explicitly authorizes the removal
+	// (Worktree.Force): a branch absent from origin holds the only copy of its commits, so removing its worktree is
+	// where unpushed work is stranded. An empty branch (detached, or a caller that does not name one) has nothing to
+	// strand and is left to the detach guard alone.
+	if !wt.Force && wt.Branch != "" && !c.branchOnOrigin(wt.Path, wt.Branch) {
+		return fmt.Errorf("orca WorktreeRemove: refusing to remove %s: branch %q is not on origin (orca worktree rm can delete the local branch, B-16); push it or authorize an explicit force", wt.Path, wt.Branch)
+	}
 	if _, err := c.git("-C", wt.Path, "switch", "--detach"); err != nil {
 		return fmt.Errorf("orca WorktreeRemove: detach %s before rm (rm skipped to protect the branch, F01): %w", wt.Path, err)
 	}
 	_, err := c.call("worktree", "rm", "--worktree", "path:"+wt.Path, "--force", "--json")
 	return err
 }
+
+// branchOnOrigin reports whether branch exists on the origin remote (`git ls-remote --heads origin <branch>` prints a
+// row). A failed lookup (no origin, network error) is treated as not-on-origin, so the B-16 guard stays fail-closed.
+func (c *Client) branchOnOrigin(path, branch string) bool {
+	out, err := c.git("-C", path, "ls-remote", "--heads", "origin", branch)
+	return err == nil && strings.TrimSpace(string(out)) != ""
+}
+
+// OwnedPaths lists the worktree-relative path prefixes Orca writes into a checkout it manages (screenshot drops and
+// other agent scratch under .orca/). epic close ignores untracked files under these when deciding whether a worktree
+// holds unlanded work, so a backend-owned artifact never makes a clean worktree look dirty (B-39). Recorded in
+// docs/adapters/orca.md.
+func (c *Client) OwnedPaths() []string { return []string{".orca/"} }
 
 // Spawn creates a task from the brief and starts one supervised worker in the worktree. The returned Session carries
 // the dispatch id used by Probe/Stop/Send.

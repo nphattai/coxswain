@@ -245,6 +245,262 @@ func TestCloseDryRunChangesNothing(t *testing.T) {
 	}
 }
 
+// noopRemoveBackend records WorktreeRemove but does NOT actually remove the worktree, so the post-remove verification
+// (item 4b) has a path that is still registered to catch - the B-39 case where the backend reported ok yet left the
+// checkout in place.
+type noopRemoveBackend struct{ *gitBackend }
+
+func (b *noopRemoveBackend) WorktreeRemove(wt backend.Worktree) error {
+	b.calls = append(b.calls, "WorktreeRemove")
+	b.removed = append(b.removed, wt.Path)
+	return nil // no-op
+}
+
+// TestCloseNoRuntimeWritesMarker: a v1-migrated / never-attached epic (no .cox/) is archived by writing .cox.closed
+// with closed.json noting no_runtime, rather than failing at the archive rename (B-38).
+func TestCloseNoRuntimeWritesMarker(t *testing.T) {
+	epicDir := t.TempDir()
+	var out strings.Builder
+	if err := Close(CloseOptions{EpicDir: epicDir, Yes: true, Out: &out}); err != nil {
+		t.Fatalf("no-runtime close must succeed: %v", err)
+	}
+	cj := filepath.Join(epicDir, ".cox.closed", "closed.json")
+	b, err := os.ReadFile(cj)
+	if err != nil {
+		t.Fatalf(".cox.closed/closed.json not written: %v", err)
+	}
+	if !strings.Contains(string(b), `"no_runtime": true`) {
+		t.Errorf("closed.json must note no_runtime: %s", b)
+	}
+	if !strings.Contains(out.String(), "(no runtime)") {
+		t.Errorf("steps must print as vacuous: %q", out.String())
+	}
+}
+
+// TestCloseFailsWhenWorktreeStillRegistered: a remove that returns ok but leaves the worktree registered fails the
+// step (item 4b), does not archive, and records close.incomplete.json.
+func TestCloseFailsWhenWorktreeStillRegistered(t *testing.T) {
+	epicDir, base, wtPath := closeFixture(t, false)
+	rt := &noopRemoveBackend{gitBackend: base}
+	var out strings.Builder
+	alloc := &env.Allocator{EpicDir: epicDir, Ops: env.RealOps()}
+	err := Close(CloseOptions{EpicDir: epicDir, Runtime: rt, Alloc: alloc, Yes: true, Force: true, Out: &out})
+	if err == nil {
+		t.Fatal("close must fail when the worktree is still registered after remove")
+	}
+	if !strings.Contains(out.String(), "FAILED at remove-worktrees") || !strings.Contains(out.String(), "still registered") {
+		t.Errorf("want a FAILED at remove-worktrees ... still registered message, got %q", out.String())
+	}
+	if fileExists(filepath.Join(epicDir, ".cox.closed")) {
+		t.Error(".cox must NOT be archived when a worktree is still registered")
+	}
+	if !fileExists(filepath.Join(epicDir, ".cox", "close.incomplete.json")) {
+		t.Error("close.incomplete.json must be written")
+	}
+	if _, err := os.Stat(wtPath); err != nil {
+		t.Errorf("the no-op backend left the worktree, so it should still exist: %v", err)
+	}
+}
+
+// TestCloseIgnoresBackendOwnedUntracked: an untracked .orca/ artifact (Orca screenshot drop) does not make a clean
+// worktree look dirty, so close still removes it (B-39).
+func TestCloseIgnoresBackendOwnedUntracked(t *testing.T) {
+	epicDir, rt, wtPath := closeFixture(t, false)
+	if err := os.MkdirAll(filepath.Join(wtPath, ".orca", "drops"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wtPath, ".orca", "drops", "x.png"), []byte("img"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	alloc := &env.Allocator{EpicDir: epicDir, Ops: env.RealOps()}
+	if err := Close(CloseOptions{EpicDir: epicDir, Runtime: rt, Alloc: alloc, Yes: true, Force: false}); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	if indexOf(rt.calls, "WorktreeRemove") < 0 {
+		t.Error("a worktree dirty only with a backend-owned .orca/ artifact must be removed, not kept")
+	}
+}
+
+// originFixture builds an epic whose one worktree is on epic/x with a bare origin. When ahead is true the branch has a
+// commit beyond origin/epic/x (not landed); otherwise its tip equals origin/epic/x (landed via origin, no upstream, B-21).
+func originFixture(t *testing.T, ahead bool) (epicDir string, rt *gitBackend, wtPath string) {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	git := func(dir string, args ...string) {
+		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	origin := t.TempDir()
+	git("", "init", "-q", "--bare", origin)
+	clone := makeRepo(t)
+	git(clone, "remote", "add", "origin", origin)
+	git(clone, "checkout", "-q", "-b", "epic/x")
+	git(clone, "commit", "-q", "--allow-empty", "-m", "epic work")
+	git(clone, "push", "-q", "origin", "main", "epic/x")
+	git(clone, "checkout", "-q", "main")
+
+	epicDir = t.TempDir()
+	cox := filepath.Join(epicDir, ".cox")
+	for _, d := range []string{"sessions", "wt"} {
+		if err := os.MkdirAll(filepath.Join(cox, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	wtPath = filepath.Join(t.TempDir(), "wt-epic-x")
+	git(clone, "worktree", "add", wtPath, "epic/x") // on the existing local branch, no upstream set
+	if ahead {
+		git(wtPath, "commit", "-q", "--allow-empty", "-m", "unpushed local")
+	}
+	if err := os.WriteFile(filepath.Join(cox, "wt", "s1"), []byte(wtPath), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rt = &gitBackend{t: t, repo: clone, wtBase: t.TempDir(), stopOK: true}
+	return epicDir, rt, wtPath
+}
+
+// TestCloseRemovesLandedNoUpstreamBranch: a branch with no upstream whose tip is contained in origin/<branch> is landed
+// and removed (B-21).
+func TestCloseRemovesLandedNoUpstreamBranch(t *testing.T) {
+	epicDir, rt, wtPath := originFixture(t, false)
+	alloc := &env.Allocator{EpicDir: epicDir, Ops: env.RealOps()}
+	if err := Close(CloseOptions{EpicDir: epicDir, Runtime: rt, Alloc: alloc, Yes: true, Force: false, StoriesOnly: true}); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	if indexOf(rt.calls, "WorktreeRemove") < 0 {
+		t.Error("a no-upstream branch contained in origin must be removed")
+	}
+	if _, err := os.Stat(wtPath); !os.IsNotExist(err) {
+		t.Errorf("landed worktree should be removed, err=%v", err)
+	}
+}
+
+// guardedBackend mimics the Orca adapter's B-16 guard: WorktreeRemove refuses a branch not on origin unless Force. It
+// proves close authorizes a removal it has proven landed (passing Force:true) instead of stranding it (regression the
+// leader caught: a squash-merged branch deleted on origin is landed via production yet not on origin heads).
+type guardedBackend struct{ *gitBackend }
+
+func (b *guardedBackend) WorktreeRemove(wt backend.Worktree) error {
+	b.calls = append(b.calls, "WorktreeRemove")
+	if !wt.Force && wt.Branch != "" {
+		out, _ := exec.Command("git", "-C", b.repo, "ls-remote", "--heads", "origin", wt.Branch).Output()
+		if strings.TrimSpace(string(out)) == "" {
+			return errors.New("orca WorktreeRemove: branch not on origin (B-16)")
+		}
+	}
+	b.removed = append(b.removed, wt.Path)
+	_, _ = exec.Command("git", "-C", b.repo, "worktree", "remove", "--force", wt.Path).CombinedOutput()
+	return nil
+}
+
+// TestCloseRemovesSquashMergedBranchDeletedOnOrigin: a branch merged into origin/main and deleted on origin is landed
+// (contained in production) even though it is absent from origin heads; close authorizes its removal (Force:true) so the
+// adapter's B-16 origin guard does not refuse it. On the old code (Force:o.Force) this failed the close - a regression.
+func TestCloseRemovesSquashMergedBranchDeletedOnOrigin(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	git := func(dir string, args ...string) {
+		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	origin := t.TempDir()
+	git("", "init", "-q", "--bare", origin)
+	clone := makeRepo(t)
+	git(clone, "remote", "add", "origin", origin)
+	git(clone, "checkout", "-q", "-b", "epic/sq")
+	git(clone, "commit", "-q", "--allow-empty", "-m", "epic work")
+	git(clone, "checkout", "-q", "main")
+	git(clone, "merge", "-q", "--no-ff", "-m", "merge epic/sq", "epic/sq") // main now contains epic/sq
+	git(clone, "push", "-q", "origin", "main")                             // main pushed; epic/sq is NOT on origin
+
+	epicDir := t.TempDir()
+	cox := filepath.Join(epicDir, ".cox")
+	if err := os.MkdirAll(filepath.Join(cox, "wt"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	wtPath := filepath.Join(t.TempDir(), "wt-epic-sq")
+	git(clone, "worktree", "add", wtPath, "epic/sq")
+	if err := os.WriteFile(filepath.Join(cox, "wt", "s1"), []byte(wtPath), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rt := &guardedBackend{gitBackend: &gitBackend{t: t, repo: clone, wtBase: t.TempDir(), stopOK: true}}
+	alloc := &env.Allocator{EpicDir: epicDir, Ops: env.RealOps()}
+	if err := Close(CloseOptions{EpicDir: epicDir, Runtime: rt, Alloc: alloc, Yes: true, Force: false, StoriesOnly: true}); err != nil {
+		t.Fatalf("a branch landed in production but deleted on origin must be removed, not fail the close: %v", err)
+	}
+	if indexOf(rt.calls, "WorktreeRemove") < 0 {
+		t.Error("the landed worktree must be removed")
+	}
+	if _, err := os.Stat(wtPath); !os.IsNotExist(err) {
+		t.Errorf("landed worktree should be gone, err=%v", err)
+	}
+}
+
+// TestCloseKeepsBranchAheadOfOrigin: a branch with a commit beyond origin/<branch> is not landed and is kept.
+func TestCloseKeepsBranchAheadOfOrigin(t *testing.T) {
+	epicDir, rt, wtPath := originFixture(t, true)
+	alloc := &env.Allocator{EpicDir: epicDir, Ops: env.RealOps()}
+	if err := Close(CloseOptions{EpicDir: epicDir, Runtime: rt, Alloc: alloc, Yes: true, Force: false, StoriesOnly: true}); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	if indexOf(rt.calls, "WorktreeRemove") >= 0 {
+		t.Error("a branch ahead of origin must be kept, not removed")
+	}
+	if _, err := os.Stat(wtPath); err != nil {
+		t.Errorf("kept worktree should still exist: %v", err)
+	}
+}
+
+// TestCloseRefusesNonLeaderTerminal: close from a terminal that is not the recorded leader is refused; --captain, or the
+// leader terminal itself, proceeds (item 4d).
+func TestCloseRefusesNonLeaderTerminal(t *testing.T) {
+	writeLeader := func(epicDir string) {
+		if err := os.WriteFile(filepath.Join(epicDir, ".cox", "leader"), []byte("term_leader\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Wrong terminal -> refused, nothing archived, no backend calls.
+	epicDir, rt, _ := closeFixture(t, false)
+	writeLeader(epicDir)
+	alloc := &env.Allocator{EpicDir: epicDir, Ops: env.RealOps()}
+	err := Close(CloseOptions{EpicDir: epicDir, Runtime: rt, Alloc: alloc, Yes: true, Force: true, TerminalHandle: "term_worker"})
+	if err == nil || !strings.Contains(err.Error(), "not the leader") {
+		t.Fatalf("wrong terminal must be refused with an owner message, got %v", err)
+	}
+	if fileExists(filepath.Join(epicDir, ".cox.closed")) {
+		t.Error("a refused close must not archive")
+	}
+	if len(rt.calls) != 0 {
+		t.Errorf("a refused close must not touch the backend, calls=%v", rt.calls)
+	}
+
+	// --captain proceeds.
+	epicDir2, rt2, _ := closeFixture(t, false)
+	writeLeader(epicDir2)
+	alloc2 := &env.Allocator{EpicDir: epicDir2, Ops: env.RealOps()}
+	if err := Close(CloseOptions{EpicDir: epicDir2, Runtime: rt2, Alloc: alloc2, Yes: true, Force: true, TerminalHandle: "term_worker", Captain: true}); err != nil {
+		t.Fatalf("--captain must proceed: %v", err)
+	}
+	if !fileExists(filepath.Join(epicDir2, ".cox.closed")) {
+		t.Error("--captain close must archive")
+	}
+
+	// The leader terminal itself proceeds.
+	epicDir3, rt3, _ := closeFixture(t, false)
+	writeLeader(epicDir3)
+	alloc3 := &env.Allocator{EpicDir: epicDir3, Ops: env.RealOps()}
+	if err := Close(CloseOptions{EpicDir: epicDir3, Runtime: rt3, Alloc: alloc3, Yes: true, Force: true, TerminalHandle: "term_leader"}); err != nil {
+		t.Fatalf("the leader terminal must proceed: %v", err)
+	}
+	if !fileExists(filepath.Join(epicDir3, ".cox.closed")) {
+		t.Error("leader close must archive")
+	}
+}
+
 func indexOf(s []string, v string) int {
 	for i, x := range s {
 		if x == v {

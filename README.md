@@ -117,6 +117,27 @@ You steer the whole crew by chatting with the leader; it escalates only real dec
   recorded the merge sha, released the worker, and closed the worktree.
 ```
 
+### Close an epic
+
+When an epic is done, `cox epic close --epic <dir>` tears it down and only archives its runtime once every step is
+verified - it refuses or repairs rather than printing `ok` over unverified state:
+
+```bash
+cox epic close --epic <epic-dir>            # dry run: print the plan, change nothing
+cox epic close --epic <epic-dir> --yes      # execute (from the leader terminal)
+```
+
+- **Landed vs kept.** A worktree is removed only when its work has **landed**: no uncommitted tracked changes, and its
+  branch is contained in `origin/<branch>` (fetched first) or a production branch - so a merged branch with no upstream
+  is still removed, and a backend's own untracked artifact (Orca's `.orca/` screenshots) never makes it look dirty.
+  Anything not landed is **kept** with a reason; `--force` removes it anyway. A branch is never deleted, and a removal
+  that did not actually take is caught and the epic is not archived.
+- **`--captain`.** Close is refused from a terminal that is not the epic's leader (it prints who owns the epic); the
+  captain runs it with `--captain`.
+
+[Close an epic](docs/operations/index.md#close-an-epic) covers landed-vs-kept, verified removal, and re-attaching a
+cloned epic in full.
+
 ## How It Works
 
 ```
