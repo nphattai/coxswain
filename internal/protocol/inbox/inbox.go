@@ -18,6 +18,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/nphattai/coxswain/internal/state"
 )
 
 // Schema is the record schema id every steer carries.
@@ -122,12 +124,15 @@ func writeRecord(epicDir, story, text, urgency, kind, override string) (string, 
 	if err != nil {
 		return "", err
 	}
-	// Budget: count budget-bearing steer records only (handled or not); fyi and reply records never count. A reply
-	// (kind=reply) is an answer, not a steer, so it is exempt from both the check and the count (M14).
+	// Budget: count budget-bearing steer records only, and only those from the CURRENT attempt - records written before
+	// this attempt's dispatch belong to a previous incarnation and are history, not part of the live budget (DESIGN
+	// wave-2 item 11, B-23). fyi and reply/interrupt records never count. When the attempt's dispatch time is unknown
+	// (no working-by-leader event yet) it falls back to counting all, the pre-item-11 behavior.
 	if urgency == Steer && budgetBearing(kind) && override == "" {
+		cutoff, haveCutoff := dispatchCutoff(epicDir, story)
 		used := 0
 		for _, r := range recs {
-			if r.Urgency == Steer && budgetBearing(r.Kind) {
+			if r.Urgency == Steer && budgetBearing(r.Kind) && (!haveCutoff || r.At >= cutoff) {
 				used++
 			}
 		}
@@ -172,6 +177,50 @@ func All(epicDir, story string) ([]Record, error) {
 	}
 	sort.Slice(recs, func(i, j int) bool { return recs[i].Seq < recs[j].Seq })
 	return recs, nil
+}
+
+// dispatchCutoff returns the RFC3339 timestamp of the current attempt's dispatch - the latest event that moved the story
+// to `working` with `actor: leader` - and whether one was found. Records written at or after it belong to the current
+// attempt; earlier ones are from a previous incarnation. When the state log is unreadable or the story has no such event
+// yet, it returns ("", false) so callers fall back to counting all records (DESIGN wave-2 item 11).
+func dispatchCutoff(epicDir, story string) (string, bool) {
+	events, _, err := state.Load(epicDir)
+	if err != nil {
+		return "", false
+	}
+	cutoff := ""
+	for _, ev := range events {
+		if ev.Story != story || ev.To != state.Working || ev.Actor != state.Leader {
+			continue
+		}
+		if ev.TS > cutoff { // RFC3339 UTC sorts lexically, so the max is the most recent dispatch
+			cutoff = ev.TS
+		}
+	}
+	return cutoff, cutoff != ""
+}
+
+// History returns the budget-bearing steer records (handled or not) that predate the current attempt's dispatch, in
+// ascending sequence order. `cox steer` reports these as history from a previous attempt rather than refusing a fresh
+// steer over records the current worker never saw (DESIGN wave-2 item 11). With no known dispatch cutoff there is no
+// history to separate, so it returns nothing.
+func History(epicDir, story string) ([]Record, error) {
+	cutoff, haveCutoff := dispatchCutoff(epicDir, story)
+	if !haveCutoff {
+		return nil, nil
+	}
+	recs, err := scan(Dir(epicDir, story))
+	if err != nil {
+		return nil, err
+	}
+	var out []Record
+	for _, r := range recs {
+		if r.Urgency == Steer && budgetBearing(r.Kind) && r.At < cutoff {
+			out = append(out, r)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Seq < out[j].Seq })
+	return out, nil
 }
 
 // Handled moves a record into handled/. The move is the worker's acknowledgement (mv semantics kept from v1).
