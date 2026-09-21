@@ -81,6 +81,7 @@ nav:
       - Harnesses:
         - Claude Code: adapters/claude.md
         - Codex: adapters/codex.md
+        - Pi: adapters/pi.md
       - Integrations:
         - GitHub: adapters/github.md
         - Project services: adapters/service.md

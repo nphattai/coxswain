@@ -812,7 +812,8 @@ func TestSpawnTerminalPlaneCreatesAndTypesLaunch(t *testing.T) {
 	var calls []string
 	c := recorder(t, &calls)
 	brief := backend.Brief{StoryPath: "/epics/v2/stories/m10.md"}
-	sess, err := c.Spawn(backend.Worktree{Path: "/wt/m10"}, backend.HarnessSpec{Name: "claude"}, brief)
+	spec := backend.HarnessSpec{Name: "claude", Argv: []string{"claude", "Your task is the story file /epics/v2/stories/m10.md - read it in full and follow its Working rules exactly."}}
+	sess, err := c.Spawn(backend.Worktree{Path: "/wt/m10"}, spec, brief)
 	if err != nil {
 		t.Fatal(err)
 	}

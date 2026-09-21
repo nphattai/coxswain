@@ -20,6 +20,7 @@ This table is checked against `internal/adapter/harness/claude.Harness.Card()` b
 | interrupt | true |
 | telemetry | true |
 | sandbox | false |
+| unsandboxed_ack | true |
 | instructions | plugin skills + AGENTS.md |
 
 ## Support contract

@@ -54,6 +54,14 @@ Codex reads a project-level `AGENTS.md` and the Markdown workflows under `skills
 both into your workspace (see [Create a workspace](workspace.md)). The [Codex adapter](../adapters/codex.md) explains the
 pull-wake fallback and optional project hooks.
 
+### Pi (project-local extension)
+
+Install Pi's project-local push/checkpoint extension into the workspace with
+`cox workspace hooks --harness pi --root <clone> --epic <dir>`; it is written under `.pi/extensions/`, is
+hash-verifiable, and does not touch user-level Pi config. Worker dispatch loads it explicitly with `-e` and requires
+`--allow-unsandboxed` because Pi provides no host-filesystem confinement. The [Pi adapter](../adapters/pi.md) explains
+the capability card and its reduced-mode fallback.
+
 ## 4. Verify
 
 ```bash

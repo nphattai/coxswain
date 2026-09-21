@@ -5,6 +5,7 @@ package claude
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -23,15 +24,16 @@ func New() *Harness { return &Harness{} }
 
 func (h *Harness) Card() harness.Capability {
 	return harness.Capability{
-		Name:         "claude",
-		Roles:        []harness.Role{harness.RoleLeader, harness.RoleWorker},
-		Wake:         harness.WakePush,
-		Checkpoint:   harness.CheckpointAuto,
-		Doorbell:     true,
-		Interrupt:    true,
-		Telemetry:    true,
-		Sandbox:      false,
-		Instructions: "plugin skills + AGENTS.md",
+		Name:           "claude",
+		Roles:          []harness.Role{harness.RoleLeader, harness.RoleWorker},
+		Wake:           harness.WakePush,
+		Checkpoint:     harness.CheckpointAuto,
+		Doorbell:       true,
+		Interrupt:      true,
+		Telemetry:      true,
+		Sandbox:        false,
+		UnsandboxedAck: true, // captain ruling: claude workers run bypassPermissions autonomously; unsandboxed dispatch is accepted
+		Instructions:   "plugin skills + AGENTS.md",
 	}
 }
 
@@ -42,21 +44,69 @@ func (h *Harness) Package(role harness.Role, dst string) error {
 	return linkAgentsAsClaude(dst)
 }
 
-// LaunchArgs returns the argv to start Claude Code in wt. The worker's brief is the story file (read in full);
-// a relaunch asks it to inject the checkpoint first. Wake is push, so no idle-wait arg is needed.
-func (h *Harness) LaunchArgs(role harness.Role, wt string, b harness.Brief) []string {
+// LaunchArgs returns the full argv to start Claude Code: `claude --model <id> <policy flags> <prompt>`. The model is
+// spelled `--model <id>` (the caller resolves a non-empty id from policy); the approval/autonomy flags come from policy
+// (harness.launch.claude); the worker's prompt is the story file (read in full), and a relaunch asks it to inject the
+// checkpoint first. Wake is push, so no idle-wait arg is needed. Claude has no launch-time effort flag today.
+func (h *Harness) LaunchArgs(l harness.Launch) []string {
 	args := []string{"claude"}
-	if role == harness.RoleWorker && b.StoryPath != "" {
-		prompt := "Your task is the story file " + b.StoryPath + " - read it in full and follow its Working rules exactly."
-		if b.InjectCheckpoint {
-			prompt = "Read your checkpoint with `cox checkpoint inject` first, then continue from Next action. " + prompt
+	if l.Model != "" {
+		args = append(args, "--model", l.Model)
+	}
+	for _, f := range l.Flags {
+		if f != "" {
+			args = append(args, f)
 		}
-		if b.Note != "" {
-			prompt += " Progress note from your previous attempt: " + b.Note
-		}
+	}
+	if prompt := harness.WorkerPrompt(l.Role, l.Brief); prompt != "" {
 		args = append(args, prompt)
 	}
 	return args
+}
+
+// PrepareWorktree marks wt trusted for Claude Code by merging projects[<abspath>].hasTrustDialogAccepted=true into
+// ~/.claude.json (verified schema: per-directory, not inherited). A dispatched worker cannot answer the interactive
+// workspace-trust dialog, and --permission-mode bypassPermissions does not suppress it, so cox pre-seeds the trust for
+// this one directory. The merge preserves every other project entry and every top-level key (read-modify-write via a
+// temp file + rename); a missing file is created with just this entry. cox never touches any other user-level setting.
+func (h *Harness) PrepareWorktree(wt string) error {
+	abs, err := filepath.Abs(wt)
+	if err != nil {
+		return fmt.Errorf("claude PrepareWorktree: resolve %q: %w", wt, err)
+	}
+	path := filepath.Join(h.home(), ".claude.json")
+	// Hold an exclusive lock across the read-modify-write so concurrent dispatches never read the same snapshot and drop
+	// each other's trust entry, and write via a unique temp (not a shared fixed name).
+	return harness.WithFileLock(path+".cox.lock", func() error {
+		root := map[string]any{}
+		if data, err := os.ReadFile(path); err == nil {
+			if err := json.Unmarshal(data, &root); err != nil {
+				return fmt.Errorf("claude PrepareWorktree: parse %s: %w", path, err)
+			}
+		} else if !os.IsNotExist(err) {
+			return fmt.Errorf("claude PrepareWorktree: read %s: %w", path, err)
+		}
+		projects, ok := root["projects"].(map[string]any)
+		if !ok || projects == nil {
+			projects = map[string]any{}
+		}
+		entry, ok := projects[abs].(map[string]any)
+		if !ok || entry == nil {
+			entry = map[string]any{}
+		}
+		entry["hasTrustDialogAccepted"] = true
+		projects[abs] = entry
+		root["projects"] = projects
+
+		out, err := json.MarshalIndent(root, "", "  ")
+		if err != nil {
+			return fmt.Errorf("claude PrepareWorktree: encode %s: %w", path, err)
+		}
+		if err := harness.AtomicWriteFile(path, out, 0o600); err != nil {
+			return fmt.Errorf("claude PrepareWorktree: write %s: %w", path, err)
+		}
+		return nil
+	})
 }
 
 // Telemetry ports v1 inbox-lib.sh session_ctx: find the newest session log for the worktree path and sum the last
