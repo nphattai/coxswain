@@ -23,7 +23,8 @@ func TestMailPassAppendsWakeThenAcks(t *testing.T) {
 		ID: "relay_1", From: "dispatch:ctx_1", Type: "worker_done",
 		Subject: "PR #12 up", Payload: `{"dispatchId":"ctx_1","outcome":"succeeded"}`,
 	}}
-	w := &Watcher{EpicDir: epic, Backend: b, Leader: "term_leader", Now: fixedNow()}
+	writeLeader(t, epic, "term_leader")
+	w := &Watcher{EpicDir: epic, Backend: b, Now: fixedNow()}
 	n, err := w.Tick()
 	if err != nil {
 		t.Fatal(err)
@@ -49,6 +50,72 @@ func TestMailPassAppendsWakeThenAcks(t *testing.T) {
 	}
 	if len(mb.Sent) != 0 {
 		t.Fatalf("leader doorbell must not go through orchestration mail, mb.Sent=%v", mb.Sent)
+	}
+}
+
+// writeLeader writes <epic>/.cox/leader.
+func writeLeader(t *testing.T, epic, handle string) {
+	t.Helper()
+	dir := filepath.Join(epic, state.ControlDir)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "leader"), []byte(handle), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The leader handle is read fresh from .cox/leader every tick, not cached at start, so a re-bind after a leader restart
+// is honoured on the next ring (finding 4). With no leader file, an urgent wake rings nobody.
+func TestLeaderHandleReadFresh(t *testing.T) {
+	epic := t.TempDir()
+	w := &Watcher{EpicDir: epic, Backend: fake.New(), Now: fixedNow()}
+	if got := w.leaderHandle(); got != "" {
+		t.Errorf("no leader file must read as empty, got %q", got)
+	}
+	writeLeader(t, epic, "term_a")
+	if got := w.leaderHandle(); got != "term_a" {
+		t.Errorf("leader read = %q, want term_a", got)
+	}
+	writeLeader(t, epic, "term_b") // a restart re-binds the file
+	if got := w.leaderHandle(); got != "term_b" {
+		t.Errorf("leader must be re-read per tick, got %q, want term_b", got)
+	}
+
+	// No leader file: an urgent wake must not ring anyone.
+	epic2 := t.TempDir()
+	b := fake.New()
+	mb := b.Mail().(*fake.Mailbox)
+	mb.Delivery = "d"
+	mb.Queue = []backend.Message{{ID: "r", From: "dispatch:c", Type: "worker_done", Subject: "up", Payload: `{"dispatchId":"c","outcome":"succeeded"}`}}
+	w2 := &Watcher{EpicDir: epic2, Backend: b, Now: fixedNow()}
+	if _, err := w2.Tick(); err != nil {
+		t.Fatal(err)
+	}
+	if containsCall(b.Calls, "Send") {
+		t.Errorf("with no leader file, an urgent wake must ring no doorbell: %v", b.Calls)
+	}
+}
+
+// A failed leader doorbell is logged (handle + error) to .cox/watch/log instead of vanishing to /dev/null (finding 4).
+func TestLeaderDoorbellFailureLogged(t *testing.T) {
+	epic := t.TempDir()
+	writeLeader(t, epic, "term_dead")
+	b := fake.New()
+	mb := b.Mail().(*fake.Mailbox)
+	mb.Delivery = "d"
+	mb.Queue = []backend.Message{{ID: "r", From: "dispatch:c", Type: "worker_done", Subject: "up", Payload: `{"dispatchId":"c","outcome":"succeeded"}`}}
+	b.FailNext("Send", nil) // the leader doorbell fails
+	w := &Watcher{EpicDir: epic, Backend: b, Now: fixedNow()}
+	if _, err := w.Tick(); err != nil {
+		t.Fatal(err)
+	}
+	log, err := os.ReadFile(filepath.Join(epic, state.ControlDir, "watch", "log"))
+	if err != nil {
+		t.Fatalf("watch/log not written on a failed leader doorbell: %v", err)
+	}
+	if !strings.Contains(string(log), "term_dead") || !strings.Contains(string(log), "leader-doorbell") {
+		t.Errorf("log line must name the handle and the failure: %q", log)
 	}
 }
 

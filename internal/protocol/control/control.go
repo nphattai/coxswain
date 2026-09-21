@@ -102,8 +102,13 @@ func (c *Controller) Park(story, worktree string, session backend.Session) error
 	if err != nil {
 		return err
 	}
-	if err := c.ensureCheckpoint(story, worktree, snap.Attempt, session); err != nil {
-		return err
+	// An idle worker (empty composer) whose last checkpoint is newer than its last event has nothing left to write:
+	// parking on that checkpoint immediately beats steering it and waiting ParkWait for a checkpoint it will never
+	// produce (finding 14). Otherwise fall through to the normal ensure-and-wait path.
+	if !c.freshIdleCheckpoint(story, snap, session) {
+		if err := c.ensureCheckpoint(story, worktree, snap.Attempt, session); err != nil {
+			return err
+		}
 	}
 	if err := c.appendPending(story, snap, state.Parked, "park"); err != nil {
 		return err
@@ -248,6 +253,28 @@ func (c *Controller) ensureCheckpoint(story, worktree string, attempt int, sessi
 			return nil
 		}
 	}
+}
+
+// freshIdleCheckpoint reports whether park may skip the ensure-and-wait step: the worker's composer is observed empty
+// (idle at a prompt, not mid-turn) and a valid checkpoint for the current attempt is newer than the story's last event.
+// Such a checkpoint is the best state an idle worker can offer - it will not write another - so park on it rather than
+// waiting ParkWait for one that never comes (finding 14). Only an observed-empty composer qualifies (F08: unknown/busy
+// never do), and an unparsable timestamp on either side is treated as not-fresh so an ambiguous case takes the safe wait.
+func (c *Controller) freshIdleCheckpoint(story string, snap *state.StorySnap, session backend.Session) bool {
+	composer, err := c.Backend.Composer(session)
+	if err != nil || composer != backend.ComposerEmpty {
+		return false
+	}
+	fm, _, err := checkpoint.Parse(checkpoint.Path(c.EpicDir, story))
+	if err != nil || fm.Validate() != nil || fm.Attempt != snap.Attempt {
+		return false
+	}
+	written, werr := time.Parse(time.RFC3339, fm.WrittenAt)
+	lastEvent, lerr := time.Parse(time.RFC3339, snap.LastEvent.TS)
+	if werr != nil || lerr != nil {
+		return false
+	}
+	return written.After(lastEvent)
 }
 
 // checkpointMatches reports whether a checkpoint exists whose attempt and head match the current attempt and HEAD.

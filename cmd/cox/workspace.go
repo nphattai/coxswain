@@ -181,6 +181,9 @@ func parseRepoFlag(v string) (workspace.Repo, error) {
 	if i := strings.LastIndex(ref, ":"); i > 0 {
 		prod, ref = ref[i+1:], ref[:i]
 	}
+	// Expand a leading ~ so a zsh user's `--repo alias=~/path` becomes an absolute checkout path rather than being
+	// mistaken for a backend repo name (finding 11). Docs keep $HOME, which the shell already expands.
+	ref = expandTilde(ref)
 	r := workspace.Repo{Alias: alias}
 	if strings.HasPrefix(ref, "/") {
 		r.Path = ref
@@ -196,6 +199,23 @@ func parseRepoFlag(v string) (workspace.Repo, error) {
 	}
 	r.Production = prod
 	return r, nil
+}
+
+// expandTilde replaces a leading ~ (bare, or ~/…) with the user's home directory, so a repo path typed with ~ resolves
+// to an absolute checkout path. A ~user form or a ~ that is not a path prefix (e.g. embedded) is left untouched, and an
+// unresolvable home leaves the value as-is.
+func expandTilde(p string) string {
+	if p != "~" && !strings.HasPrefix(p, "~/") {
+		return p
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return p
+	}
+	if p == "~" {
+		return home
+	}
+	return filepath.Join(home, p[2:])
 }
 
 // hookScriptRe extracts the hook name from a hooks/hooks.json command (".../hooks/<name>.sh").

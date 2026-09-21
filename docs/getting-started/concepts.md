@@ -47,8 +47,9 @@ An epic lives in `<workspace>/<project>/epics/<slug>/`. Its subdirectories are t
 | `questions/<story>/qNNN*` | A worker's numbered question and its answer | Question/reply |
 | `handoffs/<story>.md` | A worker's checkpoint for its future session; `_leader` for the leader | Checkpoint |
 | `reports/` | Audit, scout, and visual-review reports | Status/report |
-| `.cox/` | State tree: `epic.json`, the `events.jsonl` event log, the wake queue, the watcher pid | Status/report, Wake |
+| `ledger.jsonl` | The durable epic log: `design_signed` / `design_amended`, committed so the signature travels with `git` | Event log (durable) |
+| `.cox/` | Machine-local runtime: `epic.json`, the `events.jsonl` lifecycle log, the wake queue, the watcher pid | Status/report, Wake |
 
 The `.cox/` tree and `cox/workspace.json` are machine-bound and git-ignored (`cox workspace init` writes those rules);
-`DESIGN.md`, `stories/`, and `repos` are committed so the epic can be re-attached on another machine with
-`cox epic attach`.
+`DESIGN.md`, `stories/`, `repos`, and `ledger.jsonl` are committed so the epic can be re-attached on another machine
+with `cox epic attach` - the signature lives in `ledger.jsonl`, so it survives the move without re-signing.

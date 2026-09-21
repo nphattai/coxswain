@@ -3,6 +3,7 @@ package doctor
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -35,6 +36,92 @@ func TestSingleOnPATH(t *testing.T) {
 	t.Setenv("PATH", d1+string(os.PathListSeparator)+d2)
 	if c := SingleOnPATH("coxbin"); c.Status != StatusFail || c.Fix == "" {
 		t.Errorf("two on PATH = %v, want fail with a fix hint", c)
+	}
+}
+
+// SingleOnPATH de-duplicates by resolved path: the same dir listed twice, or a second dir that symlinks to the same real
+// binary, is one install (pass); only a distinct real binary fails (finding 15).
+func TestSingleOnPATHResolvesDuplicates(t *testing.T) {
+	d1 := t.TempDir()
+	writeExec(t, d1, "coxbin")
+
+	// Same directory listed twice on PATH.
+	t.Setenv("PATH", d1+string(os.PathListSeparator)+d1)
+	if c := SingleOnPATH("coxbin"); c.Status != StatusPass {
+		t.Errorf("a PATH dir listed twice = %v, want pass (one resolved binary)", c)
+	}
+
+	// A second dir whose coxbin is a symlink to the first: still one real binary.
+	d2 := t.TempDir()
+	if err := os.Symlink(filepath.Join(d1, "coxbin"), filepath.Join(d2, "coxbin")); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", d1+string(os.PathListSeparator)+d2)
+	if c := SingleOnPATH("coxbin"); c.Status != StatusPass {
+		t.Errorf("a symlink to the same binary = %v, want pass", c)
+	}
+
+	// A genuinely distinct second binary still fails.
+	d3 := t.TempDir()
+	writeExec(t, d3, "coxbin")
+	t.Setenv("PATH", d1+string(os.PathListSeparator)+d3)
+	if c := SingleOnPATH("coxbin"); c.Status != StatusFail {
+		t.Errorf("two distinct binaries = %v, want fail", c)
+	}
+}
+
+// A path-backed repo whose checkout is missing or is not a git checkout is flagged by InspectWorkspace; a real git
+// checkout is not (finding 7).
+func TestRepoCheckoutIssues(t *testing.T) {
+	root := t.TempDir()
+	gitRepo := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(gitRepo, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	nonGit := t.TempDir() // exists, no .git
+	missing := filepath.Join(t.TempDir(), "not-cloned-yet")
+	repos := []workspace.Repo{
+		{Alias: "ok", Path: gitRepo, Production: "main"},
+		{Alias: "bare", Path: nonGit, Production: "main"},
+		{Alias: "gone", Path: missing, Production: "main"},
+	}
+	if _, err := workspace.Init(root, &workspace.Workspace{Repos: repos}); err != nil {
+		t.Fatal(err)
+	}
+	rep := InspectWorkspace(root)
+	joined := strings.Join(rep.RepoIssues, "\n")
+	if strings.Contains(joined, `"ok"`) {
+		t.Errorf("a real git checkout must not be flagged: %v", rep.RepoIssues)
+	}
+	if !strings.Contains(joined, `"bare"`) || !strings.Contains(joined, "not a git checkout") {
+		t.Errorf("a non-git path must be flagged: %v", rep.RepoIssues)
+	}
+	if !strings.Contains(joined, `"gone"`) || !strings.Contains(joined, "does not exist") {
+		t.Errorf("a missing path must be flagged: %v", rep.RepoIssues)
+	}
+}
+
+// An archived epic (.cox.closed present, .cox absent) is reported Closed, so doctor prints it as "closed" rather than
+// "active ... watcher dead" (finding 12).
+func TestInspectWorkspaceClosedEpic(t *testing.T) {
+	root := t.TempDir()
+	repo := t.TempDir()
+	if _, err := workspace.Init(root, &workspace.Workspace{Repos: []workspace.Repo{{Alias: "app", Path: repo, Production: "main"}}}); err != nil {
+		t.Fatal(err)
+	}
+	epicDir := filepath.Join(root, "proj", "epics", "done1")
+	if err := os.MkdirAll(filepath.Join(epicDir, ".cox.closed"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(epicDir, "DESIGN.md"), []byte("# done1\n\nStatus: active (signed)\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rep := InspectWorkspace(root)
+	if len(rep.Epics) != 1 || !rep.Epics[0].Closed {
+		t.Fatalf("archived epic must be reported Closed: %+v", rep.Epics)
+	}
+	if rep.Epics[0].WatcherAlive {
+		t.Errorf("a closed epic has no live watcher")
 	}
 }
 
@@ -98,6 +185,24 @@ func TestHarnessBinaries(t *testing.T) {
 	got := HarnessBinaries(pol2, adaptered)
 	if len(got) != 1 || got[0].Status != StatusFail || got[0].Fix == "" {
 		t.Errorf("missing default harness = %v, want a single fail with fix", got)
+	}
+
+	// A DEFAULT harness with no adapter is a fail (cannot dispatch); a non-default no-adapter option stays info (finding 8).
+	pol3 := &workspace.Policy{}
+	pol3.Harness.Leader.Default = "noad"
+	pol3.Harness.Worker.Default = "hpresent"
+	pol3.Harness.Leader.Options = []string{"noad"}
+	pol3.Harness.Worker.Options = []string{"hpresent", "otherad"}
+	adaptered3 := func(n string) bool { return n == "hpresent" } // noad and otherad have no adapter
+	by3 := map[string]Check{}
+	for _, c := range HarnessBinaries(pol3, adaptered3) {
+		by3[c.Name] = c
+	}
+	if by3["harness noad"].Status != StatusFail || by3["harness noad"].Fix == "" {
+		t.Errorf("default harness with no adapter = %v, want fail with fix", by3["harness noad"])
+	}
+	if by3["harness otherad"].Status != StatusInfo {
+		t.Errorf("non-default harness with no adapter = %v, want info", by3["harness otherad"])
 	}
 }
 

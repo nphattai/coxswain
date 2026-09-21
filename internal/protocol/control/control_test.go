@@ -383,14 +383,65 @@ func listInbox(epic, story string) (string, error) {
 
 func writeCheckpoint(t *testing.T, epic, story string, attempt int, head string) {
 	t.Helper()
+	writeCheckpointAt(t, epic, story, attempt, head, "2026-09-15T00:00:00Z")
+}
+
+// writeCheckpointAt writes a checkpoint with an explicit written_at, so a test can make it newer than the story's last
+// event (the idle fast-path, finding 14).
+func writeCheckpointAt(t *testing.T, epic, story string, attempt int, head, writtenAt string) {
+	t.Helper()
 	dir := filepath.Join(epic, "handoffs")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	content := "---\nschema: coxswain.checkpoint.v1\nstory: " + story + "\nattempt: " + strconv.Itoa(attempt) +
-		"\nhead: " + head + "\nbase: origin/epic/e@000\nwritten_at: 2026-09-15T00:00:00Z\nreason: park\n---\n## Next action\ngo\n"
+		"\nhead: " + head + "\nbase: origin/epic/e@000\nwritten_at: " + writtenAt + "\nreason: park\n---\n## Next action\ngo\n"
 	if err := os.WriteFile(filepath.Join(dir, story+".md"), []byte(content), 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// An idle worker (empty composer) whose checkpoint is newer than its last event parks on that checkpoint immediately,
+// without steering it or waiting ParkWait, even when the checkpoint head does not match HEAD (finding 14).
+func TestParkIdleWorkerParksOnFreshCheckpoint(t *testing.T) {
+	epic := t.TempDir()
+	seedWorking(t, epic, "s", 1)
+	future := time.Now().Add(time.Hour).UTC().Format(time.RFC3339) // newer than the working event
+	writeCheckpointAt(t, epic, "s", 1, "deadbeef0000000000000000000000000000dead", future)
+	b := fake.New()
+	b.ComposerState = backend.ComposerEmpty
+	b.StopConfirmed = true
+	// A one-hour ParkWait would hang the test if park fell through to the ensure-and-wait path; the fast path must skip it.
+	ctl := &Controller{EpicDir: epic, Backend: b, ParkWait: time.Hour, PollInterval: 5 * time.Millisecond, Warn: &bytes.Buffer{}}
+	done := make(chan error, 1)
+	go func() { done <- ctl.Park("s", t.TempDir(), backend.Session{ID: "x"}) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("idle park: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("park hung: the idle fast-path did not trigger")
+	}
+	if s := lastState(t, epic, "s"); s.State != state.Parked {
+		t.Fatalf("want parked, got %s", s.State)
+	}
+	if recs, _ := listInbox(epic, "s"); strings.Contains(recs, "PARK") {
+		t.Errorf("idle fast-path must not write a PARK steer: %q", recs)
+	}
+}
+
+// A busy worker never fast-parks: with a non-matching head it falls through to the ensure-and-wait path and refuses when
+// no matching checkpoint arrives (so the idle path cannot stop a worker that is still mid-turn).
+func TestParkBusyWorkerDoesNotFastPark(t *testing.T) {
+	epic := t.TempDir()
+	seedWorking(t, epic, "s", 1)
+	future := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+	writeCheckpointAt(t, epic, "s", 1, "deadbeef0000000000000000000000000000dead", future)
+	b := fake.New()
+	b.ComposerState = backend.ComposerBusy
+	if err := newCtl(epic, b).Park("s", t.TempDir(), backend.Session{ID: "x"}); err == nil || !strings.Contains(err.Error(), "refusing to park blind") {
+		t.Fatalf("a busy worker must not fast-park; want refuse, got %v", err)
 	}
 }
 
