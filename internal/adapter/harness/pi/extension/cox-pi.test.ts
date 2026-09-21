@@ -7,7 +7,7 @@
 // still be injected.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, chmodSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, chmodSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import makeExtension from "./cox-pi.ts";
@@ -107,4 +107,119 @@ test("resuming worker (checkpoint present) DOES get the injected checkpoint as a
     if (prev.role === undefined) delete process.env.COX_ROLE; else process.env.COX_ROLE = prev.role;
     if (prev.bin === undefined) delete process.env.COX_BIN; else process.env.COX_BIN = prev.bin;
   }
+});
+
+// --- Harness-owned busy state (DESIGN wave-3 item 2) ---
+// FAIL_TO_PASS: on the old wiring the extension never wrote the busy record, so a backend could not consult it. The
+// fixed wiring Applies busy on agent_start and idle on agent_settled using COX_BUSY_GEN, and writes NOTHING when the gen
+// is absent (never a guess).
+
+// busyEnv sets the worker env the launch seam exports, runs body, then restores every key.
+async function busyEnv(
+  vars: { story?: string; epic?: string; gen?: string; bin?: string; role?: string },
+  body: () => Promise<void>,
+): Promise<void> {
+  const keys = ["COX_STORY", "COX_EPIC", "COX_BUSY_GEN", "COX_BIN", "COX_ROLE"] as const;
+  const prev: Record<string, string | undefined> = {};
+  for (const k of keys) prev[k] = process.env[k];
+  const set = (k: (typeof keys)[number], v: string | undefined) => {
+    if (v === undefined) delete process.env[k];
+    else process.env[k] = v;
+  };
+  set("COX_STORY", vars.story);
+  set("COX_EPIC", vars.epic);
+  set("COX_BUSY_GEN", vars.gen);
+  set("COX_BIN", vars.bin);
+  set("COX_ROLE", vars.role);
+  try {
+    await body();
+  } finally {
+    for (const k of keys) set(k, prev[k]);
+    cleanupMarker();
+  }
+}
+
+// logStub writes an executable that appends its argv (one line) to logPath, so a test asserts what cox was invoked with.
+function logStub(dir: string, logPath: string): string {
+  const stub = join(dir, "coxlog.sh");
+  writeFileSync(stub, `#!/bin/sh\necho "$*" >> '${logPath}'\n`);
+  chmodSync(stub, 0o755);
+  return stub;
+}
+
+test("agent_start -> busy, agent_settled -> idle (worker, gen present)", async () => {
+  const epic = mkdtempSync(join(tmpdir(), "coxpi-busy-"));
+  const log = join(epic, "cox.log");
+  const stub = logStub(epic, log);
+  await busyEnv({ story: "w1", epic, gen: "g123", bin: stub }, async () => {
+    const { pi, handlers } = fakePi();
+    makeExtension(pi as never);
+    await handlers["agent_start"]?.({}, {});
+    await waitFor(() => existsSync(log) && readFileSync(log, "utf8").includes("agent_start"), 1500);
+    await handlers["agent_settled"]?.({}, {});
+    await waitFor(() => readFileSync(log, "utf8").includes("agent_settled"), 1500);
+    const lines = readFileSync(log, "utf8");
+    assert.match(lines, /busy apply w1 busy --gen g123 --source pi-ext --event agent_start --epic/, "agent_start must apply busy with the env gen");
+    assert.match(lines, /busy apply w1 idle --gen g123 --source pi-ext --event agent_settled --epic/, "agent_settled must apply idle with the env gen");
+  });
+  rmSync(epic, { recursive: true, force: true });
+});
+
+test("no COX_BUSY_GEN -> no busy write (never a guess)", async () => {
+  const epic = mkdtempSync(join(tmpdir(), "coxpi-nogen-"));
+  const log = join(epic, "cox.log");
+  const stub = logStub(epic, log);
+  await busyEnv({ story: "w1", epic, gen: undefined, bin: stub }, async () => {
+    const { pi, handlers } = fakePi();
+    makeExtension(pi as never);
+    await handlers["agent_start"]?.({}, {});
+    await handlers["agent_settled"]?.({}, {});
+    // Wait past the exec latency the gen-present case needed; with no gen the stub must never run at all.
+    await new Promise((r) => setTimeout(r, 400));
+    assert.equal(existsSync(log), false, "a session with no armed gen must write no busy record");
+  });
+  rmSync(epic, { recursive: true, force: true });
+});
+
+// --- Interrupt through the harness (DESIGN wave-3 item 4) ---
+// FAIL_TO_PASS: the old wiring had no worker interrupt path, so a durable interrupt record could not abort a Pi turn. The
+// fixed wiring spawns `cox inbox interrupt-wait` per turn and calls ctx.abort() when it exits 0 (an interrupt arrived).
+
+// interruptStub writes a stub whose `inbox interrupt-wait` invocation behaves as `interrupt`: "now" exits 0 (an
+// interrupt arrived), "block" sleeps (no interrupt). Every other cox call (busy apply) exits 0.
+function interruptStub(dir: string, mode: "now" | "block"): string {
+  const stub = join(dir, "coxint.sh");
+  const body = mode === "now" ? "exit 0" : "sleep 5; exit 3";
+  writeFileSync(stub, `#!/bin/sh\nif [ "$1" = inbox ]; then ${body}; fi\nexit 0\n`);
+  chmodSync(stub, 0o755);
+  return stub;
+}
+
+test("a turn is aborted when an interrupt record arrives (interrupt-wait exits 0)", async () => {
+  const epic = mkdtempSync(join(tmpdir(), "coxpi-int-"));
+  const stub = interruptStub(epic, "now");
+  await busyEnv({ story: "w1", epic, gen: "g1", bin: stub }, async () => {
+    let aborted = false;
+    const { pi, handlers } = fakePi();
+    makeExtension(pi as never);
+    await handlers["agent_start"]?.({}, { abort: () => { aborted = true; } });
+    await waitFor(() => aborted, 1500);
+    assert.equal(aborted, true, "an interrupt record (interrupt-wait exit 0) must abort the running turn");
+  });
+  rmSync(epic, { recursive: true, force: true });
+});
+
+test("no interrupt -> the turn is not aborted", async () => {
+  const epic = mkdtempSync(join(tmpdir(), "coxpi-noint-"));
+  const stub = interruptStub(epic, "block");
+  await busyEnv({ story: "w1", epic, gen: "g1", bin: stub }, async () => {
+    let aborted = false;
+    const { pi, handlers } = fakePi();
+    makeExtension(pi as never);
+    await handlers["agent_start"]?.({}, { abort: () => { aborted = true; } });
+    await new Promise((r) => setTimeout(r, 400));
+    assert.equal(aborted, false, "with no interrupt record the turn must keep running");
+    await handlers["agent_settled"]?.({}, {}); // retire the still-blocking interrupt-wait child
+  });
+  rmSync(epic, { recursive: true, force: true });
 });

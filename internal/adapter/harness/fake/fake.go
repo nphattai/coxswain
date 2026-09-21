@@ -20,12 +20,13 @@ func New(name string, wake harness.WakeMode) *Harness {
 		cp = harness.CheckpointManual
 	}
 	return &Harness{Cap: harness.Capability{
-		Name:       name,
-		Roles:      []harness.Role{harness.RoleLeader, harness.RoleWorker},
-		Wake:       wake,
-		Checkpoint: cp,
-		Doorbell:   true,
-		Interrupt:  true,
+		Name:             name,
+		Roles:            []harness.Role{harness.RoleLeader, harness.RoleWorker},
+		Wake:             wake,
+		Checkpoint:       cp,
+		Doorbell:         true,
+		Interrupt:        true,
+		BackendInterrupt: true, // default: the backend keystroke interrupt works (as for claude/codex); a test sets it false to exercise the harness inbox interrupt path
 	}}
 }
 

@@ -12,6 +12,7 @@ import (
 // adapter-owned argv (HarnessSpec.Argv) token by token, each shell-quoted. The order of the argv is preserved and only
 // shell-safe quoting is added, so the process argv is byte-for-byte what the adapter returned.
 func TestLaunchLineQuotesArgvWithEnv(t *testing.T) {
+	defer pinCoxSelf("")()
 	spec := HarnessSpec{Name: "claude", Argv: []string{"claude", "--model", "claude-opus-4-8", "the prompt"}}
 	brief := Brief{StoryPath: "/epics/v2/stories/m10.md"}
 	got := LaunchLine(spec, brief)
@@ -21,9 +22,29 @@ func TestLaunchLineQuotesArgvWithEnv(t *testing.T) {
 	}
 }
 
+// pinCoxSelf sets coxSelf for a test and returns a restore func, so the COX_BIN prefix is deterministic (or absent).
+func pinCoxSelf(v string) func() {
+	prev := coxSelf
+	coxSelf = v
+	return func() { coxSelf = prev }
+}
+
+// A dispatching cox forwards its own absolute path as COX_BIN so the worker's harness hooks call the same binary (not
+// the worker terminal's PATH cox, which during an epic is the pinned driver that may lack a subcommand the candidate
+// added).
+func TestLaunchLineForwardsCoxBin(t *testing.T) {
+	defer pinCoxSelf("/tmp/dist/cox")()
+	got := LaunchLine(HarnessSpec{Name: "pi", Argv: []string{"pi", "hi"}}, Brief{StoryPath: "/e/stories/s.md"})
+	want := "COX_EPIC='/e' COX_STORY='s' COX_BIN='/tmp/dist/cox' COX_PLANE=terminal 'pi' 'hi'"
+	if got != want {
+		t.Fatalf("LaunchLine =\n  %q\nwant\n  %q", got, want)
+	}
+}
+
 // A launch with no story path types no COX_EPIC/COX_STORY (nothing to derive), only COX_PLANE plus the argv. Empty argv
 // tokens are skipped so a harness that omits an optional flag never types a bare ”.
 func TestLaunchLineNoStoryPathSkipsEnvAndEmptyTokens(t *testing.T) {
+	defer pinCoxSelf("")()
 	got := LaunchLine(HarnessSpec{Name: "pi", Argv: []string{"pi", "", "hello"}}, Brief{})
 	want := "COX_PLANE=terminal 'pi' 'hello'"
 	if got != want {

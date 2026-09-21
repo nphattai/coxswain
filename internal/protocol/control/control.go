@@ -55,6 +55,13 @@ func (c *Controller) warn() io.Writer {
 	return os.Stderr
 }
 
+// backendInterrupts reports whether the backend keystroke interrupt actually aborts this harness's turn. A nil Harness
+// (unconfigured, e.g. in a test) defaults to true - the historical keystroke-only path - so only a harness that
+// explicitly declares BackendInterrupt=false takes the inbox+extension route.
+func (c *Controller) backendInterrupts() bool {
+	return c.Harness == nil || c.Harness.Card().BackendInterrupt
+}
+
 // Interrupt breaks a worker out of a runaway turn and rings its doorbell (v1 interrupt.sh). An interrupt is not a state
 // transition: it records ONE working->working event with evidence {verb: interrupt, delivered: true|false, error?} so
 // the audit log shows the attempt, and the story never leaves working. A failed delivery returns an error but does not
@@ -65,17 +72,30 @@ func (c *Controller) Interrupt(story string, session backend.Session) error {
 	if err != nil {
 		return err
 	}
-	delivered := true
+	// The backend keystroke interrupt is always attempted (the Ctrl-C fallback). For a harness whose TUI ignores that
+	// keystroke (card BackendInterrupt=false, dogfood F-C), it is a no-op even on success, so delivery goes THROUGH the
+	// harness: a durable interrupt record the harness's own extension aborts on, plus a best-effort doorbell ring.
 	ivErr := c.Backend.Interrupt(session)
-	if ivErr != nil {
-		delivered = false
-	} else {
-		// Ring the durable doorbell so the interrupted worker reads its inbox now.
-		_, _ = c.Backend.Send(session, inbox.Doorbell(inbox.Dir(c.EpicDir, story)))
-	}
+	delivered := ivErr == nil
 	ev := map[string]any{"verb": "interrupt", "delivered": delivered}
 	if ivErr != nil {
 		ev["error"] = ivErr.Error()
+	}
+	if !c.backendInterrupts() {
+		recPath, werr := inbox.WriteInterrupt(c.EpicDir, story)
+		if werr != nil {
+			ev["harness_interrupt_error"] = werr.Error()
+			delivered = false
+		} else {
+			ev["via"] = "inbox+extension"
+			ev["interrupt_record"] = recPath
+			delivered = true                                                            // delivered through the harness path even if the keystroke alone did nothing
+			_, _ = c.Backend.Send(session, inbox.Doorbell(inbox.Dir(c.EpicDir, story))) // best-effort ring
+		}
+		ev["delivered"] = delivered
+	} else if ivErr == nil {
+		// Ring the durable doorbell so the interrupted worker reads its inbox now.
+		_, _ = c.Backend.Send(session, inbox.Doorbell(inbox.Dir(c.EpicDir, story)))
 	}
 	if err := state.Append(c.EpicDir, state.Event{
 		Epic: snapEpic(c.EpicDir), Story: story, Attempt: snap.Attempt, Actor: state.Leader,
@@ -83,7 +103,9 @@ func (c *Controller) Interrupt(story string, session backend.Session) error {
 	}); err != nil {
 		return err
 	}
-	if ivErr != nil {
+	// A keystroke error is only fatal when nothing else delivered the interrupt. For a BackendInterrupt=false harness the
+	// keystroke is expected to do nothing, so the inbox+extension path (delivered) is what counts.
+	if ivErr != nil && !delivered {
 		return fmt.Errorf("interrupt not delivered (state unchanged): %w", ivErr)
 	}
 	return nil

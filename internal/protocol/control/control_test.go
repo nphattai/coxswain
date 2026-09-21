@@ -12,6 +12,9 @@ import (
 
 	"github.com/nphattai/coxswain/internal/adapter/backend"
 	"github.com/nphattai/coxswain/internal/adapter/backend/fake"
+	"github.com/nphattai/coxswain/internal/adapter/harness"
+	harnessfake "github.com/nphattai/coxswain/internal/adapter/harness/fake"
+	"github.com/nphattai/coxswain/internal/protocol/inbox"
 	"github.com/nphattai/coxswain/internal/state"
 	"github.com/nphattai/coxswain/internal/watch"
 )
@@ -477,4 +480,64 @@ func fullHead(t *testing.T, dir string) string {
 		t.Fatal(err)
 	}
 	return strings.TrimSpace(string(out))
+}
+
+// --- Interrupt through the harness (DESIGN wave-3 item 4) ---
+// A harness whose backend keystroke interrupt is a no-op (card BackendInterrupt=false, e.g. Pi 0.86.1, dogfood F-C) must
+// ALSO get a durable interrupt record its extension aborts on. FAIL_TO_PASS: the old Interrupt only rang the doorbell,
+// which a busy Pi worker never receives, so the interrupt was lost (F-C).
+func TestInterruptViaHarnessWritesInboxRecord(t *testing.T) {
+	epic := t.TempDir()
+	seedWorking(t, epic, "s", 1)
+	b := fake.New()
+	h := harnessfake.New("pi", harness.WakePush)
+	h.Cap.BackendInterrupt = false // Pi's TUI ignores the keystroke
+	ctl := &Controller{EpicDir: epic, Backend: b, Harness: h}
+	if err := ctl.Interrupt("s", backend.Session{ID: "x"}); err != nil {
+		t.Fatalf("interrupt via harness path must succeed: %v", err)
+	}
+	recs, err := inbox.List(epic, "s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, r := range recs {
+		if r.Kind == inbox.KindInterrupt {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected a durable kind=interrupt record for a BackendInterrupt=false harness, got %+v", recs)
+	}
+	// The interrupt record must be budget-exempt: five real steers still fit afterwards.
+	for i := 0; i < 5; i++ {
+		if _, err := inbox.Write(epic, "s", "steer", inbox.Steer, ""); err != nil {
+			t.Fatalf("interrupt record wrongly consumed the steer budget: %v", err)
+		}
+	}
+	if s := lastState(t, epic, "s"); s.State != state.Working {
+		t.Fatalf("interrupt is not a transition; want working, got %s", s.State)
+	}
+}
+
+// The contrast: a harness whose keystroke interrupt works (BackendInterrupt=true) writes NO interrupt record - it rings
+// the doorbell as before.
+func TestInterruptBackendKeystrokeWritesNoRecord(t *testing.T) {
+	epic := t.TempDir()
+	seedWorking(t, epic, "s", 1)
+	b := fake.New()
+	h := harnessfake.New("claude", harness.WakePush) // default BackendInterrupt=true
+	ctl := &Controller{EpicDir: epic, Backend: b, Harness: h}
+	if err := ctl.Interrupt("s", backend.Session{ID: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	recs, _ := inbox.List(epic, "s")
+	for _, r := range recs {
+		if r.Kind == inbox.KindInterrupt {
+			t.Fatalf("a BackendInterrupt=true harness must not write an interrupt record: %+v", recs)
+		}
+	}
+	if !contains(b.Calls, "Interrupt") || !contains(b.Calls, "Send") {
+		t.Fatalf("keystroke path must call Interrupt then Send: %v", b.Calls)
+	}
 }

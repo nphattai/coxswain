@@ -9,6 +9,7 @@ import (
 
 	"github.com/nphattai/coxswain/internal/adapter/backend"
 	"github.com/nphattai/coxswain/internal/adapter/backend/fake"
+	"github.com/nphattai/coxswain/internal/protocol/busy"
 	"github.com/nphattai/coxswain/internal/protocol/inbox"
 	"github.com/nphattai/coxswain/internal/state"
 	"github.com/nphattai/coxswain/internal/wake"
@@ -560,4 +561,53 @@ func TestDoneStatusAndRejectedWorkerDoneNote(t *testing.T) {
 	if k := byStory["ctx_2"]; k.Kind != wake.KindWorkerDone || strings.Contains(k.Note, "Rejected") || !strings.Contains(k.Note, "real summary here") {
 		t.Fatalf("rejected worker_done note wrong: kind=%q note=%q", k.Kind, k.Note)
 	}
+}
+
+// --- Harness-owned busy state consult order (DESIGN wave-3 item 3) ---
+// The idle/blocked passes read the busy record FIRST, so a Pi worker whose TUI the backend classifier cannot recognize
+// (fake ComposerState "unknown") is still seen idle/busy. FAIL_TO_PASS: on the old code the pass used only the backend
+// composer, so "unknown" never fired idle_no_done and "empty" always could.
+func TestIdlePassConsultsBusyRecordFirst(t *testing.T) {
+	setup := func(t *testing.T, backendComposer, recordState string) (*Watcher, string) {
+		epic := t.TempDir()
+		must(t, state.Append(epic, ev(epic, "s", 1, state.Submitted, state.Working)))
+		now := time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC)
+		gen, err := busy.Arm(epic, "s")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if recordState != "" {
+			must(t, busy.Apply(epic, "s", recordState, gen, "pi-ext", "e"))
+		}
+		b := fake.New()
+		b.ComposerState = backendComposer // what the UI classifier would say (must be overridden by the record)
+		w := &Watcher{EpicDir: epic, Backend: b, Sessions: map[string]backend.Session{"s": {ID: "ctx_1", Handle: "term_1", Story: "s"}}, Now: func() time.Time { return now }}
+		dir := filepath.Join(epic, ".cox", "watch", "lastmsg")
+		must(t, os.MkdirAll(dir, 0o755))
+		p := filepath.Join(dir, "ctx_1")
+		must(t, os.WriteFile(p, nil, 0o644))
+		ts := now.Add(-10 * time.Minute)
+		must(t, os.Chtimes(p, ts, ts))
+		if _, err := inbox.Write(epic, "s", "do the follow-ups", inbox.Steer, ""); err != nil {
+			t.Fatal(err)
+		}
+		recs, _ := inbox.List(epic, "s")
+		steerAt := now.Add(-8 * time.Minute)
+		must(t, os.Chtimes(recs[0].Path, steerAt, steerAt))
+		return w, epic
+	}
+
+	t.Run("harness idle fires even when the backend composer is unknown", func(t *testing.T) {
+		w, _ := setup(t, backend.ComposerUnknown, busy.Idle)
+		if n, urgent, err := w.idleNoDonePass(); err != nil || n != 1 || !urgent {
+			t.Fatalf("want 1 urgent idle_no_done, got n=%d urgent=%v err=%v", n, urgent, err)
+		}
+	})
+
+	t.Run("harness busy skips even when the backend composer is empty", func(t *testing.T) {
+		w, _ := setup(t, backend.ComposerEmpty, busy.Busy)
+		if n, _, err := w.idleNoDonePass(); err != nil || n != 0 {
+			t.Fatalf("harness busy must not fire idle_no_done, got n=%d err=%v", n, err)
+		}
+	})
 }

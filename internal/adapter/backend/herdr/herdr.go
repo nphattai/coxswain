@@ -29,6 +29,7 @@ const SessionKind = "herdr"
 type Client struct {
 	Session      string
 	WorktreeBase string
+	Epic         string                               // epic dir, so Composer can consult the harness-owned busy record before the UI signal (DESIGN wave-3)
 	run          func(args ...string) ([]byte, error) // raw herdr exec
 	git          func(args ...string) ([]byte, error)
 }
@@ -195,7 +196,7 @@ func (c *Client) Spawn(wt backend.Worktree, h backend.HarnessSpec, brief backend
 	if err != nil {
 		return backend.Session{}, err
 	}
-	sess := backend.Session{Kind: SessionKind, ID: pane, Handle: c.Session}
+	sess := backend.Session{Kind: SessionKind, ID: pane, Handle: c.Session, Story: backend.StoryFromPath(brief.StoryPath)}
 	brief.Worktree = wt.Path // so the launch composer can grant the git common dir writable for a codex worker (M14)
 	line := backend.LaunchLine(h, brief)
 	if _, err := c.call("pane", "send-text", pane, line); err != nil {
@@ -270,6 +271,11 @@ func (c *Client) Stop(s backend.Session) (bool, error) {
 // Composer is reduced: herdr's composer classification (bin/fm-composer-lib.sh) is UI-shape specific and not reproduced
 // in cox, so it returns "unknown". The watcher treats only "empty" as idle, so idle_no_done never false-fires on herdr.
 func (c *Client) Composer(s backend.Session) (string, error) {
+	// Consult the harness-owned busy record first (DESIGN wave-3 item 3), the same code path Orca uses: idle -> empty,
+	// busy -> busy. herdr has no text composer classifier of its own, so unknown/absent stays unknown as before.
+	if cs, ok := backend.BusyComposer(c.Epic, s.Story); ok {
+		return cs, nil
+	}
 	return backend.ComposerUnknown, nil
 }
 

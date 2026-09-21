@@ -54,6 +54,25 @@ unhandled because the inbox record, not the ring, owns delivery.
 This distinction is why handoff belongs to Coxswain rather than to an orchestration mailbox. A backend can lose a
 doorbell or be replaced without losing the instruction. See [ADR 0012](decisions/0012-handoff-belongs-to-cox-backends-provide-terminals.md).
 
+## Idle/busy is harness-owned
+
+Whether a worker or leader is idle or busy is a fact the harness reports, not something a backend infers from a TUI. A
+harness whose card sets `BusyRecord` (Pi) arms a per-story record at `<epic>/.cox/sessions/<story>.busy.json` at
+dispatch (`cox busy arm`, incarnation gen threaded as `COX_BUSY_GEN`) and its extension Applies `busy`/`idle` on the
+turn-start/turn-end lifecycle (`cox busy apply`). Every backend ring/composer path and the watcher's idle/blocked passes
+consult this record FIRST and fall back to the backend's own signal only when the harness reports `unknown`. A stale
+gen is rejected and a missing gen writes nothing, so the record never fabricates a state. This closes the gap where a
+backend derived busy from a UI it did not recognize (dogfood F-A). `internal/protocol/busy/` owns the record;
+`cmd/cox/busy.go` is the harness-neutral CLI.
+
+## Interrupt through the harness when the backend cannot
+
+Interrupt is an allowlisted control verb delivered by the backend keystroke. When a harness's TUI ignores that keystroke
+(its card sets `BackendInterrupt: false`, e.g. Pi 0.86.1, dogfood F-C), `cox control interrupt` still sends the
+keystroke as the fallback AND delivers a durable `interrupt` inbox record; the harness's own extension aborts the
+running turn when it sees that record (Pi: `ctx.abort()`). The interrupt remains a `working->working` audit event, never
+a state transition.
+
 ## Questions are decisions, not chat
 
 On the terminal plane, a worker creates a numbered question and waits for its matching answer. The leader's reply also

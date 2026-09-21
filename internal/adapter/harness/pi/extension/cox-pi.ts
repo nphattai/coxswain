@@ -47,6 +47,19 @@ export default function (pi: ExtensionAPI): void {
   // it, wake supervision stays idle rather than running against the wrong epic.
   const epic = resolveEpic(process.env.COX_EPIC, readEpicMarker());
   const isLeader = (process.env.COX_ROLE || (story && story !== "_leader" ? "worker" : "leader")) === "leader";
+  // Harness-owned busy state (DESIGN wave-3 item 2): the gen armed at dispatch. Absent gen (or no epic/story) means this
+  // session reports no state - never a guess. Both worker and leader roles report, using whatever gen the launch env
+  // carries (a leader carries none today, so it simply does not write).
+  const busyGen = (process.env.COX_BUSY_GEN ?? "").trim();
+
+  // applyBusy reports one lifecycle transition into the busy record, best-effort: a missing gen means no write, and a
+  // refusal (a stale gen after re-arm) is swallowed so it never breaks Pi's own lifecycle.
+  function applyBusy(state: "busy" | "idle", event: string): void {
+    if (!busyGen || !epic || !story) return;
+    execFile(cox, coxArgs.busyApply(epic, story, state, busyGen, event), () => {
+      /* best-effort: cox rejects a stale gen; that must not disturb the turn */
+    });
+  }
 
   let child: ChildProcess | null = null;
   const latch = new TurnEndLatch();
@@ -59,6 +72,63 @@ export default function (pi: ExtensionAPI): void {
         /* already gone */
       }
       child = null;
+    }
+  }
+
+  // Interrupt through the harness (DESIGN wave-3 item 4): while a turn runs, one `cox inbox interrupt-wait` child blocks
+  // for a durable interrupt record; when it arrives (exit 0) the turn is aborted through Pi's own API (ctx.abort()),
+  // which the backend keystroke cannot do for Pi 0.86.1 (dogfood F-C). The child is (re)spawned on agent_start and
+  // retired on agent_settled. Worker only (a leader is not interrupted this way): gated on epic + a real story.
+  const INTERRUPT_MAX = "30m"; // ponytail: the child recycles well within cox's 1h server-side cap; the turn kills it at settled
+  let interruptChild: ChildProcess | null = null;
+  let interruptWatching = false;
+
+  function killInterruptChild(): void {
+    interruptWatching = false;
+    if (interruptChild) {
+      try {
+        interruptChild.kill();
+      } catch {
+        /* already gone */
+      }
+      interruptChild = null;
+    }
+  }
+
+  function startInterruptWatch(ctx: ExtensionContext): void {
+    if (isLeader || !epic || !story || story === "_leader") return;
+    interruptWatching = true;
+    spawnInterruptChild(ctx);
+  }
+
+  function spawnInterruptChild(ctx: ExtensionContext): void {
+    if (!interruptWatching) return;
+    try {
+      const c = spawn(cox, coxArgs.interruptWait(epic, story, INTERRUPT_MAX), {
+        stdio: ["ignore", "ignore", "ignore"],
+      });
+      interruptChild = c;
+      c.on("exit", (code) => {
+        if (c !== interruptChild) return; // superseded or killed at settled: ignore its exit
+        interruptChild = null;
+        if (code === 0) {
+          interruptWatching = false; // the interrupt aborts this turn; the next agent_start re-arms
+          try {
+            ctx.abort(); // abort the running turn; agent_settled then reports idle
+          } catch {
+            /* not streaming, or the API rejected it: the record is already consumed */
+          }
+        } else if (interruptWatching) {
+          spawnInterruptChild(ctx); // timeout (exit 3) or unexpected close: re-arm while the turn is live
+        }
+      });
+      c.on("error", () => {
+        if (c !== interruptChild) return;
+        interruptChild = null;
+        /* spawn failure: leave the keystroke fallback as the only interrupt path */
+      });
+    } catch {
+      interruptChild = null;
     }
   }
 
@@ -126,9 +196,19 @@ export default function (pi: ExtensionAPI): void {
     });
   });
 
-  // agent_settled: the turn-end health boundary. When wake supervision is unhealthy (leader with no live wait child),
-  // schedule at most one bounded continuation to reopen the cycle; the latch prevents recursion.
+  // agent_start: a turn is running -> busy (DESIGN wave-3 item 2). Applied for both roles using the env gen. A worker
+  // also arms the interrupt watcher for this turn (item 4), capturing the live ctx so an interrupt can abort it.
+  pi.on("agent_start", async (_event, ctx) => {
+    applyBusy("busy", "agent_start");
+    startInterruptWatch(ctx);
+  });
+
+  // agent_settled: the turn has fully settled (Pi fires it even on abort/failure - no retry/compaction/continuation
+  // follows), so reporting idle here also covers the abort and error paths, the DESIGN's "finally block" requirement.
+  // Reported for both roles BEFORE the leader-only supervision so a worker's idle is never gated on the leader branch.
   pi.on("agent_settled", async (_event, _ctx) => {
+    applyBusy("idle", "agent_settled");
+    killInterruptChild(); // the turn ended: retire the interrupt watcher until the next turn
     if (!isLeader) return;
     const healthy = sup.liveGeneration() !== null;
     latch.onSettled(healthy, () => {
@@ -142,8 +222,12 @@ export default function (pi: ExtensionAPI): void {
   pi.on("session_shutdown", async (_event, _ctx) => {
     sup.sessionShutdown();
     killChild();
+    killInterruptChild();
   });
-  process.once("exit", killChild);
+  process.once("exit", () => {
+    killChild();
+    killInterruptChild();
+  });
 
   // injectCheckpoint runs `cox checkpoint inject` and, when it yields recovery context, delivers it as a followUp so the
   // session starts from the saved state. Absence/failure is visible (a notify), never a silent success.

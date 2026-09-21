@@ -60,7 +60,8 @@ usage:
   cox checkpoint facts|inject --epic <dir> --story <id>
   cox wake drain [--peek] | ack-through <gen> | wait [--max <dur>]  --epic <dir>
   cox watch --epic <dir> [--once]
-  cox inbox ack <record-path>
+  cox inbox ack <record-path> | interrupt-wait --epic <dir> --story <id>
+  cox busy arm|apply|read <story> --epic <dir>
   cox hook prompt-drain|stop-rewake|precompact|session-start
 `
 
@@ -115,6 +116,8 @@ func run(args []string) int {
 		return cmdStatus(args[1:])
 	case "control":
 		return cmdControl(args[1:])
+	case "busy":
+		return cmdBusy(args[1:])
 	case "reconcile":
 		return cmdReconcile(args[1:])
 	case "story":
