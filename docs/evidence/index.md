@@ -9,6 +9,7 @@ external tool, rollout, or environment changes.
 - [Codex CLI 0.154 hooks and sandbox observations](compatibility/codex-cli-0.154.md)
 - [Claude CLI 2.1.272 launch and arena observations](compatibility/claude-cli-2.1.272.md)
 - [Pi CLI 0.85.1 launch, session, and trust observations](compatibility/pi-cli-0.85.1.md)
+- [Pi CLI 0.86.1 wave-2 real-tool dogfood observations](compatibility/pi-cli-0.86.1.md)
 - [herdr 0.8.2 command-surface observations](compatibility/herdr-0.8.2.md)
 - [Optional adapter observations](compatibility/optional-adapters.md)
 
