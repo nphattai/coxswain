@@ -8,9 +8,36 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nphattai/coxswain/internal/doctor"
 	"github.com/nphattai/coxswain/internal/state"
 	"github.com/nphattai/coxswain/internal/workspace"
 )
+
+// A workspace discovered via --root/epic whose epic has a dead watcher and an active story yields a watcher issue, so
+// doctor's exit reflects it (PR#3 review finding 5). An alive watcher, or no open story, yields none.
+func TestWatcherIssuesForWorkspaces(t *testing.T) {
+	epic := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(epic, controlDir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(watchPidPath(epic), []byte("999999"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if watcherInfo(epic).Alive {
+		t.Skip("pid 999999 happens to be alive on this host")
+	}
+	seedEvent(t, epic, state.Submitted, state.Working) // an open story
+
+	dead := []doctor.WorkspaceReport{{Epics: []doctor.EpicReport{{Path: epic, WatcherAlive: false}}}}
+	if len(watcherIssuesForWorkspaces(dead)) == 0 {
+		t.Error("a dead watcher with an active story in a discovered workspace must raise an issue")
+	}
+	// An alive watcher raises nothing.
+	alive := []doctor.WorkspaceReport{{Epics: []doctor.EpicReport{{Path: epic, WatcherAlive: true}}}}
+	if len(watcherIssuesForWorkspaces(alive)) != 0 {
+		t.Error("an alive watcher must raise no issue")
+	}
+}
 
 // doctor renders one capability card per implemented harness, each tagged adapter=yes, with the card's real fields.
 func TestDoctorHarnessCards(t *testing.T) {
@@ -62,8 +89,9 @@ func TestDoctorCodexWakePushWhenHooksInstalled(t *testing.T) {
 	}
 }
 
-// The policy-options column marks each declared harness adapter yes|no: the template policy lists omp and opencode,
-// which have no adapter, alongside claude and codex, which do.
+// The policy-options column marks each declared harness adapter yes|no. The seed template lists only adaptered
+// harnesses (claude, codex) so a minimal install passes doctor clean (arena round 1, adversary claim 1, accepted); a
+// non-adaptered option, when a user adds one, still resolves as adapter=false.
 func TestDoctorPolicyOptions(t *testing.T) {
 	pol, err := workspace.LoadPolicyFile(filepath.Join("..", "..", "templates", "policy.json"))
 	if err != nil {
@@ -73,10 +101,22 @@ func TestDoctorPolicyOptions(t *testing.T) {
 	for _, o := range policyOptionsFrom(pol) {
 		got[o.Name] = o.Adapter
 	}
-	for name, want := range map[string]bool{"claude": true, "codex": true, "omp": false, "opencode": false} {
+	for name, want := range map[string]bool{"claude": true, "codex": true} {
 		if got[name] != want {
 			t.Errorf("option %q adapter=%v, want %v", name, got[name], want)
 		}
+	}
+	if _, ok := got["omp"]; ok {
+		t.Errorf("seed template must list only adaptered harnesses in worker.options, got %v", got)
+	}
+	// A user-added non-adaptered option still resolves as adapter=false.
+	pol.Harness.Worker.Options = append(pol.Harness.Worker.Options, "omp")
+	adapters := map[string]bool{}
+	for _, o := range policyOptionsFrom(pol) {
+		adapters[o.Name] = o.Adapter
+	}
+	if adapters["omp"] {
+		t.Errorf("omp must resolve adapter=false")
 	}
 }
 

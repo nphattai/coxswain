@@ -27,6 +27,28 @@ hide:
 </figure>
 
 The lifecycle is: define the epic, approve its design, render repo-scoped stories, dispatch workers, supervise through
-wakes, audit each result, let the captain merge, then record completion and close. [Run your first epic](../QUICKSTART.md)
+wakes, audit each result, let the captain merge, then record completion and close. [First epic](first-epic.md)
 provides the narrow command path. [Architecture](../ARCHITECTURE.md) explains the boundaries and [Handoff](../handoff.md)
 explains the leader/worker contract.
+
+## Inside an epic directory
+
+An epic lives in `<workspace>/<project>/epics/<slug>/`. Its subdirectories are the durable channels from
+[Handoff](../handoff.md) on disk - the leader watches these files, so nothing lives only in a chat:
+
+| Path | Holds | Channel |
+|---|---|---|
+| `DESIGN.md` | The signed epic contract and captain rulings | Brief (source) |
+| `stories/<id>.md` | One rendered story per repo - the worker's contract | Brief (source) |
+| `repos` | The repo aliases this epic spans | - |
+| `epic.env` | `EPIC` and `PROJECT` (plus the port block for a backend epic) | - |
+| `<alias>` (symlink) | The worktree for each repo, on `epic/<slug>` | - |
+| `inbox/<story>/NNN.msg` | Leader steers and replies, moved to `handled/` on ack | Steer, Question reply |
+| `questions/<story>/qNNN*` | A worker's numbered question and its answer | Question/reply |
+| `handoffs/<story>.md` | A worker's checkpoint for its future session; `_leader` for the leader | Checkpoint |
+| `reports/` | Audit, scout, and visual-review reports | Status/report |
+| `.cox/` | State tree: `epic.json`, the `events.jsonl` event log, the wake queue, the watcher pid | Status/report, Wake |
+
+The `.cox/` tree and `cox/workspace.json` are machine-bound and git-ignored (`cox workspace init` writes those rules);
+`DESIGN.md`, `stories/`, and `repos` are committed so the epic can be re-attached on another machine with
+`cox epic attach`.

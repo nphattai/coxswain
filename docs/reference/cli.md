@@ -9,15 +9,15 @@ and implementation file under `cmd/cox/` own its exact flags, validation, and ex
 
 | Task | Command family | Owner |
 |---|---|---|
-| Initialize workspace files | `cox workspace` | `cmd/cox/workspace.go` |
-| Check installation, drift, and epic health | `cox doctor` | `cmd/cox/doctor.go`, `internal/doctor/` |
+| Set up a workspace (`init`), write leader hooks (`hooks --harness claude\|codex`), add a repo (`add-repo`) | `cox workspace` | `cmd/cox/workspace.go`, `internal/workspace/` |
+| Check the workspace, PATH, Orca, harness binaries, hooks, and epic health | `cox doctor` | `cmd/cox/doctor.go`, `internal/doctor/` |
 | Migrate a v1 epic | `cox migrate` | `cmd/cox/migrate.go`, `internal/migrate/` |
 
 ## Design and decompose
 
 | Task | Command family | Owner |
 |---|---|---|
-| Create, sign, or close an epic | `cox epic` | `cmd/cox/epic.go`, `internal/epic/` |
+| Create, attach, sign, or close an epic | `cox epic` | `cmd/cox/epic.go`, `internal/epic/` |
 | Run adversarial design review | `cox epic arena`, `cox arena` | `cmd/cox/arena.go`, `internal/arena/` |
 | Render or compare plan artifacts | `cox plan`, `cox artifact` | `cmd/cox/plan.go`, `cmd/cox/artifact.go` |
 
@@ -32,6 +32,8 @@ and implementation file under `cmd/cox/` own its exact flags, validation, and ex
 | Ask, wait, and reply | `cox question`, `cox reply` | `cmd/cox/question.go`, `cmd/cox/reply.go` |
 | Capture or inject resume context | `cox checkpoint` | `cmd/cox/checkpoint.go`, `internal/protocol/checkpoint/` |
 | Drain, acknowledge, or wait for wakes | `cox wake`, `cox watch` | `cmd/cox/wake.go`, `cmd/cox/watch.go` |
+| Acknowledge a steer/inbox record (worker) | `cox inbox ack` | `cmd/cox/inbox.go`, `internal/protocol/inbox/` |
+| Run a harness hook (drain, rewake, checkpoint) | `cox hook` | `cmd/cox/hook.go`, `hooks/` |
 
 ## Observe and recover
 

@@ -119,17 +119,16 @@ hide:
       <h2 id="start-title">Run your first epic.</h2>
       <p class="cox-home__intro">Install the binary and plugin, verify the workspace, then follow the narrow first-epic route.</p>
       <div class="cox-runbook" aria-label="First commands">
-        <code>cox workspace init --root ~/Work/my-workspace
-cox epic new my-project my-first-epic \
-  --repo app=/path/to/repo --root ~/Work/my-workspace
+        <code>cox workspace init --root ~/Work/my-workspace --repo app=/path/to/repo
+cox epic new my-project my-first-epic --repo app --root ~/Work/my-workspace
 cox epic stories --epic ~/Work/my-workspace/my-project/epics/my-first-epic</code>
       </div>
     </div>
     <nav class="cox-paths" aria-label="Start paths">
-      <a class="cox-path" href="getting-started/install/"><span><strong>Install</strong><small>Binary, plugin, and doctor</small></span></a>
-      <a class="cox-path" href="QUICKSTART/"><span><strong>First epic</strong><small>Dispatch, supervise, and close</small></span></a>
+      <a class="cox-path" href="getting-started/install/"><span><strong>Install</strong><small>Orca, binary, harness, doctor</small></span></a>
+      <a class="cox-path" href="getting-started/workspace/"><span><strong>Create a workspace</strong><small>One command, both shapes</small></span></a>
+      <a class="cox-path" href="getting-started/first-epic/"><span><strong>First epic</strong><small>New, stories, dispatch</small></span></a>
       <a class="cox-path" href="getting-started/concepts/"><span><strong>Core concepts</strong><small>Captain, leader, worker, story</small></span></a>
-      <a class="cox-path" href="ARCHITECTURE/"><span><strong>Architecture</strong><small>Boundaries, state, and failure model</small></span></a>
     </nav>
   </section>
 </div>

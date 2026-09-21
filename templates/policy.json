@@ -28,7 +28,7 @@
   },
   "harness": {
     "leader": { "options": ["claude", "codex"], "default": "claude" },
-    "worker": { "options": ["claude", "codex", "omp", "opencode"], "default": "claude", "model": "claude-opus-4-8", "models": { "claude": "claude-opus-4-8", "codex": "gpt-5.6-sol" } },
+    "worker": { "options": ["claude", "codex"], "default": "claude", "model": "claude-opus-4-8", "models": { "claude": "claude-opus-4-8", "codex": "gpt-5.6-sol" } },
     "arena": {
       "adversary": { "rule": "not-leader", "default": "codex" },
       "reviewer": { "rule": "same-as-leader-new-session" }
