@@ -193,6 +193,17 @@ func TestNavStartsWithSetUp(t *testing.T) {
 	}
 }
 
+// TestInstallPluginNote guards DESIGN item 4 (backlog B-26): the install page must say the Claude plugin is optional and
+// must not be installed alongside a workspace that already has cox-written hooks, or every leader hook fires twice.
+func TestInstallPluginNote(t *testing.T) {
+	install := readFile(t, "../../docs/getting-started/install.md")
+	for _, want := range []string{"optional", ".claude/settings.json", "fires twice"} {
+		if !strings.Contains(install, want) {
+			t.Errorf("install.md §3 is missing the plugin-optional note fragment %q (B-26)", want)
+		}
+	}
+}
+
 // docSection returns the body of a top-level `## ` section, from its heading to the next top-level heading.
 func docSection(md, heading string) string {
 	i := strings.Index(md, heading)
