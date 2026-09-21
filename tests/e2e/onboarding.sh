@@ -73,6 +73,13 @@ case "$sub $verb" in
     fi
     printf '{"ok":true,"result":{"worktree":{"path":"%s","branch":"%s"}}}\n' "$path" "$branch" ;;
   "worktree ps") echo '{"ok":true,"result":{"worktrees":[]}}' ;;
+  "worktree rm")
+    # cox detaches HEAD first, then asks Orca to rm; mirror the real removal with git so `cox epic close` can verify
+    # the worktree is actually gone (item 4b).
+    wt="$(arg --worktree "$@")"; wt="${wt#path:}"
+    main="$(git -C "$wt" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"; main="${main%/.git}"
+    [ -n "$main" ] && git -C "$main" worktree remove --force "$wt" >/dev/null 2>&1
+    echo '{"ok":true,"result":{}}' ;;
   "terminal create") echo '{"ok":true,"result":{"terminal":{"handle":"term_fake"}}}' ;;
   *) echo '{"ok":true,"result":{}}' ;;
 esac
@@ -181,6 +188,29 @@ BIN2="$TMP/bin2"; mkdir -p "$BIN2"; ln -sf "$BIN/cox" "$BIN2/cox"
 OUT="$(PATH="$BIN:$BIN2:/usr/bin:/bin" "$COX" doctor --root "$WS" --epic "$EPIC" 2>&1)"; code=$?
 echo "$OUT" | grep -qE "cox on PATH +pass" && ok "duplicate PATH cox de-duplicated (pass)" || { echo "$OUT" | grep -i "cox on PATH"; no "duplicate PATH cox not de-duplicated"; }
 [ $code -eq 0 ] && ok "doctor exit 0 with a duplicate PATH entry" || no "doctor exit $code with a duplicate PATH entry (want 0)"
+
+step "11. cox epic close on an epic with no .cox (v1-migrated) writes .cox.closed with no_runtime (B-38)"
+# A v1-style epic dir: DESIGN.md + repos, but never attached (no .cox). Close must treat "no runtime" as already
+# stopped and archive it, not fail at the archive rename.
+VINTAGE="$WS/proj/epics/vintage"
+mkdir -p "$VINTAGE"
+printf '# vintage\n\nStatus: active\n' > "$VINTAGE/DESIGN.md"
+printf 'app %s\n' "$REPO" > "$VINTAGE/repos"
+"$COX" epic close --epic "$VINTAGE" --yes > "$TMP/close-vintage.out" 2>&1; code=$?
+cat "$TMP/close-vintage.out"
+[ $code -eq 0 ] && ok "no-runtime close exit 0" || no "no-runtime close exit $code (want 0)"
+grep -q "(no runtime)" "$TMP/close-vintage.out" && ok "steps printed as no runtime" || no "no-runtime steps not printed"
+[ -f "$VINTAGE/.cox.closed/closed.json" ] && grep -q '"no_runtime": true' "$VINTAGE/.cox.closed/closed.json" && ok "closed.json notes no_runtime" || no "closed.json missing or wrong"
+
+step "12. cox epic close on a live epic removes the worktree and archives (branch kept, F01)"
+pkill -f "cox watch --epic $WS" 2>/dev/null || true
+WT_TGT="$(readlink "$EPIC/app" 2>/dev/null)"
+"$COX" epic close --epic "$EPIC" --yes > "$TMP/close-epic.out" 2>&1; code=$?
+cat "$TMP/close-epic.out"
+[ $code -eq 0 ] && ok "close exit 0" || no "close exit $code (want 0)"
+[ -d "$EPIC/.cox.closed" ] && [ ! -d "$EPIC/.cox" ] && ok ".cox archived to .cox.closed" || no ".cox not archived"
+{ [ -z "$WT_TGT" ] || [ ! -d "$WT_TGT" ]; } && ok "epic worktree removed" || no "epic worktree still present ($WT_TGT)"
+git -C "$REPO" show-ref --verify --quiet refs/heads/epic/hello && ok "epic/hello branch kept (F01)" || no "epic/hello branch was deleted"
 
 echo
 echo "RESULT: $pass passed, $fail failed"
