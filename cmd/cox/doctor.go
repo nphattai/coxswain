@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -307,6 +308,10 @@ func watcherIssuesForWorkspaces(reps []doctor.WorkspaceReport) []string {
 	return issues
 }
 
+// signedWordRe matches the whole word "signed" (case-insensitive), so "unsigned" does not count as signed - a word
+// boundary sits before "signed" in "(signed" or "re-signed" but not inside "unsigned".
+var signedWordRe = regexp.MustCompile(`(?i)\bsigned\b`)
+
 // signedDivergence reports a disagreement between an epic's DESIGN.md Status: text and its durable ledger state: the
 // text claims signed while the ledger has no design_signed (a re-attach that lost the signature, finding 2), or the
 // ledger is signed while the text does not say so. It returns "" when they agree. A closed epic is skipped (its Status:
@@ -315,7 +320,9 @@ func signedDivergence(ep doctor.EpicReport) string {
 	if ep.Closed {
 		return ""
 	}
-	textSaysSigned := strings.Contains(strings.ToLower(ep.Status), "signed")
+	// Match the whole word "signed" so an honestly unsigned Status (e.g. "active (unsigned, arena pending)") is not read
+	// as signed - a bare substring check treats "unsigned" as "signed" and false-fails.
+	textSaysSigned := signedWordRe.MatchString(ep.Status)
 	switch {
 	case textSaysSigned && !ep.Signed:
 		return "DESIGN.md Status says signed but the ledger has no design_signed (signature lost - re-sign with cox epic design --sign, or fix the Status line)"

@@ -57,6 +57,14 @@ func TestSignedDivergence(t *testing.T) {
 	if signedDivergence(doctor.EpicReport{Status: "draft", Signed: false}) != "" {
 		t.Error("both unsigned must raise nothing")
 	}
+	// "unsigned" must not read as "signed": an honestly-unsigned epic with no ledger signature agrees, no flag.
+	if signedDivergence(doctor.EpicReport{Status: "active (unsigned, arena pending)", Signed: false}) != "" {
+		t.Error(`Status "unsigned" must not be treated as signed`)
+	}
+	// A hyphenated "re-signed" still counts as signed.
+	if signedDivergence(doctor.EpicReport{Status: "active (re-signed 2026-09-21)", Signed: false}) == "" {
+		t.Error(`"re-signed" must count as signed`)
+	}
 	// A closed epic's historical Status text is never flagged.
 	if signedDivergence(doctor.EpicReport{Status: "active (signed)", Signed: false, Closed: true}) != "" {
 		t.Error("a closed epic must not be flagged")
