@@ -12,7 +12,6 @@ import (
 
 	"github.com/nphattai/coxswain/internal/adapter/backend"
 	"github.com/nphattai/coxswain/internal/workspace"
-	"github.com/nphattai/coxswain/internal/worktree"
 )
 
 // AttachOptions configures Attach.
@@ -78,16 +77,23 @@ func Attach(o AttachOptions) error {
 		}
 
 		link := filepath.Join(o.EpicDir, r.alias)
-		// Reuse a surviving clean worktree: when only .cox was discarded and the alias still points to a clean checkout on
-		// the epic branch, keep it. Asking the backend to create a second worktree for a branch that is already checked
-		// out is refused by git and Orca, so the reattach-after-discard scenario would otherwise fail.
-		if target, err := filepath.EvalSymlinks(link); err == nil {
-			if b, bErr := worktreeBranch(target); bErr == nil && b == branch {
-				if dirty, dErr := worktreeDirty(target); dErr == nil && !dirty {
-					fmt.Fprintf(o.warn(), "attach: reusing clean worktree %s for %s\n", target, r.alias)
-					trustWorktree(o.warn(), target)
-					continue
+		// (item 5) Adopt a worktree that is ALREADY on the epic branch instead of asking the backend for another one.
+		// Look it up by branch in the alias checkout's worktree list, not only through the alias symlink, so a checkout
+		// that exists without a symlink is still found (B-40): asking the backend for a second worktree on an already
+		// checked-out branch is refused by git and, on Orca, produces a renamed <user>/epic-<slug> branch and a duplicate
+		// worktree. A clean match is adopted (symlink written, trusted); a dirty match refuses rather than risk its work.
+		if strings.HasPrefix(ref, "/") {
+			if existing, found := worktreeOnBranch(ref, branch); found {
+				if dirty, _ := worktreeDirty(existing); dirty {
+					return fmt.Errorf("worktree %s on %s is dirty; commit or discard its changes before re-attaching", existing, branch)
 				}
+				fmt.Fprintf(o.warn(), "attach: adopting existing worktree %s\n", existing)
+				_ = os.Remove(link)
+				if err := os.Symlink(existing, link); err != nil {
+					return fmt.Errorf("symlink %s -> %s: %w", r.alias, existing, err)
+				}
+				trustWorktree(o.warn(), existing)
+				continue
 			}
 		}
 
@@ -105,16 +111,28 @@ func Attach(o AttachOptions) error {
 				base = "origin/" + branch
 			}
 		}
-		wt, err := worktree.Ensure(o.Runtime, ref, branch, base)
+		created, err := o.Runtime.WorktreeCreate(ref, branch, base)
 		if err != nil {
 			return fmt.Errorf("attach worktree for %s: %w", r.alias, err)
 		}
-		_ = os.Remove(link)
-		if err := os.Symlink(wt.Path, link); err != nil {
-			return fmt.Errorf("symlink %s -> %s: %w", r.alias, wt.Path, err)
+		if created.Path == "" {
+			return fmt.Errorf("attach worktree for %s returned no path", r.alias)
 		}
-		fmt.Fprintf(o.warn(), "attach: marking %s trusted in ~/.claude.json\n", wt.Path)
-		trustWorktree(o.warn(), wt.Path)
+		// (item 5) Verify the backend put the worktree on the canonical epic branch. Orca prefixes the git username and
+		// flattens slashes (epic/<slug> -> <user>/epic-<slug>) when the branch is already checked out elsewhere; that
+		// renamed branch is not the epic branch, so remove the worktree again and refuse, deleting the renamed LOCAL
+		// branch only when it is safe (no unique commits, not on origin - never a branch that carries work, F01/B-40).
+		if got, _ := worktreeBranch(created.Path); got != branch {
+			_ = o.Runtime.WorktreeRemove(backend.Worktree{Path: created.Path, Branch: got, Force: true})
+			removeRenamedBranch(o.warn(), ref, got, branch)
+			return fmt.Errorf("attach: backend created %s on renamed branch %q, not %q; removed it (the epic branch is likely checked out elsewhere, or this repo is not yours - B-40)", r.alias, got, branch)
+		}
+		_ = os.Remove(link)
+		if err := os.Symlink(created.Path, link); err != nil {
+			return fmt.Errorf("symlink %s -> %s: %w", r.alias, created.Path, err)
+		}
+		fmt.Fprintf(o.warn(), "attach: marking %s trusted in ~/.claude.json\n", created.Path)
+		trustWorktree(o.warn(), created.Path)
 	}
 
 	if err := os.MkdirAll(filepath.Join(o.EpicDir, ".cox"), 0o755); err != nil {
@@ -154,6 +172,48 @@ func readEpicRepos(epicDir string) ([]epicRepo, error) {
 		out = append(out, r)
 	}
 	return out, nil
+}
+
+// worktreeOnBranch returns the path of a worktree in repoPath's worktree list that is checked out on branch, and
+// whether one was found. It reads `git -C <repoPath> worktree list --porcelain`, whose blocks carry a `worktree
+// <path>` line and a `branch refs/heads/<name>` line (absent when detached). This finds a checkout on the branch even
+// when no alias symlink points at it (B-40).
+func worktreeOnBranch(repoPath, branch string) (string, bool) {
+	out, err := exec.Command("git", "-C", repoPath, "worktree", "list", "--porcelain").Output()
+	if err != nil {
+		return "", false
+	}
+	want := "refs/heads/" + branch
+	path := ""
+	for _, line := range strings.Split(string(out), "\n") {
+		switch {
+		case strings.HasPrefix(line, "worktree "):
+			path = strings.TrimSpace(strings.TrimPrefix(line, "worktree "))
+		case line == "branch "+want && path != "":
+			return path, true
+		}
+	}
+	return "", false
+}
+
+// removeRenamedBranch deletes a renamed local branch left behind by a backend rename (B-40), but only when it is safe:
+// the branch must NOT be on origin and must have NO commits beyond origin/<canonical> (no unique work). This never
+// deletes a branch that carries work or exists on origin (F01). A name ref (no path to run git in) is a no-op.
+func removeRenamedBranch(warn io.Writer, ref, renamed, canonical string) {
+	if !strings.HasPrefix(ref, "/") || renamed == "" || renamed == canonical {
+		return
+	}
+	if out, err := exec.Command("git", "-C", ref, "ls-remote", "--heads", "origin", renamed).Output(); err != nil || strings.TrimSpace(string(out)) != "" {
+		return // on origin (or cannot tell) -> keep it
+	}
+	if out, err := exec.Command("git", "-C", ref, "rev-list", "origin/"+canonical+".."+renamed).Output(); err != nil || strings.TrimSpace(string(out)) != "" {
+		return // has commits beyond origin/<canonical> (or cannot tell) -> keep it
+	}
+	if out, err := exec.Command("git", "-C", ref, "branch", "-D", renamed).CombinedOutput(); err != nil {
+		fmt.Fprintf(warn, "attach: left renamed branch %s in place (could not delete: %s)\n", renamed, strings.TrimSpace(string(out)))
+		return
+	}
+	fmt.Fprintf(warn, "attach: deleted renamed local branch %s (no unique commits, not on origin)\n", renamed)
 }
 
 // localBranchExists reports whether refs/heads/<branch> exists in the checkout at repoPath.

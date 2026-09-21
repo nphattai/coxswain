@@ -254,6 +254,120 @@ func TestAttachFreshCloneCreatesLocalBranchFromOrigin(t *testing.T) {
 	}
 }
 
+// TestAttachAdoptsWorktreeWithoutSymlink: when a worktree is still on the epic branch but its alias symlink is gone,
+// attach finds it by branch in the worktree list and adopts it, re-creating the symlink and asking the backend for
+// nothing (B-40: never a second worktree on an already-checked-out branch).
+func TestAttachAdoptsWorktreeWithoutSymlink(t *testing.T) {
+	repo := makeRepo(t)
+	wsRoot, ws := setupWorkspace(t, repo)
+	if _, err := New(NewOptions{Runtime: &gitBackend{t: t, repo: repo, wtBase: t.TempDir()}, Workspace: ws, WsRoot: wsRoot,
+		Project: "proj", Slug: "adopt", Repos: []string{"app"}, NoPush: true}); err != nil {
+		t.Fatal(err)
+	}
+	epicDir := filepath.Join(wsRoot, "proj", "epics", "adopt")
+	target, _ := filepath.EvalSymlinks(filepath.Join(epicDir, "app"))
+	// Remove ONLY the alias symlink and .cox; the worktree on epic/adopt survives with no symlink pointing at it.
+	if err := os.Remove(filepath.Join(epicDir, "app")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(filepath.Join(epicDir, ".cox")); err != nil {
+		t.Fatal(err)
+	}
+	be := &attachBackend{gitBackend: gitBackend{t: t, repo: repo, wtBase: t.TempDir()}}
+	if err := Attach(AttachOptions{Runtime: be, Workspace: ws, WsRoot: wsRoot, EpicDir: epicDir}); err != nil {
+		t.Fatalf("attach: %v", err)
+	}
+	if len(be.gotRepos) != 0 {
+		t.Errorf("attach must adopt the existing worktree, not create one (WorktreeCreate called %d time(s))", len(be.gotRepos))
+	}
+	if after, err := filepath.EvalSymlinks(filepath.Join(epicDir, "app")); err != nil || after != target {
+		t.Errorf("symlink must be re-created pointing at the adopted worktree: got %q want %q err=%v", after, target, err)
+	}
+	if _, err := os.Stat(filepath.Join(epicDir, ".cox", "epic.json")); err != nil {
+		t.Errorf(".cox/epic.json not recreated: %v", err)
+	}
+}
+
+// renameBackend mimics Orca renaming the branch (epic/<slug> -> <user>/epic-<slug>) when the epic branch is already
+// checked out elsewhere: its WorktreeCreate checks out the RENAMED branch and reports it. It records removals so the
+// test can assert the duplicate worktree was torn down again.
+type renameBackend struct {
+	gitBackend
+	renamed string
+	removed []string
+}
+
+func (b *renameBackend) WorktreeCreate(repo, branch, base string) (backend.Worktree, error) {
+	path := filepath.Join(b.wtBase, "wt-renamed")
+	out, err := exec.Command("git", "-C", b.repo, "worktree", "add", "-b", b.renamed, path, base).CombinedOutput()
+	if err != nil {
+		return backend.Worktree{}, &execErr{string(out), err}
+	}
+	return backend.Worktree{Path: path, Branch: b.renamed}, nil
+}
+
+func (b *renameBackend) WorktreeRemove(wt backend.Worktree) error {
+	b.removed = append(b.removed, wt.Path)
+	_, _ = exec.Command("git", "-C", b.repo, "worktree", "remove", "--force", wt.Path).CombinedOutput()
+	return nil
+}
+
+// TestAttachRefusesRenamedBranch: a backend that puts the worktree on a renamed branch is detected; attach removes the
+// duplicate worktree and refuses, and deletes the renamed local branch because it carries no unique work and is not on
+// origin - never the canonical branch or a branch on origin (B-40, F01).
+func TestAttachRefusesRenamedBranch(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	git := func(dir string, args ...string) {
+		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	origin := t.TempDir()
+	git("", "init", "-q", "--bare", origin)
+	clone := makeRepo(t)
+	git(clone, "remote", "add", "origin", origin)
+	git(clone, "checkout", "-q", "-b", "epic/rename")
+	git(clone, "commit", "-q", "--allow-empty", "-m", "epic work")
+	git(clone, "push", "-q", "origin", "main", "epic/rename")
+	git(clone, "checkout", "-q", "main")
+
+	wsRoot := t.TempDir()
+	seedWs := &workspace.Workspace{Repos: []workspace.Repo{{Alias: "app", Path: clone, Production: "main"}}}
+	if _, err := workspace.Init(wsRoot, seedWs); err != nil {
+		t.Fatal(err)
+	}
+	ws, _ := workspace.Load(wsRoot)
+	epicDir := filepath.Join(wsRoot, "proj", "epics", "rename")
+	if err := os.MkdirAll(epicDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range map[string]string{"DESIGN.md": "# rename\n", "repos": "app " + clone + "\n"} {
+		if err := os.WriteFile(filepath.Join(epicDir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	be := &renameBackend{gitBackend: gitBackend{t: t, repo: clone, wtBase: t.TempDir()}, renamed: "nphattai/epic-rename"}
+	err := Attach(AttachOptions{Runtime: be, Workspace: ws, WsRoot: wsRoot, EpicDir: epicDir})
+	if err == nil || !strings.Contains(err.Error(), "renamed branch") {
+		t.Fatalf("want a rename refusal, got %v", err)
+	}
+	if len(be.removed) != 1 {
+		t.Errorf("the duplicate worktree must be removed, removed=%v", be.removed)
+	}
+	if localBranchExists(clone, "nphattai/epic-rename") {
+		t.Error("a renamed local branch with no unique commits and not on origin must be deleted")
+	}
+	if !localBranchExists(clone, "epic/rename") {
+		t.Error("the canonical epic branch must survive")
+	}
+	if _, err := os.Stat(filepath.Join(epicDir, ".cox")); !os.IsNotExist(err) {
+		t.Errorf("a refused attach must not create .cox/, err=%v", err)
+	}
+}
+
 // Attach refuses when a still-present worktree is dirty (uncommitted work a re-checkout would risk).
 func TestAttachRefusesDirtyWorktree(t *testing.T) {
 	repo := makeRepo(t)
