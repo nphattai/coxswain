@@ -199,6 +199,10 @@ func cmdDoctor(args []string) int {
 				fmt.Fprintf(os.Stderr, "ISSUE: workspace %s policy.json: %s\n", w.Root, w.PolicyError)
 			}
 			for _, ep := range w.Epics {
+				if ep.Closed {
+					fmt.Printf("    epic %s  closed\n", ep.Slug)
+					continue
+				}
 				watch := "watcher dead"
 				if ep.WatcherAlive {
 					watch = "watcher alive"
@@ -284,8 +288,8 @@ func watcherIssuesForWorkspaces(reps []doctor.WorkspaceReport) []string {
 	var issues []string
 	for _, w := range reps {
 		for _, ep := range w.Epics {
-			if ep.WatcherAlive {
-				continue
+			if ep.WatcherAlive || ep.Closed {
+				continue // a closed epic has no watcher to be dead and no open stories
 			}
 			if iss := watcherIssue(ep.Path, watcherInfo(ep.Path)); iss != "" {
 				issues = append(issues, iss)

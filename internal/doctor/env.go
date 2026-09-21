@@ -48,6 +48,9 @@ type EpicReport struct {
 	Status       string `json:"status,omitempty"`
 	WatcherAlive bool   `json:"watcher_alive"`
 	WatcherPid   int    `json:"watcher_pid,omitempty"`
+	// Closed is true for an archived epic: a .cox.closed exists and .cox does not. A closed epic has no live watcher and
+	// no open stories, so doctor prints it as "closed" rather than "active ... watcher dead" (finding 12).
+	Closed bool `json:"closed,omitempty"`
 }
 
 // WorkspaceReport is one recognised v2 workspace: its validity, hook install state per leader harness, epics, and any
@@ -304,6 +307,8 @@ func InspectWorkspace(wsRoot string) WorkspaceReport {
 		if fi, err := os.Stat(ep); err != nil || !fi.IsDir() {
 			continue
 		}
+		// A closed epic is archived: .cox.closed exists and .cox does not. It has no live watcher and no open stories.
+		closed := exists(filepath.Join(ep, ".cox.closed")) && !exists(filepath.Join(ep, ".cox"))
 		pid := readPid(filepath.Join(ep, ".cox", "watch.pid"))
 		rep.Epics = append(rep.Epics, EpicReport{
 			Path:         ep,
@@ -311,6 +316,7 @@ func InspectWorkspace(wsRoot string) WorkspaceReport {
 			Status:       epicStatus(filepath.Join(ep, "DESIGN.md")),
 			WatcherPid:   pid,
 			WatcherAlive: pid > 0 && pidAlive(pid),
+			Closed:       closed,
 		})
 	}
 

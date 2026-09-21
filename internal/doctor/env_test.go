@@ -101,6 +101,30 @@ func TestRepoCheckoutIssues(t *testing.T) {
 	}
 }
 
+// An archived epic (.cox.closed present, .cox absent) is reported Closed, so doctor prints it as "closed" rather than
+// "active ... watcher dead" (finding 12).
+func TestInspectWorkspaceClosedEpic(t *testing.T) {
+	root := t.TempDir()
+	repo := t.TempDir()
+	if _, err := workspace.Init(root, &workspace.Workspace{Repos: []workspace.Repo{{Alias: "app", Path: repo, Production: "main"}}}); err != nil {
+		t.Fatal(err)
+	}
+	epicDir := filepath.Join(root, "proj", "epics", "done1")
+	if err := os.MkdirAll(filepath.Join(epicDir, ".cox.closed"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(epicDir, "DESIGN.md"), []byte("# done1\n\nStatus: active (signed)\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rep := InspectWorkspace(root)
+	if len(rep.Epics) != 1 || !rep.Epics[0].Closed {
+		t.Fatalf("archived epic must be reported Closed: %+v", rep.Epics)
+	}
+	if rep.Epics[0].WatcherAlive {
+		t.Errorf("a closed epic has no live watcher")
+	}
+}
+
 // Present passes for a binary on PATH and fails (with a fix) otherwise; Reachable passes on exit 0 and is unknown on a
 // non-zero probe.
 func TestPresentAndReachable(t *testing.T) {

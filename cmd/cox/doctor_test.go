@@ -39,6 +39,15 @@ func TestWatcherIssuesForWorkspaces(t *testing.T) {
 	}
 }
 
+// A closed epic raises no watcher issue (nothing to deliver), so doctor never prints it as "active ... watcher dead"
+// (finding 12).
+func TestWatcherIssuesSkipsClosedEpic(t *testing.T) {
+	closed := []doctor.WorkspaceReport{{Epics: []doctor.EpicReport{{Path: t.TempDir(), WatcherAlive: false, Closed: true}}}}
+	if len(watcherIssuesForWorkspaces(closed)) != 0 {
+		t.Error("a closed epic must raise no watcher issue")
+	}
+}
+
 // A path-backed repo whose checkout is missing or is not a git checkout makes doctor fail (finding 7): the issue is
 // surfaced and folds into the exit code.
 func TestWorkspaceRepoIssues(t *testing.T) {
