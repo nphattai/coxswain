@@ -2,6 +2,7 @@ package epic
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/nphattai/coxswain/internal/adapter/backend"
 	"github.com/nphattai/coxswain/internal/workspace"
+	"github.com/nphattai/coxswain/internal/worktree"
 )
 
 // AttachOptions configures Attach.
@@ -111,28 +113,27 @@ func Attach(o AttachOptions) error {
 				base = "origin/" + branch
 			}
 		}
-		created, err := o.Runtime.WorktreeCreate(ref, branch, base)
+		// worktree.Ensure owns the isolation verification (F02): it creates the worktree and proves it is on the requested
+		// branch. (item 5) Orca prefixes the git username onto an already checked-out branch (epic/<slug> ->
+		// <user>/epic-<slug>), which Ensure reports as a BranchMismatchError; that renamed branch is not the epic branch,
+		// so remove the worktree again and refuse, deleting the renamed LOCAL branch only when it is safe (no unique
+		// commits, not on origin - never a branch that carries work, F01/B-40).
+		wt, err := worktree.Ensure(o.Runtime, ref, branch, base)
 		if err != nil {
+			var bm *worktree.BranchMismatchError
+			if errors.As(err, &bm) {
+				_ = o.Runtime.WorktreeRemove(backend.Worktree{Path: bm.Path, Branch: bm.Got, Force: true})
+				removeRenamedBranch(o.warn(), ref, bm.Got, branch)
+				return fmt.Errorf("attach: backend created %s on renamed branch %q, not %q; removed it (the epic branch is likely checked out elsewhere, or this repo is not yours - B-40)", r.alias, bm.Got, branch)
+			}
 			return fmt.Errorf("attach worktree for %s: %w", r.alias, err)
 		}
-		if created.Path == "" {
-			return fmt.Errorf("attach worktree for %s returned no path", r.alias)
-		}
-		// (item 5) Verify the backend put the worktree on the canonical epic branch. Orca prefixes the git username and
-		// flattens slashes (epic/<slug> -> <user>/epic-<slug>) when the branch is already checked out elsewhere; that
-		// renamed branch is not the epic branch, so remove the worktree again and refuse, deleting the renamed LOCAL
-		// branch only when it is safe (no unique commits, not on origin - never a branch that carries work, F01/B-40).
-		if got, _ := worktreeBranch(created.Path); got != branch {
-			_ = o.Runtime.WorktreeRemove(backend.Worktree{Path: created.Path, Branch: got, Force: true})
-			removeRenamedBranch(o.warn(), ref, got, branch)
-			return fmt.Errorf("attach: backend created %s on renamed branch %q, not %q; removed it (the epic branch is likely checked out elsewhere, or this repo is not yours - B-40)", r.alias, got, branch)
-		}
 		_ = os.Remove(link)
-		if err := os.Symlink(created.Path, link); err != nil {
-			return fmt.Errorf("symlink %s -> %s: %w", r.alias, created.Path, err)
+		if err := os.Symlink(wt.Path, link); err != nil {
+			return fmt.Errorf("symlink %s -> %s: %w", r.alias, wt.Path, err)
 		}
-		fmt.Fprintf(o.warn(), "attach: marking %s trusted in ~/.claude.json\n", created.Path)
-		trustWorktree(o.warn(), created.Path)
+		fmt.Fprintf(o.warn(), "attach: marking %s trusted in ~/.claude.json\n", wt.Path)
+		trustWorktree(o.warn(), wt.Path)
 	}
 
 	if err := os.MkdirAll(filepath.Join(o.EpicDir, ".cox"), 0o755); err != nil {

@@ -33,9 +33,24 @@ func Ensure(b backend.Backend, repo, branch, base string) (backend.Worktree, err
 		return backend.Worktree{}, fmt.Errorf("verify branch for %s: %w", repo, err)
 	}
 	if got != branch {
-		return backend.Worktree{}, fmt.Errorf("worktree for %s is on branch %q, expected %q", repo, got, branch)
+		// A typed error so a caller can tell a branch rename (Orca prefixes the git username onto an already
+		// checked-out branch) from a create failure, and clean up the worktree it names, while this package stays the
+		// single owner of the isolation verification (F02). Still a zero Worktree; nothing here deletes a branch (F01).
+		return backend.Worktree{}, &BranchMismatchError{Path: wt.Path, Got: got, Want: branch}
 	}
 	return backend.Worktree{Path: wt.Path, Branch: branch}, nil
+}
+
+// BranchMismatchError is returned by Ensure when the created worktree is on a branch other than the one requested. Path
+// is the created checkout (so a caller can remove it), Got the branch it landed on, Want the branch that was requested.
+type BranchMismatchError struct {
+	Path string
+	Got  string
+	Want string
+}
+
+func (e *BranchMismatchError) Error() string {
+	return fmt.Sprintf("worktree %s is on branch %q, expected %q", e.Path, e.Got, e.Want)
 }
 
 // currentBranch returns the checked-out branch of the git worktree at path.
