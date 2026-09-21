@@ -43,8 +43,9 @@ func (h *Harness) Card() harness.Capability {
 		Checkpoint:       harness.CheckpointAuto,
 		Doorbell:         true,
 		Interrupt:        true,
-		BackendInterrupt: false, // Pi 0.86.1's TUI ignores the backend interrupt keystroke (dogfood F-C): interrupt is delivered through the durable inbox and the Pi extension aborts the run
-		BusyRecord:       true,  // the Pi extension reports its own idle/busy into the busy record (agent_start/agent_settled), so dispatch arms COX_BUSY_GEN
+		BackendInterrupt: false,                                                   // Pi 0.86.1's TUI ignores the backend interrupt keystroke (dogfood F-C): interrupt is delivered through the durable inbox and the Pi extension aborts the run
+		BusyRecord:       true,                                                    // the Pi extension reports its own idle/busy into the busy record (agent_start/agent_settled), so dispatch arms COX_BUSY_GEN
+		BusySources:      []string{"pi-ext", "dispatch", "interrupt", "recovery"}, // the Pi extension, plus the leader-side writers every card trusts
 		Telemetry:        true,
 		Sandbox:          false,
 		UnsandboxedAck:   false, // Pi has no standing ack: an unsandboxed Pi worker dispatch requires --allow-unsandboxed every time until it passes its support gates

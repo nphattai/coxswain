@@ -32,6 +32,7 @@ Every *justified* section (`workers_per_repo`, `waves`, `context`, `arena`, `del
 | `quota` | Observe-only quota thresholds. |
 | `review` | Visual-review surface. |
 | `alerts` | Out-of-band notification channel for a leader that has gone unreachable. |
+| `watch` | Watcher-window overrides (optional; code defaults otherwise). |
 
 ### `workers_per_repo`
 
@@ -75,6 +76,7 @@ Model-agnostic (decision 8): the leader is not locked to one harness.
 | `worker` | object | Worker role: `options`, `default`, per-harness `models` (harness → default model id), and the legacy single `model` (read as claude's default). |
 | `arena` | object | Arena roles: `adversary` (`rule`, `default`) and `reviewer` (`rule`). |
 | `launch` | object | Per-harness launch flags. A top-level `<harness>` key lists a dispatched worker's autonomy flags; the nested `arena` key holds each harness's read-only arena flags. |
+| `busy_verified` | bool | Opt codex into the harness-owned busy record (DESIGN wave-2 item 6). Default false: codex is not armed at dispatch and writes no busy record until this is set, which vouches that a `codex-hook` writer is wired. `claude` and `pi` report their own state from their capability cards, so this flag governs only codex. It never selects a harness or changes routing. |
 
 `options`, `default`, `model`, `models`, `adversary`, `reviewer`, and `rule` are the fields inside these objects.
 
@@ -123,6 +125,14 @@ gone unreachable for three consecutive doorbell nudges (a dead handle after a re
 | Field | Type | Meaning |
 |---|---|---|
 | `channel` | string | `"off"` (default), `"osascript"` (a macOS Notification Center banner), or `"command:<cmd>"` (runs `<cmd>` via `sh -c` with the alarm summary as `$1` and on stdin, for a phone or pager). |
+
+### `watch`
+
+Optional watcher-window overrides; an absent section keeps the code defaults.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `busy_turn_max_min` | int (minutes) | How long a story's busy record may stay busy - with no fresh busy event and no fresh checkpoint - before the watcher raises one routine `status` wake for the leader (DESIGN wave-2 item 6d). `<=0` or unset uses the default (60 minutes). It is a nudge, never an interrupt. |
 
 For exact defaults, read `templates/policy.json`. For where a change belongs, see
 [Configuration authority](configuration.md).

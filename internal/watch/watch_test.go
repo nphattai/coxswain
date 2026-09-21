@@ -673,7 +673,7 @@ func TestIdlePassConsultsBusyRecordFirst(t *testing.T) {
 		epic := t.TempDir()
 		must(t, state.Append(epic, ev(epic, "s", 1, state.Submitted, state.Working)))
 		now := time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC)
-		gen, err := busy.Arm(epic, "s")
+		gen, err := busy.Arm(epic, "s", "pi", []string{"pi-ext", "dispatch", "interrupt", "recovery"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -864,4 +864,57 @@ func countCalls(calls []string, want string) int {
 		}
 	}
 	return n
+}
+
+// writeBusyRecord writes a busy-state record directly (bypassing Apply) with a controlled last-event time, so a test can
+// place the record's timestamp exactly relative to the injected clock.
+func writeBusyRecord(t *testing.T, epic, story string, at time.Time) {
+	t.Helper()
+	rec := busy.Record{
+		Schema: busy.Schema, State: busy.Busy, Gen: "gtest.deadbeef", Seq: 1, TS: at.Unix(),
+		Source: "pi-ext", Event: "agent_start", Harness: "pi",
+		Sources: []string{"pi-ext", "dispatch", "interrupt", "recovery"},
+	}
+	b, err := json.Marshal(rec)
+	must(t, err)
+	must(t, os.MkdirAll(filepath.Dir(busy.Path(epic, story)), 0o755))
+	must(t, os.WriteFile(busy.Path(epic, story), b, 0o600))
+}
+
+// DESIGN wave-2 item 6d: a working story whose busy record has said busy longer than BusyTurnMax, with no fresh busy
+// event and no checkpoint, raises exactly one routine (non-urgent) status wake per window - a nudge, never an interrupt.
+// On the base sha there is no busyTurnMaxPass, so a silently-busy worker was never surfaced.
+func TestBusyTurnMaxWakeOncePerWindow(t *testing.T) {
+	epic := t.TempDir()
+	must(t, state.Append(epic, ev(epic, "s", 1, state.Submitted, state.Working)))
+	now := time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC)
+	w := &Watcher{EpicDir: epic, Now: func() time.Time { return now }} // no backend: the pass never touches it
+
+	// A record busy since only 30m ago is within the 60m default: no wake.
+	writeBusyRecord(t, epic, "s", now.Add(-30*time.Minute))
+	if n, urg, err := w.busyTurnMaxPass(); err != nil || n != 0 || urg {
+		t.Fatalf("recent busy must not wake, got n=%d urg=%v err=%v", n, urg, err)
+	}
+
+	// Busy since 2h ago with no checkpoint: exactly one routine status wake.
+	writeBusyRecord(t, epic, "s", now.Add(-2*time.Hour))
+	n, urg, err := w.busyTurnMaxPass()
+	if err != nil || n != 1 || urg {
+		t.Fatalf("stale busy must raise one non-urgent wake, got n=%d urg=%v err=%v", n, urg, err)
+	}
+	wakes, _ := wake.Drain(epic, true)
+	if len(wakes) != 1 || wakes[0].Kind != wake.KindStatus {
+		t.Fatalf("want one status wake, got %+v", wakes)
+	}
+
+	// Within the same window: suppressed (no second wake).
+	if n, _, _ := w.busyTurnMaxPass(); n != 0 {
+		t.Fatalf("within the window must not repeat, got %d", n)
+	}
+
+	// Past the window: it nudges again.
+	now = now.Add(61 * time.Minute)
+	if n, _, _ := w.busyTurnMaxPass(); n != 1 {
+		t.Fatalf("past the window must nudge again, got %d", n)
+	}
 }

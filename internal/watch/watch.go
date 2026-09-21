@@ -18,6 +18,8 @@ import (
 	"time"
 
 	"github.com/nphattai/coxswain/internal/adapter/backend"
+	"github.com/nphattai/coxswain/internal/protocol/busy"
+	"github.com/nphattai/coxswain/internal/protocol/checkpoint"
 	"github.com/nphattai/coxswain/internal/protocol/inbox"
 	"github.com/nphattai/coxswain/internal/reconcile"
 	"github.com/nphattai/coxswain/internal/state"
@@ -52,6 +54,10 @@ const (
 	// DoorbellFailAlarm is the consecutive-doorbell-failure count at which the watcher raises one _leader stuck wake and
 	// begins alarming an out-of-band channel: the leader terminal has been unreachable for three straight nudges (item 3).
 	DoorbellFailAlarm = 3
+	// DefaultBusyTurnMax is how long a story's busy record may say busy - with no fresh busy event and no fresh checkpoint -
+	// before the watcher raises one routine status wake for the leader (DESIGN wave-2 item 6d). It is a nudge, never an
+	// interrupt: a legitimately long turn is not a runaway, so the leader is only told to look, not to abort.
+	DefaultBusyTurnMax = 60 * time.Minute
 )
 
 // Watcher runs one epic's watch loop. Sessions maps a story to its worker session (for re-ring and interrupt); Tick
@@ -70,6 +76,7 @@ type Watcher struct {
 	InboxRingMax   int
 	IdleNoDoneWait time.Duration
 	BlockedWait    time.Duration // how long a worker may be blocked on a local prompt before a stuck wake; 0 => default
+	BusyTurnMax    time.Duration // how long a busy record may stay busy with no fresh event/checkpoint before a status wake; 0 => DefaultBusyTurnMax
 	ReconcileEvery int           // ticks between reconcile passes; 0 => DefaultReconcileEvery
 	Quota          QuotaProbe    // quota source + targets + thresholds; nil disables the quota pass
 	NudgeWindow    time.Duration // leader re-nudge rate limit for an unchanged backlog; 0 => DefaultNudgeWindow (B-33)
@@ -90,9 +97,10 @@ func (w *Watcher) now() time.Time {
 	return time.Now()
 }
 
-func (w *Watcher) staleMin() time.Duration   { return orDur(w.StaleMin, DefaultStaleMin) }
-func (w *Watcher) runawayMin() time.Duration { return orDur(w.RunawayMin, DefaultRunawayMin) }
-func (w *Watcher) inboxGrace() time.Duration { return orDur(w.InboxGrace, DefaultInboxGrace) }
+func (w *Watcher) staleMin() time.Duration    { return orDur(w.StaleMin, DefaultStaleMin) }
+func (w *Watcher) runawayMin() time.Duration  { return orDur(w.RunawayMin, DefaultRunawayMin) }
+func (w *Watcher) busyTurnMax() time.Duration { return orDur(w.BusyTurnMax, DefaultBusyTurnMax) }
+func (w *Watcher) inboxGrace() time.Duration  { return orDur(w.InboxGrace, DefaultInboxGrace) }
 func (w *Watcher) ringMax() int {
 	if w.InboxRingMax > 0 {
 		return w.InboxRingMax
@@ -145,6 +153,12 @@ func (w *Watcher) Tick() (int, error) {
 	appended += n
 
 	n, _, err = w.blockedPass()
+	if err != nil {
+		return appended, err
+	}
+	appended += n
+
+	n, _, err = w.busyTurnMaxPass()
 	if err != nil {
 		return appended, err
 	}
@@ -716,6 +730,92 @@ func (w *Watcher) blockedPass() (int, bool, error) {
 		w.markBlockedFired(s.ID)
 	}
 	return appended, urgent, nil
+}
+
+// busyTurnMaxPass raises one routine status wake for a working story whose harness-owned busy record has said busy for
+// longer than BusyTurnMax with no fresh signal: the record's own timestamp (the last busy event) and the last checkpoint
+// are both older than the window (DESIGN wave-2 item 6d). It is a nudge, never an interrupt: a long-but-legitimate turn
+// must not be aborted like a runaway, so the leader is only told to look. Only a trusted busy record qualifies
+// (busy.Read applies the source trust table), and the wake fires at most once per BusyTurnMax window per story
+// (watch/busy-max/<story>), so a genuinely long turn does not spam the queue.
+func (w *Watcher) busyTurnMaxPass() (int, bool, error) {
+	events, _, err := state.Load(w.EpicDir)
+	if err != nil {
+		return 0, false, err
+	}
+	snap := state.Fold(events)
+	now := w.now()
+	max := w.busyTurnMax()
+	appended := 0
+	for _, s := range snap.SortedStories() {
+		if s.State != state.Working {
+			continue
+		}
+		if busy.Read(w.EpicDir, s.ID) != busy.Busy {
+			continue // no trusted busy record (idle/unknown/absent): not our case
+		}
+		rec, ok := busy.ReadRecord(w.EpicDir, s.ID)
+		if !ok {
+			continue
+		}
+		lastEvent := time.Unix(rec.TS, 0)
+		if now.Sub(lastEvent) < max {
+			continue // busy, but the last busy event is recent - the turn is progressing
+		}
+		if cp := w.lastCheckpointTime(s.ID); !cp.IsZero() && now.Sub(cp) < max {
+			continue // a recent checkpoint means progress; not stuck-busy
+		}
+		if last := w.watchFileUnix("busy-max", s.ID); last != 0 && now.Sub(time.Unix(last, 0)) < max {
+			continue // already nudged within this window
+		}
+		if _, err := wake.Append(w.EpicDir, wake.Wake{
+			Epic: filepath.Base(w.EpicDir), Story: s.ID, Kind: wake.KindStatus,
+			Note: fmt.Sprintf("%s busy %dm with no busy event or checkpoint since - still running? (BusyTurnMax %dm; a nudge, not an interrupt)",
+				s.ID, int(now.Sub(lastEvent).Minutes()), int(max.Minutes())),
+			Evidence: map[string]any{"busy_since": lastEvent.UTC().Format(time.RFC3339)},
+		}); err != nil {
+			return appended, false, err
+		}
+		appended++
+		w.recordBusyMax(s.ID, now)
+	}
+	return appended, false, nil // a status wake is routine, never urgent
+}
+
+// lastCheckpointTime returns the written_at of the story's current checkpoint (zero when absent, unparsable, or
+// invalid), so busyTurnMaxPass treats "no checkpoint" as no recent progress.
+func (w *Watcher) lastCheckpointTime(story string) time.Time {
+	fm, _, err := checkpoint.Parse(checkpoint.Path(w.EpicDir, story))
+	if err != nil || fm.Validate() != nil {
+		return time.Time{}
+	}
+	t, err := time.Parse(time.RFC3339, fm.WrittenAt)
+	if err != nil {
+		return time.Time{}
+	}
+	return t
+}
+
+// watchFileUnix reads a unix-seconds marker from <watch>/<sub>/<key> (0 when absent/unparsable), for per-window dedup.
+func (w *Watcher) watchFileUnix(sub, key string) int64 {
+	b, err := os.ReadFile(filepath.Join(w.watchDir(), sub, key))
+	if err != nil {
+		return 0
+	}
+	sec, err := strconv.ParseInt(strings.TrimSpace(string(b)), 10, 64)
+	if err != nil {
+		return 0
+	}
+	return sec
+}
+
+// recordBusyMax stamps the time a busy-max status wake fired for a story, so it fires at most once per BusyTurnMax window.
+func (w *Watcher) recordBusyMax(story string, at time.Time) {
+	dir := filepath.Join(w.watchDir(), "busy-max")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return
+	}
+	_ = os.WriteFile(filepath.Join(dir, story), []byte(strconv.FormatInt(at.Unix(), 10)), 0o644)
 }
 
 // blockedNote is the fixed lead of every stuck-on-a-prompt wake: what happened and the remedy the leader runs (steer

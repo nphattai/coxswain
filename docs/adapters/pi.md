@@ -23,6 +23,8 @@ This table is checked against `internal/adapter/harness/pi.Harness.Card()` by
 | telemetry | true |
 | sandbox | false |
 | unsandboxed_ack | false |
+| busy_record | true |
+| busy_sources | pi-ext, dispatch, interrupt, recovery |
 | instructions | AGENTS.md + Agent Skills |
 
 ## Support contract

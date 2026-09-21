@@ -36,7 +36,9 @@ func (h *Harness) Card() harness.Capability {
 		Checkpoint:       harness.CheckpointManual,
 		Doorbell:         true,
 		Interrupt:        true,
-		BackendInterrupt: true, // codex aborts on the backend ESC keystroke
+		BackendInterrupt: true,                                                        // codex aborts on the backend ESC keystroke
+		BusyRecord:       false,                                                       // codex has no wired busy hook by default; dispatch arms it only behind policy harness.busy_verified (default false), which vouches for a codex-hook writer
+		BusySources:      []string{"codex-hook", "dispatch", "interrupt", "recovery"}, // inert until codex is armed; the codex-hook source is trusted only once busy_verified enables arming
 		Telemetry:        false,
 		Sandbox:          true,
 		Instructions:     "AGENTS.md + markdown skills",

@@ -47,6 +47,12 @@ type Capability struct {
 	// whose hook is not yet wired (claude/codex today) is never left stranded "busy" in a record nothing clears; backends
 	// then fall back to their existing signal for it. It never branches on a harness name (DESIGN).
 	BusyRecord bool
+	// BusySources is the trust table for the busy-state record: the sources this harness's own state reports carry (its
+	// hook/extension), plus the leader-side writers every card trusts (dispatch, interrupt, recovery). busy.Arm stamps
+	// this list on the record; an Apply from a source not in it is rejected and Read classifies such a record as Unknown,
+	// so a record a harness did not write never classifies its story (DESIGN wave-2 item 6). It never branches on a
+	// harness name in a consumer; the trust decision is the card's data.
+	BusySources []string
 	// BackendInterrupt is true when the backend keystroke interrupt (orca terminal send --interrupt / Ctrl-C) actually
 	// aborts this harness's turn. It is false for a harness whose TUI ignores that keystroke (Pi 0.86.1, dogfood F-C): for
 	// such a harness cox control interrupt also delivers an interrupt record through the durable inbox and the harness's

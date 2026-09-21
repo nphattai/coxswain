@@ -6,39 +6,55 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/nphattai/coxswain/internal/adapter/harness/registry"
 	"github.com/nphattai/coxswain/internal/protocol/busy"
 )
 
-// cmdBusy implements `cox busy arm|apply|read <story> --epic <dir>`, the harness-neutral entry point to the busy-state
-// record (DESIGN wave-3 item 1). Any harness hook - the Pi extension, or a future Claude/Codex hook - reports idle/busy
-// through this command instead of a backend guessing from a UI. The gen minted by `arm` is threaded to the harness via
-// the launch env (COX_BUSY_GEN); `apply` presents it and a stale gen is rejected.
+// cmdBusy implements `cox busy arm|apply|read|retire <story> --epic <dir>`, the harness-neutral entry point to the
+// busy-state record (DESIGN wave-2 item 6). Any harness hook - a Claude UserPromptSubmit/Stop/SessionEnd hook, the Pi
+// extension, or a future Codex hook - reports idle/busy through this command instead of a backend guessing from a UI.
+// The gen minted by `arm` is threaded to the harness via the launch env (COX_BUSY_GEN); `apply` and `retire` present it
+// and a stale gen is rejected. The story is a leading positional (the Pi extension form) or the --story flag / $COX_STORY
+// (the Claude worker hook form, which carries only the state as a positional).
 func cmdBusy(args []string) int {
 	verb, rest := onePositional(args)
-	story, rest := onePositional(rest)
 	switch verb {
 	case "arm":
-		return busyArm(story, rest)
+		return busyArm(rest)
 	case "apply":
-		return busyApply(story, rest)
+		return busyApply(rest)
 	case "read":
-		return busyRead(story, rest)
+		return busyRead(rest)
+	case "retire":
+		return busyRetire(rest)
 	default:
-		return usageErr("cox busy arm|apply|read <story> --epic <dir>")
+		return usageErr("cox busy arm|apply|read|retire <story> --epic <dir>")
 	}
 }
 
-func busyArm(story string, args []string) int {
+// busySources returns the story's harness and the sources that harness's capability card trusts, read from the story
+// frontmatter (default claude). An unknown harness yields no adapter, so its trust table is empty and every source is
+// rejected - fail closed.
+func busySources(epicDir, story string) (string, []string) {
+	h := nonEmpty(readStoryMeta(epicDir, story).Harness, "claude")
+	return h, registry.Card(h).BusySources
+}
+
+func busyArm(args []string) int {
+	story, rest := onePositional(args)
 	fs := flag.NewFlagSet("busy arm", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	epicDir := fs.String("epic", os.Getenv("COX_EPIC"), "epic directory")
-	if err := fs.Parse(args); err != nil {
+	storyFlag := fs.String("story", os.Getenv("COX_STORY"), "story id (defaults to $COX_STORY; or pass it as the positional)")
+	if err := fs.Parse(rest); err != nil {
 		return 2
 	}
+	story = nonEmpty(story, *storyFlag)
 	if *epicDir == "" || story == "" {
 		return usageErr("cox busy arm <story> --epic <dir>")
 	}
-	gen, err := busy.Arm(*epicDir, story)
+	h, sources := busySources(*epicDir, story)
+	gen, err := busy.Arm(*epicDir, story, h, sources)
 	if err != nil {
 		return fail("%v", err)
 	}
@@ -46,19 +62,26 @@ func busyArm(story string, args []string) int {
 	return 0
 }
 
-func busyApply(story string, args []string) int {
-	state, args := onePositional(args)
+func busyApply(args []string) int {
+	// Peel up to two leading positionals so the flags that follow them still parse. Two positionals is the Pi extension
+	// form `busy apply <story> <state>`; one positional is the Claude worker hook form `busy apply <state> --story <id>`.
+	a, bPos, rest := twoPositionals(args)
 	fs := flag.NewFlagSet("busy apply", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	epicDir := fs.String("epic", os.Getenv("COX_EPIC"), "epic directory")
+	storyFlag := fs.String("story", os.Getenv("COX_STORY"), "story id (defaults to $COX_STORY)")
 	gen := fs.String("gen", os.Getenv("COX_BUSY_GEN"), "the incarnation gen minted at arm (defaults to $COX_BUSY_GEN)")
-	source := fs.String("source", "", "who is reporting the state (e.g. pi-ext)")
-	event := fs.String("event", "", "the lifecycle event (e.g. agent_start)")
-	if err := fs.Parse(args); err != nil {
+	source := fs.String("source", "", "who is reporting the state (e.g. claude-hook, pi-ext)")
+	event := fs.String("event", "", "the lifecycle event (e.g. prompt, stop, agent_start)")
+	if err := fs.Parse(rest); err != nil {
 		return 2
 	}
+	story, state := *storyFlag, a
+	if bPos != "" {
+		story, state = a, bPos
+	}
 	if *epicDir == "" || story == "" || state == "" || *source == "" || *event == "" {
-		return usageErr("cox busy apply <story> <busy|idle|unknown> --gen <g> --source <s> --event <e> --epic <dir>")
+		return usageErr("cox busy apply <busy|idle|unknown> --story <id> --gen <g> --source <s> --event <e> --epic <dir>")
 	}
 	if err := busy.Apply(*epicDir, story, state, *gen, *source, *event); err != nil {
 		return fail("%v", err)
@@ -66,14 +89,37 @@ func busyApply(story string, args []string) int {
 	return 0
 }
 
-func busyRead(story string, args []string) int {
+func busyRetire(args []string) int {
+	story, rest := onePositional(args)
+	fs := flag.NewFlagSet("busy retire", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	epicDir := fs.String("epic", os.Getenv("COX_EPIC"), "epic directory")
+	storyFlag := fs.String("story", os.Getenv("COX_STORY"), "story id (defaults to $COX_STORY)")
+	gen := fs.String("gen", os.Getenv("COX_BUSY_GEN"), "the incarnation gen minted at arm (defaults to $COX_BUSY_GEN)")
+	if err := fs.Parse(rest); err != nil {
+		return 2
+	}
+	story = nonEmpty(story, *storyFlag)
+	if *epicDir == "" || story == "" || *gen == "" {
+		return usageErr("cox busy retire --story <id> --gen <g> --epic <dir>")
+	}
+	if err := busy.Retire(*epicDir, story, *gen); err != nil {
+		return fail("%v", err)
+	}
+	return 0
+}
+
+func busyRead(args []string) int {
+	story, rest := onePositional(args)
 	fs := flag.NewFlagSet("busy read", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	epicDir := fs.String("epic", os.Getenv("COX_EPIC"), "epic directory")
+	storyFlag := fs.String("story", os.Getenv("COX_STORY"), "story id (defaults to $COX_STORY)")
 	asJSON := fs.Bool("json", false, "print the full record as JSON")
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(rest); err != nil {
 		return 2
 	}
+	story = nonEmpty(story, *storyFlag)
 	if *epicDir == "" || story == "" {
 		return usageErr("cox busy read <story> [--json] --epic <dir>")
 	}

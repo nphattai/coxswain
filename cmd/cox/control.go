@@ -9,7 +9,6 @@ import (
 	"github.com/nphattai/coxswain/internal/adapter/backend"
 	"github.com/nphattai/coxswain/internal/adapter/harness"
 	"github.com/nphattai/coxswain/internal/adapter/harness/registry"
-	"github.com/nphattai/coxswain/internal/protocol/busy"
 	"github.com/nphattai/coxswain/internal/protocol/control"
 )
 
@@ -109,15 +108,13 @@ func cmdControl(args []string) int {
 			extra = map[string]any{"unsandboxed": map[string]any{"authorized_by": "--allow-unsandboxed", "harness": hname}}
 		}
 		spec := backend.HarnessSpec{Name: hname, Model: model, LaunchFlags: pol.LaunchFlags(hname), Argv: argv}
-		// Re-arm the busy record for the relaunched incarnation (DESIGN wave-3): a fresh gen invalidates any late event
-		// from the prior attempt and reaches the new worker via COX_BUSY_GEN.
-		if registry.Card(hname).BusyRecord {
-			g, err := busy.Arm(*epicDir, story)
-			if err != nil {
-				return fail("arm busy state: %v", err)
-			}
-			spec.BusyGen = g
+		// Re-arm the busy record for the relaunched incarnation (DESIGN wave-2 item 6): a fresh gen invalidates any late
+		// event from the prior attempt and reaches the new worker via COX_BUSY_GEN, and re-writes its worker busy hooks.
+		g, err := armWorkerBusy(*epicDir, story, hname, wtPath, pol)
+		if err != nil {
+			return fail("arm busy state: %v", err)
 		}
+		spec.BusyGen = g
 		prior, _ := loadSession(*epicDir, story) // previous attempt's terminal, closed before the new spawn (zero value when none)
 		sess, err := ctl.Relaunch(story, wtPath, *note, prior, spec, extra)
 		if err != nil {

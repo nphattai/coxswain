@@ -21,6 +21,8 @@ This table is checked against `internal/adapter/harness/claude.Harness.Card()` b
 | telemetry | true |
 | sandbox | false |
 | unsandboxed_ack | true |
+| busy_record | true |
+| busy_sources | claude-hook, dispatch, interrupt, recovery |
 | instructions | plugin skills + AGENTS.md |
 
 ## Support contract
@@ -35,6 +37,16 @@ This table is checked against `internal/adapter/harness/claude.Harness.Card()` b
   captain and can be tightened or removed in policy.
 - Arena launch permissions are separate from worker permissions so a review role never inherits a worker's broad
   autonomy by accident.
+- **Harness-owned busy state.** Idle/busy is a fact the harness reports, not something a backend infers from a TUI
+  (DESIGN wave-2 item 6). Dispatch/resume/relaunch arm a per-story record at `<epic>/.cox/sessions/<story>.busy.json` and
+  thread its incarnation gen to the worker as `COX_BUSY_GEN`, and write worker hooks into the worktree's
+  `.claude/settings.json`: `UserPromptSubmit` Applies `busy`, `Stop` Applies `idle`, `SessionEnd` retires the record
+  (`${COX_BIN:-cox} busy apply|retire`, `source=claude-hook`, `--gen "$COX_BUSY_GEN"`, each ending `|| true` so a refused
+  Apply never breaks the turn). The card's `busy_sources` is the trust table: an Apply from a source it does not list is
+  rejected, and a record written by an untrusted source reads as `unknown`, so a record the harness did not write never
+  classifies a story. A stale gen (a hook that outlived its incarnation after a re-arm) is rejected, so a late event
+  cannot clobber a newer incarnation. A backend consults this record first and falls back to its own signal only on
+  `unknown`/absent.
 
 The executable owners are `internal/adapter/harness/claude/`, `cmd/cox/hook.go`, `internal/adapter/backend/launch.go`,
 and their tests. Dated CLI observations are in [Claude CLI 2.1.272 compatibility evidence](../evidence/compatibility/claude-cli-2.1.272.md).

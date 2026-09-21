@@ -16,6 +16,7 @@ import (
 	"github.com/nphattai/coxswain/internal/adapter/backend"
 	"github.com/nphattai/coxswain/internal/adapter/harness"
 	"github.com/nphattai/coxswain/internal/protocol/brief"
+	"github.com/nphattai/coxswain/internal/protocol/busy"
 	"github.com/nphattai/coxswain/internal/protocol/checkpoint"
 	"github.com/nphattai/coxswain/internal/protocol/inbox"
 	"github.com/nphattai/coxswain/internal/state"
@@ -140,16 +141,32 @@ func (c *Controller) Park(story, worktree string, session backend.Session) error
 		// Stop can error even though the worker has actually settled (e.g. Orca closed the terminal itself).
 		// Trust a Settled probe over the Stop error rather than stranding a stopped worker in pending_external.
 		if live, perr := c.Backend.Probe(session); perr == nil && live == backend.Settled {
+			c.retireBusy(story)
 			return c.appendConfirmed(story, snap.Attempt, state.Parked, map[string]any{"note": "stop errored but probe settled"})
 		}
 		return fmt.Errorf("stop failed, story stays pending_external (ownership kept): %w", err)
 	}
 	if confirmed {
+		c.retireBusy(story)
 		return c.appendConfirmed(story, snap.Attempt, state.Parked, nil)
 	}
 	// Abandon-only: fenced but not confirmed stopped. Park anyway with a flag and a warning (M0).
 	fmt.Fprintf(c.warn(), "warn: %s parked via abandon: dispatch fenced, worker NOT confirmed stopped - check its terminal\n", story)
+	c.retireBusy(story)
 	return c.appendConfirmed(story, snap.Attempt, state.Parked, map[string]any{"note": "fenced, not confirmed stopped"})
+}
+
+// retireBusy retires the harness-owned busy record for the parked incarnation (DESIGN wave-2 item 6c): it reads the
+// current gen and Retires against it, so a re-arm on the next resume gets a clean record and a parked story never leaves
+// a stale "busy" behind. Best-effort - a mismatch (a newer incarnation exists) or an absent record is fine.
+func (c *Controller) retireBusy(story string) {
+	rec, ok := busy.ReadRecord(c.EpicDir, story)
+	if !ok {
+		return
+	}
+	if err := busy.Retire(c.EpicDir, story, rec.Gen); err != nil {
+		fmt.Fprintf(c.warn(), "warn: busy retire for %s: %v\n", story, err)
+	}
 }
 
 // Relaunch resumes a story in the same worktree at attempt+1. It closes the previous attempt's terminal (ADR 0012: Stop

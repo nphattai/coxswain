@@ -186,6 +186,38 @@ func TestStoryDispatchRefusesUnsandboxedWithoutAuthority(t *testing.T) {
 	}
 }
 
+// DESIGN wave-2 item 6: dispatch arms the harness-owned busy record and writes the worker busy hooks for a claude
+// worker (its card reports its own state), and leaves codex unarmed unless policy harness.busy_verified vouches for a
+// codex-hook writer. On the base sha the Claude card did not report busy state, so a claude dispatch never armed one.
+func TestDispatchArmsClaudeNotCodexByDefault(t *testing.T) {
+	epic := t.TempDir()
+	wt := t.TempDir()
+
+	// Claude: armed, record busy, worker hooks written.
+	gen, err := armWorkerBusy(epic, "s1", "claude", wt, &workspace.Policy{})
+	if err != nil {
+		t.Fatalf("armWorkerBusy claude: %v", err)
+	}
+	if gen == "" {
+		t.Fatal("claude must be armed at dispatch")
+	}
+	if _, err := os.Stat(filepath.Join(wt, ".claude", "settings.json")); err != nil {
+		t.Fatalf("claude worker hooks not written: %v", err)
+	}
+
+	// Codex default (busy_verified off): not armed, no record.
+	if gen, err := armWorkerBusy(epic, "s2", "codex", t.TempDir(), &workspace.Policy{}); err != nil || gen != "" {
+		t.Fatalf("codex default arm = (%q, %v), want (\"\", nil): codex must not be armed until busy_verified", gen, err)
+	}
+
+	// Codex with busy_verified: armed.
+	pol := &workspace.Policy{}
+	pol.Harness.BusyVerified = true
+	if gen, err := armWorkerBusy(epic, "s3", "codex", t.TempDir(), pol); err != nil || gen == "" {
+		t.Fatalf("codex with busy_verified arm = (%q, %v), want a gen and no error", gen, err)
+	}
+}
+
 func writeStory(t *testing.T, epic, id, repo string) {
 	t.Helper()
 	dir := filepath.Join(epic, "stories")
