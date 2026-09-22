@@ -18,3 +18,4 @@ The decisions behind coxswain, as ADRs.
 - [0014 - The leader turn boundary is guarded; no turn ends blind](0014-turn-boundary-guarded.md)
 - [0015 - Close and attach are fail-closed](0015-close-attach-fail-closed.md)
 - [0016 - Busy state is harness-owned, with a source trust table and versioned records](0016-busy-state-harness-owned.md)
+- [0017 - Delivery mode and merge authority are explicit and enforced in code](0017-delivery-mode-and-merge-authority.md)

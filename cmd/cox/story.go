@@ -313,6 +313,15 @@ func storyDone(args []string) int {
 
 	evidence := map[string]any{}
 	if *merge != "" {
+		// The merge sha must be landed on the branch the story's delivery mode requires (item 8c): origin/epic/<slug> for
+		// no-mistakes|direct-PR, the repo's production branch for local-only. A refusal names the exact merge-base line.
+		contained, ranLine, cerr := mergeContained(*epicDir, story, *merge)
+		if cerr != nil {
+			return fail("cannot verify --merge %s: %v", *merge, cerr)
+		}
+		if !contained {
+			return fail("refusing --merge %s: not contained in the branch for delivery mode %q\n  ran: %s", *merge, storyMode(*epicDir, story), ranLine)
+		}
 		evidence["merge"] = *merge
 	}
 	if err := releaseStory(*epicDir, story, snap, state.Completed, evidence, b, *closeWt); err != nil {
@@ -320,6 +329,51 @@ func storyDone(args []string) int {
 	}
 	fmt.Printf("done: %s completed (attempt %d)\n", story, snap.Attempt)
 	return 0
+}
+
+// mergeContained verifies a merge sha is landed on the branch the story's delivery mode requires (item 8c): for
+// no-mistakes|direct-PR it fetches origin first (an unknown fetch refuses) and checks origin/epic/<slug>; for local-only
+// it checks the repo's production branch. It returns the exact `git merge-base --is-ancestor` line it ran so a refusal
+// names it; contained is false when merge-base exits non-zero (the sha is not on the branch, or is unknown).
+func mergeContained(epicDir, story, sha string) (contained bool, ranLine string, err error) {
+	dir := readWorktree(epicDir, story)
+	if dir == "" {
+		dir = filepath.Join(epicDir, readStoryMeta(epicDir, story).Repo) // alias symlink checkout
+	}
+	var ref string
+	if storyMode(epicDir, story) == workspace.ModeLocalOnly {
+		ref = productionBranch(epicDir, story)
+		if ref == "" {
+			return false, "", fmt.Errorf("local-only mode: no production branch resolved for story %s's repo", story)
+		}
+	} else {
+		ref = "origin/epic/" + filepath.Base(epicDir)
+		if out, ferr := exec.Command("git", "-C", dir, "fetch", "origin").CombinedOutput(); ferr != nil {
+			return false, "", fmt.Errorf("git -C %s fetch origin failed, cannot verify containment: %v: %s", dir, ferr, strings.TrimSpace(string(out)))
+		}
+	}
+	ranLine = fmt.Sprintf("git -C %s merge-base --is-ancestor %s %s", dir, sha, ref)
+	if runErr := exec.Command("git", "-C", dir, "merge-base", "--is-ancestor", sha, ref).Run(); runErr != nil {
+		return false, ranLine, nil
+	}
+	return true, ranLine, nil
+}
+
+// productionBranch resolves the production branch of a story's repo from workspace.json, or "" when it cannot be
+// resolved (no workspace, unknown alias).
+func productionBranch(epicDir, story string) string {
+	wsRoot, err := findWorkspaceRoot(epicDir)
+	if err != nil {
+		return ""
+	}
+	ws, err := workspace.Load(wsRoot)
+	if err != nil {
+		return ""
+	}
+	if repo, ok := ws.Repo(readStoryMeta(epicDir, story).Repo); ok {
+		return repo.Production
+	}
+	return ""
 }
 
 // storyTerminate records a terminal, non-success transition (failed or canceled) for a story and releases it exactly

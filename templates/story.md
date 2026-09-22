@@ -9,6 +9,7 @@ model: {{.Model}}
 title: {{.Title}}
 policy_source: {{.PolicySource}}
 delivery: {{.Delivery.Style}}
+mode: {{.Mode}}
 ---
 
 # {{.Title}}

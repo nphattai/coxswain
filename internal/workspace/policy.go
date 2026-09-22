@@ -63,11 +63,32 @@ type Arena struct {
 	Trigger []string `json:"trigger"`
 }
 
-// Delivery is the story delivery style resolved into each story once at creation (F14). "default": draft PR at the plan
-// gate, push every phase. "pipo": commits stay local, one push at the end, PR opened ready.
+// Delivery is the story delivery style AND merge mode resolved into each story once at creation (F14, item 8). Style is
+// the phase/push rhythm - "default": draft PR at the plan gate, push every phase; "pipo": commits stay local, one push at
+// the end, PR opened ready. Mode is the merge posture the brief prints and `cox story done --merge` enforces:
+// "no-mistakes" (full gates + PR + wait for merge authority), "direct-PR" (push + PR, no extra pipeline; the default that
+// matches today's behaviour), or "local-only" (a clean ready branch, no push, wait). An empty Mode reads as direct-PR.
 type Delivery struct {
 	Meta
 	Style string `json:"style"` // "default" | "pipo"
+	Mode  string `json:"mode"`  // "no-mistakes" | "direct-PR" | "local-only"; "" => direct-PR
+}
+
+// Delivery modes (item 8). DefaultDeliveryMode is direct-PR so an epic policy that predates the field keeps today's
+// behaviour (push + PR).
+const (
+	ModeNoMistakes      = "no-mistakes"
+	ModeDirectPR        = "direct-PR"
+	ModeLocalOnly       = "local-only"
+	DefaultDeliveryMode = ModeDirectPR
+)
+
+// Merge is the epic's merge posture (item 8), a justified section. Yolo defaults false: `cox ship merge` is refused
+// unless the captain runs it (`--captain`), so the green-at-live-head rule is enforced rather than remembered. Flipping
+// yolo to true lets a non-captain terminal merge, which the captain owns the risk of.
+type Merge struct {
+	Meta
+	Yolo bool `json:"yolo"`
 }
 
 // HarnessRole is the option set and default for one role (leader | worker). Models maps a harness name to the default
@@ -257,6 +278,33 @@ type Policy struct {
 	Review         Review         `json:"review"`
 	Alerts         Alerts         `json:"alerts"`
 	Watch          Watch          `json:"watch"`
+	MergePosture   Merge          `json:"merge"`
+}
+
+// DeliveryMode returns the resolved delivery mode, or DefaultDeliveryMode (direct-PR) when policy is nil or the mode is
+// unset, so a caller that could not load policy still resolves a mode.
+func (p *Policy) DeliveryMode() string {
+	if p == nil || strings.TrimSpace(p.Delivery.Mode) == "" {
+		return DefaultDeliveryMode
+	}
+	return strings.TrimSpace(p.Delivery.Mode)
+}
+
+// MergeYolo reports whether policy opts a non-captain terminal into `cox ship merge` (default false). A nil policy is
+// false, so a caller that could not load policy never lets a worker or leader merge.
+func (p *Policy) MergeYolo() bool {
+	return p != nil && p.MergePosture.Yolo
+}
+
+// ValidDeliveryMode reports whether a delivery mode string is one cox understands. An empty string is valid (it reads as
+// DefaultDeliveryMode); any other unrecognised value is a load error, so a typo never silently disables the gates.
+func ValidDeliveryMode(mode string) bool {
+	switch mode {
+	case "", ModeNoMistakes, ModeDirectPR, ModeLocalOnly:
+		return true
+	default:
+		return false
+	}
 }
 
 // BusyVerified reports whether policy opts codex into the harness-owned busy record (default false, DESIGN wave-2 item
@@ -444,6 +492,7 @@ func (p *Policy) sections() []struct {
 		{"arena", p.Arena.Meta},
 		{"delivery", p.Delivery.Meta},
 		{"harness", p.Harness.Meta},
+		{"merge", p.MergePosture.Meta},
 	}
 }
 
@@ -455,6 +504,9 @@ func (p *Policy) Validate() error {
 		if m := s.meta.missing(); len(m) > 0 {
 			problems = append(problems, fmt.Sprintf("%s (missing %s)", s.name, strings.Join(m, "+")))
 		}
+	}
+	if !ValidDeliveryMode(strings.TrimSpace(p.Delivery.Mode)) {
+		problems = append(problems, fmt.Sprintf("delivery (invalid mode %q; want no-mistakes|direct-PR|local-only)", p.Delivery.Mode))
 	}
 	if len(problems) == 0 {
 		return nil
@@ -549,6 +601,9 @@ func Resolve(wsRoot, projectDir string) (*Policy, error) {
 		return nil, err
 	}
 	if err := replace("review", &base.Review, &Review{}); err != nil {
+		return nil, err
+	}
+	if err := replace("merge", &base.MergePosture, &Merge{}); err != nil {
 		return nil, err
 	}
 	if err := base.Validate(); err != nil {

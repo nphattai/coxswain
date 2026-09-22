@@ -156,6 +156,21 @@ is set, one out-of-band notification fires per 30 minutes. `alerts.channel` is `
 banner), or `command:<cmd>` (runs `<cmd>` via `sh -c` with the alarm summary as `$1` and on stdin, for a phone or
 pager). See [Policy JSON](reference/policy-json.md#alerts).
 
+## Merge authority is the captain's, enforced in code
+
+The captain merges everything; a leader or worker never merges, pushes a default branch, or deletes a branch. `cox ship
+merge --pr <n> --epic <dir>` is the single merge command, so the green-at-the-live-head rule is enforced rather than
+remembered: it reads the PR live through the forge, merges only an open, non-draft, mergeable PR on the epic (or
+production) branch whose every check is green at the live head, pins that head (a push between the read and the merge is
+rejected), reads the result back, and appends a `merged` event to `ledger.jsonl` (`evidence: {pr, head, method, by}`). It
+is refused from a worker terminal (`COX_STORY` set) and, while `merge.yolo` is false, refused unless `--captain`. `--check`
+is a read-only dry run. Exit codes: `0` merged, `1` refused (every failing reason listed), `3` unknown.
+
+Each story's **delivery mode** (`delivery.mode`, printed in the brief as `Delivery contract: mode=<mode> yolo=<on|off>`)
+sets the posture: `no-mistakes` (full gates + PR + wait for merge authority), `direct-PR` (push + PR, the default), or
+`local-only` (clean ready branch, no push, wait). `cox story done --merge <sha>` refuses a sha that is not landed on the
+branch the mode requires (`origin/epic/<slug>`, or the production branch for `local-only`).
+
 ## Operator loop
 
 1. Drain wakes at the start of a leader turn.

@@ -21,6 +21,7 @@ not documented here.
 | `title` | render, editable | One-line story title; also the H1 of the body. |
 | `policy_source` | render | The `cox/policy.json` file and short sha the story's delivery/context/harness values were resolved from. Audit stamp; do not hand-edit. |
 | `delivery` | render | The resolved delivery style (`default` \| `pipo`), copied from policy so the worker's rules are fixed at render time. |
+| `mode` | render, editable | The resolved delivery mode (`no-mistakes` \| `direct-PR` \| `local-only`), from policy `delivery.mode` (item 8). The brief prints `Delivery contract: mode=<mode> yolo=<on\|off>`; `cox story done --merge <sha>` enforces the sha is landed on the branch the mode requires. Overridable per story. |
 
 ## Example
 
@@ -36,6 +37,7 @@ model: claude-opus-4-8
 title: Checkout API - idempotent order creation
 policy_source: cox/policy.json@0ebbf6ece9a4
 delivery: default
+mode: direct-PR
 ---
 ```
 

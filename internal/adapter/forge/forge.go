@@ -7,11 +7,13 @@ package forge
 // PR identifies a pull request and its head. Head is the head commit sha, used to bind a verdict to the revision it
 // was computed against so a later push makes the verdict stale.
 type PR struct {
-	Number  int
-	HeadRef string
-	Head    string // head commit sha
-	Base    string
-	State   string // open | merged | closed
+	Number    int
+	HeadRef   string
+	Head      string // head commit sha
+	Base      string
+	State     string // open | merged | closed
+	Draft     bool   // true while the PR is a draft (not ready for merge)
+	Mergeable bool   // true only when the forge reports the PR cleanly mergeable (no conflicts, mergeable state known)
 }
 
 // Check is one CI check run. Status is the run status (queued | in_progress | completed); Conclusion is set only when
@@ -47,4 +49,9 @@ type Forge interface {
 	Comments(pr PR) ([]Comment, error)
 	// Merged reports whether the PR is merged.
 	Merged(pr PR) (bool, error)
+	// Merge merges the PR with its head sha pinned (the equivalent of --match-head-commit), so a push between the read and
+	// the merge is rejected by the forge rather than silently merging a different head. method is "squash"|"merge"|"rebase".
+	// A merge that the forge rejects (head moved, not mergeable, checks not satisfied) returns a non-nil error; the caller
+	// treats that as a refusal, never a guessed success.
+	Merge(pr PR, method string) error
 }
