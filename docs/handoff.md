@@ -57,13 +57,33 @@ doorbell or be replaced without losing the instruction. See [ADR 0012](decisions
 ## Idle/busy is harness-owned
 
 Whether a worker or leader is idle or busy is a fact the harness reports, not something a backend infers from a TUI. A
-harness whose card sets `BusyRecord` (Pi) arms a per-story record at `<epic>/.cox/sessions/<story>.busy.json` at
-dispatch (`cox busy arm`, incarnation gen threaded as `COX_BUSY_GEN`) and its extension Applies `busy`/`idle` on the
-turn-start/turn-end lifecycle (`cox busy apply`). Every backend ring/composer path and the watcher's idle/blocked passes
-consult this record FIRST and fall back to the backend's own signal only when the harness reports `unknown`. A stale
-gen is rejected and a missing gen writes nothing, so the record never fabricates a state. This closes the gap where a
-backend derived busy from a UI it did not recognize (dogfood F-A). `internal/protocol/busy/` owns the record;
-`cmd/cox/busy.go` is the harness-neutral CLI.
+harness whose card sets `BusyRecord` (Claude and Pi; Codex only behind policy `harness.busy_verified`) arms a per-story
+record at `<epic>/.cox/sessions/<story>.busy.json` at dispatch (incarnation gen threaded as `COX_BUSY_GEN`). Claude
+reports through worker hooks cox writes into the worktree's `.claude/settings.local.json` (the per-checkout,
+not-committed settings slot, excluded via `info/exclude` when not already gitignored, so the story worktree stays clean)
+(`UserPromptSubmit` -> busy, `Stop` -> idle, `SessionEnd` -> retire, via `${COX_BIN:-cox} busy apply|retire ... || true`);
+Pi reports through its extension. Every backend ring/composer path and the watcher's idle/blocked passes consult this record FIRST and fall back
+to the backend's own signal only when the harness reports `unknown`.
+
+Each capability card carries a `BusySources` trust table (its own hook source plus the leader-side `dispatch`,
+`interrupt`, `recovery` writers). `busy.Arm` stamps the harness and its trusted sources on the record; an Apply from a
+source the card does not list is rejected, and a record whose source is untrusted reads as `unknown` - a record a harness
+did not write never classifies its story. A stale gen is rejected (a hook that outlived its incarnation), and
+`busy.Retire` removes the record exact-gen so a `SessionEnd` or a leader release never clobbers a newer incarnation. A
+working story whose record stays busy past `BusyTurnMax` (60 min, policy `watch.busy_turn_max_min`) with no fresh event
+or checkpoint raises one routine `status` wake - a nudge, never an interrupt. This closes the gap where a backend derived
+busy from a UI it did not recognize (dogfood F-A). `internal/protocol/busy/` owns the record; `cmd/cox/busy.go` is the
+harness-neutral CLI.
+
+## Runtime records are versioned by attempt
+
+`sessions/<story>.json`, `wt/<story>`, and `.cox/leader` are written by temp + rename. The session and worktree records
+carry the `attempt` that wrote them; a write whose attempt is lower than the one already on disk is dropped, so a
+straggler from a prior incarnation (after a relaunch bumped the attempt) never clobbers the newer record. `.cox/leader`
+is a JSON record `{handle, pid, ts}`; the single reader `state.LeaderHandle` accepts both it and the legacy plain-handle
+text, and every reader (hooks, watcher, epic close, doctor) routes through it. The steer budget likewise counts only the
+current attempt: `inbox.Write` ignores records older than the attempt's dispatch, and `cox steer` reports the older ones
+as history rather than refusing a fresh steer (B-23).
 
 ## Interrupt through the harness when the backend cannot
 

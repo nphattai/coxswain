@@ -1196,7 +1196,7 @@ func TestRingConsultsBusyRecordFirst(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			epic := t.TempDir()
-			gen, err := busy.Arm(epic, "w1")
+			gen, err := busy.Arm(epic, "w1", "pi", []string{"pi-ext", "dispatch", "interrupt", "recovery"})
 			if err != nil {
 				t.Fatalf("arm: %v", err)
 			}
@@ -1236,7 +1236,7 @@ func TestRingConsultsBusyRecordFirst(t *testing.T) {
 
 func TestComposerConsultsBusyRecordFirst(t *testing.T) {
 	epic := t.TempDir()
-	gen, _ := busy.Arm(epic, "w1")
+	gen, _ := busy.Arm(epic, "w1", "pi", []string{"pi-ext", "dispatch", "interrupt", "recovery"})
 	c := New("run_1")
 	c.Epic = epic
 	// The composer read must never be consulted while the harness reports a state; route it to a fatal so a fallthrough

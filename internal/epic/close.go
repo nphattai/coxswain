@@ -12,6 +12,7 @@ import (
 
 	"github.com/nphattai/coxswain/internal/adapter/backend"
 	"github.com/nphattai/coxswain/internal/env"
+	"github.com/nphattai/coxswain/internal/state"
 )
 
 // CloseOptions configures Close.
@@ -127,24 +128,11 @@ func (o *CloseOptions) closeNoRuntime() error {
 	return nil
 }
 
-// leaderHandle reads the epic's recorded leader terminal handle from .cox/leader, or "" when unset/unreadable. The
-// record is the plain handle text the watcher and hooks write (cmd/cox); it tolerates a future JSON {"handle":...}
-// shape so the guard does not silently open up if the record format is versioned later (DESIGN item 7).
+// leaderHandle reads the epic's recorded leader terminal handle from .cox/leader, or "" when unset/unreadable. It routes
+// through the single state reader, which accepts both the JSON leader record and the legacy plain handle (DESIGN wave-2
+// item 7), so the close guard reads the record the same way every other consumer does.
 func (o *CloseOptions) leaderHandle() string {
-	b, err := os.ReadFile(filepath.Join(o.EpicDir, ".cox", "leader"))
-	if err != nil {
-		return ""
-	}
-	s := strings.TrimSpace(string(b))
-	if strings.HasPrefix(s, "{") {
-		var rec struct {
-			Handle string `json:"handle"`
-		}
-		if json.Unmarshal(b, &rec) == nil {
-			return strings.TrimSpace(rec.Handle)
-		}
-	}
-	return s
+	return state.LeaderHandle(o.EpicDir)
 }
 
 func (o *CloseOptions) dryRun() error {

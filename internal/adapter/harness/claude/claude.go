@@ -30,7 +30,9 @@ func (h *Harness) Card() harness.Capability {
 		Checkpoint:       harness.CheckpointAuto,
 		Doorbell:         true,
 		Interrupt:        true,
-		BackendInterrupt: true, // claude aborts on the backend ESC keystroke
+		BackendInterrupt: true,                                                         // claude aborts on the backend ESC keystroke
+		BusyRecord:       true,                                                         // claude workers report their own idle/busy through the worker hooks written at dispatch (UserPromptSubmit/Stop/SessionEnd)
+		BusySources:      []string{"claude-hook", "dispatch", "interrupt", "recovery"}, // the worker hook, plus the leader-side writers every card trusts
 		Telemetry:        true,
 		Sandbox:          false,
 		UnsandboxedAck:   true, // captain ruling: claude workers run bypassPermissions autonomously; unsandboxed dispatch is accepted

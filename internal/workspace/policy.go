@@ -103,6 +103,11 @@ type Harness struct {
 	Worker HarnessRole  `json:"worker"`
 	Arena  ArenaHarness `json:"arena"`
 	Launch Launch       `json:"launch"`
+	// BusyVerified opts codex into the harness-owned busy record (DESIGN wave-2 item 6). It defaults false: codex is not
+	// armed at dispatch and never writes a busy record until a captain flips this, which vouches that a codex-hook writer
+	// is wired. claude and pi report their own state from their cards, so this flag only governs codex. It never selects a
+	// harness or changes routing.
+	BusyVerified bool `json:"busy_verified"`
 }
 
 // Launch maps a harness to the flags a launch carries. The flat entries (Worker) are a dispatched worker's autonomy
@@ -209,6 +214,13 @@ type Backend struct {
 	Orca OrcaBackend `json:"orca"`
 }
 
+// Watch groups the watcher-window overrides. Like backend and quota it is additive and not a justified section, so an
+// epic policy without it uses the code defaults (an absent section never invalidates a policy). BusyTurnMaxMin overrides
+// the busy-turn-max window (DESIGN wave-2 item 6d); <=0 means the watcher default (DefaultBusyTurnMax).
+type Watch struct {
+	BusyTurnMaxMin int `json:"busy_turn_max_min"`
+}
+
 // ReviewNPX is the explicit npx opt-in for the lavish review adapter (policy review.npx): an exact version and integrity
 // value. null (the default) means npx is never used; the installed binary is the trustworthy default (same rule as
 // quota.npx, M13).
@@ -244,6 +256,22 @@ type Policy struct {
 	Quota          Quota          `json:"quota"`
 	Review         Review         `json:"review"`
 	Alerts         Alerts         `json:"alerts"`
+	Watch          Watch          `json:"watch"`
+}
+
+// BusyVerified reports whether policy opts codex into the harness-owned busy record (default false, DESIGN wave-2 item
+// 6). A nil policy is false, so a caller that could not load policy never arms codex.
+func (p *Policy) BusyVerified() bool {
+	return p != nil && p.Harness.BusyVerified
+}
+
+// BusyTurnMaxMinutes returns the busy-turn-max override in minutes, or 0 when policy is nil or the value is unset (the
+// caller then falls back to the watcher default). See DESIGN wave-2 item 6d.
+func (p *Policy) BusyTurnMaxMinutes() int {
+	if p == nil || p.Watch.BusyTurnMaxMin <= 0 {
+		return 0
+	}
+	return p.Watch.BusyTurnMaxMin
 }
 
 // AlertsChannel returns the configured out-of-band alarm channel (off|osascript|command:<cmd>), or "off" when policy is

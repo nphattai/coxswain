@@ -156,16 +156,13 @@ func storyDispatch(args []string) int {
 	if err != nil {
 		return fail("compose launch argv: %v", err)
 	}
-	// Harness-owned busy state (DESIGN wave-3): a harness that reports its own idle/busy gets a fresh incarnation gen
-	// armed here and threaded to it via COX_BUSY_GEN, so its hook Applies against the record and a stale hook is rejected.
-	// A harness whose hook is not wired yet (claude/codex) is not armed, so it is never stranded "busy".
-	busyGen := ""
-	if registry.Card(harnessName).BusyRecord {
-		g, err := busy.Arm(*epicDir, story)
-		if err != nil {
-			return fail("arm busy state: %v", err)
-		}
-		busyGen = g
+	// Harness-owned busy state (DESIGN wave-2 item 6): a harness that reports its own idle/busy gets a fresh incarnation
+	// gen armed here and threaded to it via COX_BUSY_GEN, and its worker busy hooks written into the worktree, so its hook
+	// Applies against the record and a stale hook is rejected. A harness whose hook is not wired (codex without
+	// busy_verified) is not armed, so it is never stranded "busy".
+	busyGen, err := armWorkerBusy(*epicDir, story, harnessName, wt.Path, pol)
+	if err != nil {
+		return fail("arm busy state: %v", err)
 	}
 	sess, err := b.Spawn(wt, backend.HarnessSpec{Name: harnessName, Model: modelID, Effort: effort, LaunchFlags: pol.LaunchFlags(harnessName), Argv: argv, BusyGen: busyGen}, backend.Brief{StoryPath: storyPath})
 	if err != nil {
@@ -195,7 +192,7 @@ func storyDispatch(args []string) int {
 		return fail("%v", err)
 	}
 	if h := os.Getenv("ORCA_TERMINAL_HANDLE"); h != "" {
-		_ = writeCoxFile(*epicDir, "leader", h)
+		_ = state.WriteLeader(*epicDir, h)
 	}
 	startWatcher(*epicDir, story)
 	fmt.Printf("dispatched %s (attempt %d) as %s on %s -> %s\n", story, attempt, harnessName, wt.Path, sess.ID)
@@ -396,6 +393,14 @@ func releaseStory(epicDir, story string, snap *state.StorySnap, to state.State, 
 			return fmt.Errorf("release session: %w", err)
 		}
 	}
+	// Retire the harness-owned busy record for this incarnation (DESIGN wave-2 item 6c): read the current gen and Retire
+	// against it, so a re-arm's newer record survives and a terminal story never leaves a stale "busy" behind. Best-effort:
+	// a mismatch (a newer incarnation exists) or an absent record is fine, the story is already terminal.
+	if rec, ok := busy.ReadRecord(epicDir, story); ok {
+		if err := busy.Retire(epicDir, story, rec.Gen); err != nil {
+			fmt.Fprintf(os.Stderr, "cox: note: busy retire for %s: %v\n", story, err)
+		}
+	}
 	if closeWt {
 		if wtPath := readWorktree(epicDir, story); wtPath != "" {
 			if b == nil {
@@ -512,14 +517,12 @@ func storyControl(verb string, args []string) int {
 		}
 		spec := backend.HarnessSpec{Name: targetHarness, Model: targetModel, Argv: argv}
 		// Re-arm the busy record for a fresh incarnation so a resumed worker's hook Applies against a new gen and any late
-		// event from the prior incarnation is rejected as stale (DESIGN wave-3).
-		if registry.Card(targetHarness).BusyRecord {
-			g, err := busy.Arm(*epicDir, story)
-			if err != nil {
-				return fail("arm busy state: %v", err)
-			}
-			spec.BusyGen = g
+		// event from the prior incarnation is rejected as stale (DESIGN wave-2 item 6).
+		g, err := armWorkerBusy(*epicDir, story, targetHarness, wtPath, loadPolicyQuiet(*epicDir))
+		if err != nil {
+			return fail("arm busy state: %v", err)
 		}
+		spec.BusyGen = g
 		prior, _ := loadSession(*epicDir, story) // previous attempt's terminal, closed before the new spawn (zero value when none)
 		sess, err := ctl.Relaunch(story, wtPath, *note, prior, spec, extra)
 		if err != nil {
@@ -528,7 +531,9 @@ func storyControl(verb string, args []string) int {
 		if _, notice := confirmPiActivation(targetHarness, extension, piExtDir(*epicDir, story)); notice != "" {
 			fmt.Println(notice)
 		}
-		if err := saveSession(*epicDir, story, sess); err != nil {
+		// Relaunch appended the working event at the new attempt, so currentAttempt reads it; the session is stamped with
+		// it, so a late writer from the prior attempt can never clobber this one (item 7).
+		if err := saveSession(*epicDir, story, sess, currentAttempt(*epicDir, story)); err != nil {
 			return fail("save session: %v", err)
 		}
 		if rerouting {

@@ -21,6 +21,8 @@ This table is checked against `internal/adapter/harness/codex.Harness.Card()` by
 | telemetry | false |
 | sandbox | true |
 | unsandboxed_ack | false |
+| busy_record | false |
+| busy_sources | codex-hook, dispatch, interrupt, recovery |
 | instructions | AGENTS.md + markdown skills |
 
 ## Support contract
@@ -29,6 +31,10 @@ This table is checked against `internal/adapter/harness/codex.Harness.Card()` by
 - Without trusted project hooks, a leader drains wakes at turn start and ends idle work with `cox wake wait`. The
   backend doorbell is a safety net, not durable delivery.
 - Workers write checkpoints at phase boundaries. Relaunch injects the saved checkpoint through the brief.
+- **Harness-owned busy state is off by default** (`busy_record` false). Codex is not armed at dispatch and writes no
+  busy record until policy `harness.busy_verified` is set to `true`, which vouches that a `codex-hook` writer is wired
+  (DESIGN wave-2 item 6). Once armed, the trust table (`busy_sources`) trusts only `codex-hook` plus the leader-side
+  `dispatch`/`interrupt`/`recovery` writers; until then a backend falls back to Codex's structured agent state as before.
 - Session telemetry is unknown because the adapter has no authoritative session log.
 - Worker launch flags, model selection, network access, and additional writable roots are composed by
   `internal/adapter/backend/launch.go`. These permissions are captain-owned policy.

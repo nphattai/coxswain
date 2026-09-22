@@ -9,6 +9,9 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
+
+	"github.com/nphattai/coxswain/internal/state"
 )
 
 // 40 concurrent writers must produce exactly 40 records with sequences 001..040, none lost or duplicated (F06).
@@ -204,5 +207,73 @@ func TestListOrderAndHandledAck(t *testing.T) {
 	}
 	if got := filepath.Base(path); got != "004.msg" {
 		t.Fatalf("sequence reused: got %s, want 004.msg", got)
+	}
+}
+
+// appendWorking records a story dispatch (working, actor leader) at an explicit time, so a test can place the current
+// attempt's dispatch cutoff exactly relative to the steer records.
+func appendWorking(t *testing.T, epic, story string, attempt int, at time.Time) {
+	t.Helper()
+	if err := state.Append(epic, state.Event{
+		TS: at.UTC().Format(time.RFC3339), Epic: filepath.Base(epic), Story: story, Attempt: attempt,
+		Actor: state.Leader, From: state.Submitted, To: state.Working, ExternalConfirmed: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// writeHandledSteer publishes one already-handled steer with a chosen timestamp (bypassing Write so the At can be placed
+// in a past attempt), so a test can build up a previous attempt's steer history.
+func writeHandledSteer(t *testing.T, epic, story string, seq int, at time.Time) {
+	t.Helper()
+	handled := filepath.Join(Dir(epic, story), "handled")
+	if err := os.MkdirAll(handled, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rec := Record{Seq: seq, Story: story, At: at.UTC().Format(time.RFC3339), Urgency: Steer, Body: "old steer"}
+	if err := os.WriteFile(filepath.Join(handled, fmt.Sprintf("%03d.msg", seq)), rec.marshal(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// B-23 / DESIGN wave-2 item 11: the 5-steer budget counts only the current attempt. Five handled steers from attempt 1,
+// then a relaunch to attempt 2, and a fresh steer is accepted - the attempt-1 records are history, not budget. On the
+// base sha Write counted every budget-bearing record regardless of attempt, so the sixth steer was refused.
+func TestSteerBudgetPerAttempt(t *testing.T) {
+	epic := t.TempDir()
+	story := "s"
+	now := time.Now().UTC()
+
+	// Attempt 1: dispatched, then five handled steers (all before attempt 2's dispatch).
+	appendWorking(t, epic, story, 1, now.Add(-48*time.Hour))
+	for i := 1; i <= DefaultBudget; i++ {
+		writeHandledSteer(t, epic, story, i, now.Add(-47*time.Hour))
+	}
+
+	// Relaunch to attempt 2, dispatched an hour ago (so a real-time steer written now is at or after the cutoff).
+	appendWorking(t, epic, story, 2, now.Add(-1*time.Hour))
+
+	// A fresh steer for attempt 2 must be accepted: the five attempt-1 steers do not count against attempt 2's budget.
+	if _, err := Write(epic, story, "attempt-2 steer", Steer, ""); err != nil {
+		t.Fatalf("a fresh steer after relaunch must be accepted (attempt-1 steers are history), got %v", err)
+	}
+
+	// The earlier attempt's records are reported as history, not delivered budget.
+	hist, err := History(epic, story)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hist) != DefaultBudget {
+		t.Fatalf("History = %d earlier records, want %d", len(hist), DefaultBudget)
+	}
+
+	// The current attempt's own budget still bites: after the one accepted steer, four more fill it and the sixth is refused.
+	for i := 0; i < DefaultBudget-1; i++ {
+		if _, err := Write(epic, story, fmt.Sprintf("a2 steer %d", i), Steer, ""); err != nil {
+			t.Fatalf("attempt-2 steer %d should fit the budget: %v", i, err)
+		}
+	}
+	if _, err := Write(epic, story, "a2 one too many", Steer, ""); !errors.As(err, new(*ErrBudget)) {
+		t.Fatalf("the current attempt's budget must still be enforced, got %v", err)
 	}
 }

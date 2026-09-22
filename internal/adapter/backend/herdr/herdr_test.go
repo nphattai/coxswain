@@ -197,7 +197,7 @@ func gitInit(t *testing.T, dir string) {
 // on herdr could never be seen idle. Now Composer consults the busy record first, the same code path Orca uses.
 func TestComposerConsultsBusyRecord(t *testing.T) {
 	epic := t.TempDir()
-	gen, err := busy.Arm(epic, "w1")
+	gen, err := busy.Arm(epic, "w1", "pi", []string{"pi-ext", "dispatch", "interrupt", "recovery"})
 	if err != nil {
 		t.Fatalf("arm: %v", err)
 	}

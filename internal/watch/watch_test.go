@@ -384,6 +384,9 @@ func TestInboxLadderPermissionBlockedEscalates(t *testing.T) {
 // markTick writes a parseable RFC3339 timestamp to <epic>/.cox/watch/lasttick so doctor/state can read the last-tick age.
 func TestMarkTick(t *testing.T) {
 	epic := t.TempDir()
+	// A live epic always has its .cox control tree; markTick writes the beacon into it but never resurrects it (a
+	// vanished .cox means the epic was torn down and the watcher is about to evict).
+	must(t, os.MkdirAll(filepath.Join(epic, state.ControlDir), 0o755))
 	now := time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC)
 	w := &Watcher{EpicDir: epic, Now: func() time.Time { return now }}
 	w.markTick()
@@ -673,7 +676,7 @@ func TestIdlePassConsultsBusyRecordFirst(t *testing.T) {
 		epic := t.TempDir()
 		must(t, state.Append(epic, ev(epic, "s", 1, state.Submitted, state.Working)))
 		now := time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC)
-		gen, err := busy.Arm(epic, "s")
+		gen, err := busy.Arm(epic, "s", "pi", []string{"pi-ext", "dispatch", "interrupt", "recovery"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -769,7 +772,9 @@ func TestRunEvictsWhenControlTreeGone(t *testing.T) {
 	}
 	select {
 	case <-done:
-	case <-time.After(2 * time.Second):
+	// The loop stands down one tick after the rename (markTick no longer resurrects .cox); a generous ceiling absorbs
+	// CI scheduler jitter under -race without measuring the tick.
+	case <-time.After(5 * time.Second):
 		t.Fatal("Run did not exit within one tick after .cox was renamed away")
 	}
 }
@@ -864,4 +869,68 @@ func countCalls(calls []string, want string) int {
 		}
 	}
 	return n
+}
+
+// writeBusyRecord writes a busy-state record directly (bypassing Apply) with a controlled last-event time, so a test can
+// place the record's timestamp exactly relative to the injected clock.
+func writeBusyRecord(t *testing.T, epic, story string, at time.Time) {
+	t.Helper()
+	rec := busy.Record{
+		Schema: busy.Schema, State: busy.Busy, Gen: "gtest.deadbeef", Seq: 1, TS: at.Unix(),
+		Source: "pi-ext", Event: "agent_start", Harness: "pi",
+		Sources: []string{"pi-ext", "dispatch", "interrupt", "recovery"},
+	}
+	b, err := json.Marshal(rec)
+	must(t, err)
+	must(t, os.MkdirAll(filepath.Dir(busy.Path(epic, story)), 0o755))
+	must(t, os.WriteFile(busy.Path(epic, story), b, 0o600))
+}
+
+// DESIGN wave-2 item 6d: a working story whose busy record has said busy longer than BusyTurnMax, with no fresh busy
+// event and no checkpoint, raises exactly one routine (non-urgent) status wake per window - a nudge, never an interrupt.
+// On the base sha there is no busyTurnMaxPass, so a silently-busy worker was never surfaced.
+func TestBusyTurnMaxWakeOncePerWindow(t *testing.T) {
+	epic := t.TempDir()
+	must(t, state.Append(epic, ev(epic, "s", 1, state.Submitted, state.Working)))
+	now := time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC)
+	w := &Watcher{EpicDir: epic, Now: func() time.Time { return now }} // no backend: the pass never touches it
+
+	// A record busy since only 30m ago is within the 60m default: no wake.
+	writeBusyRecord(t, epic, "s", now.Add(-30*time.Minute))
+	if n, urg, err := w.busyTurnMaxPass(); err != nil || n != 0 || urg {
+		t.Fatalf("recent busy must not wake, got n=%d urg=%v err=%v", n, urg, err)
+	}
+
+	// Busy since 2h ago with no checkpoint: exactly one routine status wake.
+	writeBusyRecord(t, epic, "s", now.Add(-2*time.Hour))
+	n, urg, err := w.busyTurnMaxPass()
+	if err != nil || n != 1 || urg {
+		t.Fatalf("stale busy must raise one non-urgent wake, got n=%d urg=%v err=%v", n, urg, err)
+	}
+	wakes, _ := wake.Drain(epic, true)
+	if len(wakes) != 1 || wakes[0].Kind != wake.KindStatus {
+		t.Fatalf("want one status wake, got %+v", wakes)
+	}
+
+	// Within the same window: suppressed (no second wake).
+	if n, _, _ := w.busyTurnMaxPass(); n != 0 {
+		t.Fatalf("within the window must not repeat, got %d", n)
+	}
+
+	// Past the window: it nudges again.
+	now = now.Add(61 * time.Minute)
+	if n, _, _ := w.busyTurnMaxPass(); n != 1 {
+		t.Fatalf("past the window must nudge again, got %d", n)
+	}
+}
+
+// markTick must never resurrect a vanished control tree: if .cox is gone (epic torn down mid-tick) it writes nothing, so
+// the loop's self-eviction is not defeated by the watcher recreating .cox/watch every tick (the -race flake root cause).
+func TestMarkTickDoesNotResurrectControlTree(t *testing.T) {
+	epic := t.TempDir() // no .cox
+	w := &Watcher{EpicDir: epic, Now: fixedNow()}
+	w.markTick()
+	if _, err := os.Stat(filepath.Join(epic, state.ControlDir)); !os.IsNotExist(err) {
+		t.Fatalf(".cox was resurrected by markTick (err=%v); it must stay gone so the watcher evicts", err)
+	}
 }
