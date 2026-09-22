@@ -14,8 +14,20 @@ Design of record: `epics/m11-quota-routing/DESIGN.md` (signed after two arena ro
 the watcher, `cox state`, and the board read only this contract. A `Reading` carries `known`, `percent_remaining`,
 `resets_at`, `runway` (`exhausted_now` | `projected_exhaustion` | `through_reset` | `unknown`),
 `usable_runway_seconds` (`-1` when the source states none), `source` (`quota-axi` | `manual` | `none`), `observed_at`,
-`reason`, and `window_ids`. When no source can read a harness the reading is `known:false` and every surface renders it
-as unknown with the reason, never as a quota fact (F11). A Go-native reader can be added later behind the same contract.
+`reason`, and `window_ids`. Two fields feed routing's rule path (item 10): `spend_priority` (quota-axi's
+`selection.spendPriority`, a comparable scalar - higher is better, `0` exact utilization, negative overdrawn; absent when
+the selection is unmeasurable, so unknown is never read as zero) and `attention` (a credential-attention note, e.g.
+`keychain_prompt_required`, set when the provider's own state says its credential needs attention). When no source can
+read a harness the reading is `known:false` and every surface renders it as unknown with the reason, never as a quota
+fact (F11). A Go-native reader can be added later behind the same contract.
+
+### How routing reads a Reading (item 10)
+
+The rule path gates each candidate over its `(harness, model)` reading: `attention` (non-empty) or `runway:
+exhausted_now` fails eligibility; `runway: projected_exhaustion` with `usable_runway_seconds` below
+`routing.min_runway_seconds` fails runway feasibility; then eligible candidates are ranked by `spend_priority`
+(argmax). A reading with no comparable `spend_priority` stays eligible but unrankable. The baseline ladder still reads
+quota observe-only (ADR 0011). See [routing](routing.md).
 
 ## Two adapters
 

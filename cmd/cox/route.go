@@ -26,6 +26,7 @@ func cmdRoute(args []string) int {
 	epicDir := fs.String("epic", "", "epic directory")
 	story := fs.String("story", "", "story id")
 	brief := fs.String("brief", "", "resolve a rule match for a story brief file via the opt-in typed path (Jev)")
+	candidates := fs.String("candidates", "", "comma-separated harness:model list; print the first quota-eligible one (or none, exit 1)")
 	asJSON := fs.Bool("json", false, "emit the Choice as JSON")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -33,8 +34,11 @@ func cmdRoute(args []string) int {
 	if *brief != "" {
 		return cmdRouteBrief(*epicDir, *brief)
 	}
+	if *candidates != "" {
+		return cmdRouteCandidates(*epicDir, *candidates)
+	}
 	if *epicDir == "" || *story == "" {
-		return usageErr("cox route --story <id> --epic <dir> [--json] | --brief <file> --epic <dir>")
+		return usageErr("cox route --story <id> --epic <dir> [--json] | --brief <file> --epic <dir> | --candidates h:m,... --epic <dir>")
 	}
 	choice, err := routeStory(*epicDir, *story)
 	if err != nil {
@@ -48,22 +52,69 @@ func cmdRoute(args []string) int {
 		}
 		return 0
 	}
-	fmt.Printf("route %s: harness=%s", *story, choice.Harness)
-	if choice.Model != "" {
-		fmt.Printf(" model=%s", choice.Model)
+	if choice.Escalate {
+		fmt.Printf("route %s: ESCALATE - %s\n", *story, choice.EscalateReason)
+	} else {
+		fmt.Printf("route %s: harness=%s", *story, choice.Harness)
+		if choice.Model != "" {
+			fmt.Printf(" model=%s", choice.Model)
+		}
+		if choice.Effort != "" {
+			fmt.Printf(" effort=%s", choice.Effort)
+		}
+		fmt.Println()
 	}
-	fmt.Println()
+	if choice.Rule != "" {
+		fmt.Printf("  rule=%s resolver=%s\n", choice.Rule, orDashStr(choice.Resolver))
+	}
 	for _, r := range choice.Reasons {
 		fmt.Printf("  - %s\n", r)
+	}
+	// Every candidate is accounted for with its gate results (DESIGN wave-4 item 10c), not only the choice.
+	for _, c := range choice.Candidates {
+		fmt.Printf("  candidate: %s:%s provider=%s remaining=%d%% spendPriority=%s runway=%s -> %s\n",
+			c.Harness, orDashStr(c.Model), orDashStr(c.Provider), c.PercentRemaining, spStr(c.SpendPriority), orDashStr(c.Runway), c.Reason)
 	}
 	for _, c := range choice.CitedRows {
 		fmt.Printf("  cited: %s\n", c)
 	}
-	// Observe-only quota (ADR 0011): print the reading for the chosen harness/model as information. It never changed the
-	// Choice above; routing does not pick a non-default harness on quota until the baseline bar is met.
-	q := quota.Pick(mergedQuotaReadings(*epicDir), choice.Harness, choice.Model)
-	fmt.Printf("  quota: %s\n", quotaReadingLine(q))
+	// Observe-only quota (ADR 0011): print the reading for the chosen harness/model as information. On the baseline-ladder
+	// path it never changed the Choice; the rules path already gated on it above.
+	if choice.Harness != "" {
+		q := quota.Pick(mergedQuotaReadings(*epicDir), choice.Harness, choice.Model)
+		fmt.Printf("  quota: %s\n", quotaReadingLine(q))
+	}
 	return 0
+}
+
+// cmdRouteCandidates implements `cox route --candidates h:m,h:m --epic <dir>`: it prints the first quota-eligible
+// candidate from the current reading (a candidate is eligible when its reading is known, its percent is above zero, no
+// applicable runway is exhausted_now, and its credential needs no attention), or `none` and exit 1 when none is. It has
+// no side effects: it reads quota and prints, never dispatches (DESIGN wave-4 item 10c, ported from fm-quota-choose.sh).
+func cmdRouteCandidates(epicDir, list string) int {
+	if epicDir == "" {
+		return usageErr("cox route --candidates h:m,... --epic <dir>")
+	}
+	readings := mergedQuotaReadings(epicDir)
+	for _, item := range strings.Split(list, ",") {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		h, m, _ := strings.Cut(item, ":")
+		h = strings.TrimSpace(h)
+		q := quota.Pick(readings, h, modelAlias(strings.TrimSpace(m)))
+		if q.Known && q.Attention == "" && q.Runway != quota.RunwayExhaustedNow && q.PercentRemaining > 0 {
+			if m == "" {
+				fmt.Println(h)
+			} else {
+				fmt.Printf("%s %s\n", h, strings.TrimSpace(m))
+			}
+			return 0
+		}
+	}
+	fmt.Println("none")
+	return 1
 }
 
 // quotaReadingLine renders a Reading as a one-line info string for cox route and doctor: percent+runway+resets when

@@ -95,6 +95,17 @@ cox story dispatch checkout-api --epic "$HOME/Work/acme-ops/acme/epics/checkout"
 The worker runs in its own worktree on `story/<id>`. That is the setup goal reached: a dispatched story.
 [First epic](docs/getting-started/first-epic.md) explains each command in full and the leader wake loop, and every command in the fences above is exercised by the onboarding end-to-end test, so you can copy it with confidence.
 
+### Route a story
+
+A story with `harness: auto` is routed by policy rules a model's judgment matches; Go applies the gates and the
+quota ranking. To ask which harness a set of candidates the current quota reading favours (no side effects):
+
+```sh
+cox route --candidates claude:opus,codex:gpt-5.6-sol --epic "$HOME/Work/acme-ops/acme/epics/checkout"
+```
+
+It prints the first quota-eligible candidate, or `none` (exit 1) when the fleet is tight. See [Worker routing](docs/routing.md).
+
 ### Talk to it
 
 You steer the whole crew by chatting with the leader; it escalates only real decisions.

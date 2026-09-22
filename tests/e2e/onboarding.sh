@@ -126,6 +126,14 @@ step "4b. cox wake wait (the pull-harness leader wake loop taught on the First e
 "$COX" wake wait --max 3s --epic "$EPIC" >/dev/null 2>&1; wc=$?
 { [ $wc -eq 0 ] || [ $wc -eq 3 ]; } && ok "wake wait ran (exit $wc)" || no "wake wait exit $wc (want 0 or 3)"
 
+step "4c. cox route --candidates prints the first quota-eligible candidate (item 10)"
+# No quota-axi on PATH here, so every reading is unknown and no candidate is eligible: --candidates prints `none` and
+# exits 1 with no side effects. Either outcome (a candidate, exit 0; or none, exit 1) proves the command runs; a usage
+# (2) or hard failure is wrong. This exercises the README's `cox route --candidates` command in the E2E.
+"$COX" route --candidates claude:opus,codex:gpt-5.6-sol --epic "$EPIC" > "$TMP/route-candidates.out" 2>&1; rcx=$?
+cat "$TMP/route-candidates.out"
+{ [ $rcx -eq 0 ] || [ $rcx -eq 1 ]; } && ok "route --candidates ran (exit $rcx)" || no "route --candidates exit $rcx (want 0 or 1)"
+
 step "5. cox doctor exits 0 and lists workspace, epic, watcher, hooks"
 OUT="$("$COX" doctor --root "$WS" --epic "$EPIC" 2>&1)"; code=$?
 echo "$OUT"

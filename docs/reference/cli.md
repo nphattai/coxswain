@@ -43,7 +43,7 @@ and implementation file under `cmd/cox/` own its exact flags, validation, and ex
 | Recover an unconfirmed transition | `cox reconcile` | `cmd/cox/reconcile.go`, `internal/reconcile/` |
 | Inspect captain dashboard | `cox board` | `cmd/cox/board.go` |
 | Inspect scorecard or baseline evidence | `cox scorecard`, `cox baseline` | `cmd/cox/scorecard.go`, `cmd/cox/baseline.go` |
-| Inspect quota or route a story | `cox quota`, `cox route` | `cmd/cox/quota.go`, `cmd/cox/route.go` |
+| Inspect quota or route a story | `cox quota`, `cox route` (`--story`, `--candidates`, `--brief`) | `cmd/cox/quota.go`, `cmd/cox/route.go` |
 | Run a policy experiment | `cox lab` | `cmd/cox/lab.go`, `internal/lab/` |
 
 ## Audit and release
