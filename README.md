@@ -133,6 +133,16 @@ for merge authority), `direct-PR` (push + PR, the default that matches today), o
 push, wait). The brief prints `Delivery contract: mode=<mode> yolo=<on|off>`, and `cox story done --merge <sha>` refuses
 a sha that is not landed on the branch the mode requires.
 
+### Story kinds
+
+A story is one of two kinds (frontmatter `kind`, default `ship`). A **ship** story delivers a PR the captain merges. A
+**scout** story reports only - no PR: its deliverable is `<epic>/reports/<id>.md`. `cox epic stories --story id=repo:scout`
+renders one; its brief says "report only, no PR". `cox story done` refuses to complete a scout until that report exists,
+and `cox audit pr` and `cox state` skip the forge for it (they print `kind=scout report=<path|missing>` instead of a
+`gh pr view` error). When a scout's findings should become work, `cox story promote <id> --epic <dir> --mode <m>` flips it
+to a ship story, sets its delivery mode, appends a "Superseding contract" section to the story, and prints the `cox steer`
+command to deliver it to a running worker (it never sends the steer itself).
+
 ### Close an epic
 
 When an epic is done, `cox epic close --epic <dir>` tears it down and only archives its runtime once every step is

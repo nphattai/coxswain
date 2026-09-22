@@ -49,8 +49,8 @@ func Build(epicDir, story string) (string, error) {
 
 	mode, yolo := deliveryContract(epicDir, story)
 	b.WriteString("\n## Delivery contract\n")
-	fmt.Fprintf(&b, "Delivery contract: mode=%s yolo=%s\n\n", mode, onOff(yolo))
-	fmt.Fprintf(&b, "%s\n", modeParagraph(mode))
+	fmt.Fprintf(&b, "%s\n\n", ContractLine(mode, yolo))
+	fmt.Fprintf(&b, "%s\n", ModeParagraph(mode))
 
 	path := filepath.Join(dir, "context.md")
 	if err := os.WriteFile(path, []byte(b.String()), 0o644); err != nil {
@@ -115,9 +115,14 @@ func deliveryContract(epicDir, story string) (mode string, yolo bool) {
 	return mode, yolo
 }
 
-// modeParagraph is the one-paragraph statement of what each delivery mode expects of the worker (item 8b). An unknown
+// ContractLine renders the one-line delivery contract the brief and a promotion both print (item 8b/9).
+func ContractLine(mode string, yolo bool) string {
+	return fmt.Sprintf("Delivery contract: mode=%s yolo=%s", mode, onOff(yolo))
+}
+
+// ModeParagraph is the one-paragraph statement of what each delivery mode expects of the worker (item 8b). An unknown
 // mode falls back to the direct-PR text so the brief always carries a paragraph.
-func modeParagraph(mode string) string {
+func ModeParagraph(mode string) string {
 	switch mode {
 	case workspace.ModeNoMistakes:
 		return "no-mistakes: run every gate, open the PR, then WAIT for merge authority - the captain merges with `cox ship merge`. Never push a default branch, merge, or delete a branch."

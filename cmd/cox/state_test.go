@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -10,6 +12,38 @@ import (
 	forgefake "github.com/nphattai/coxswain/internal/adapter/forge/fake"
 	"github.com/nphattai/coxswain/internal/state"
 )
+
+// Item 9: cox state skips the forge for a scout story (B-05) and renders kind=scout report=<path|missing> in the forge
+// column. Base-behavior probe: on the base sha there is no kind, so a scout story is probed via the forge like any other.
+func TestStateScoutSkipsForge(t *testing.T) {
+	t.Setenv("ORCA_RUN_ID", "")
+	epic := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(epic, "stories"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(epic, "stories", "sc.md"), []byte("---\nid: sc\nrepo: app\nkind: scout\n---\nbody\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	appendWorking(t, epic, "sc")
+
+	fleet, _, err := buildFleet(epic, "", time.Now().UTC(), false /* forge NOT disabled: a scout must skip it anyway */)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var obs state.Observation
+	found := false
+	for _, s := range fleet.Stories {
+		if s.ID == "sc" {
+			obs, found = s.Observations["forge"], true
+		}
+	}
+	if !found {
+		t.Fatal("scout story sc not in fleet")
+	}
+	if got := forgeSummary(obs); got != "kind=scout report=missing" {
+		t.Fatalf("scout forge summary = %q, want kind=scout report=missing", got)
+	}
+}
 
 // The forge observer resolves a story's pr/checks/merged from the forge, tags source and observed_at, caches per head,
 // resolves any retrieval error to three-state unknown, and honors --no-forge.

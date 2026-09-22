@@ -10,9 +10,15 @@ title: {{.Title}}
 policy_source: {{.PolicySource}}
 delivery: {{.Delivery.Style}}
 mode: {{.Mode}}
+kind: {{.Kind}}
 ---
 
 # {{.Title}}
+{{if eq .Kind "scout"}}
+> SCOUT STORY: report only, no PR. Your deliverable is {{.EpicToken}}/reports/{{.ID}}.md - do not open a PR, do not
+> merge. `cox story done` refuses to complete this story until that report exists. If the captain later promotes it to a
+> ship story, a "Superseding contract" section is appended below with the delivery contract to follow from that point.
+{{end}}
 
 ## Read first
 - Contract: {{.EpicToken}}/DESIGN.md (sections <x>)

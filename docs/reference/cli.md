@@ -25,7 +25,7 @@ and implementation file under `cmd/cox/` own its exact flags, validation, and ex
 
 | Task | Command family | Owner |
 |---|---|---|
-| Dispatch, park, resume, or terminate a story | `cox story` | `cmd/cox/story.go` |
+| Dispatch, park, resume, promote, or terminate a story | `cox story` | `cmd/cox/story.go` |
 | Send durable guidance | `cox steer` | `cmd/cox/steer.go`, `internal/protocol/inbox/` |
 | Apply a bounded control verb | `cox control` | `cmd/cox/control.go`, `internal/protocol/control/` |
 | Report progress or completion | `cox story report`, `cox status` | `cmd/cox/report.go`, `cmd/cox/status.go` |

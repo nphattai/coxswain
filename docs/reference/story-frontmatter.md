@@ -22,6 +22,7 @@ not documented here.
 | `policy_source` | render | The `cox/policy.json` file and short sha the story's delivery/context/harness values were resolved from. Audit stamp; do not hand-edit. |
 | `delivery` | render | The resolved delivery style (`default` \| `pipo`), copied from policy so the worker's rules are fixed at render time. |
 | `mode` | render, editable | The resolved delivery mode (`no-mistakes` \| `direct-PR` \| `local-only`), from policy `delivery.mode` (item 8). The brief prints `Delivery contract: mode=<mode> yolo=<on\|off>`; `cox story done --merge <sha>` enforces the sha is landed on the branch the mode requires. Overridable per story. |
+| `kind` | render, editable | The story kind (`ship` \| `scout`, default `ship`; item 9). A `scout` reports only (no PR): its deliverable is `<epic>/reports/<id>.md`, `cox story done` refuses to complete it without that report, and `cox audit pr` / `cox state` skip the forge for it. `cox epic stories --story id=repo:scout` renders one; `cox story promote <id>` flips it back to `ship`. |
 
 ## Example
 
@@ -38,6 +39,7 @@ title: Checkout API - idempotent order creation
 policy_source: cox/policy.json@0ebbf6ece9a4
 delivery: default
 mode: direct-PR
+kind: ship
 ---
 ```
 

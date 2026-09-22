@@ -282,6 +282,71 @@ func writeStory(t *testing.T, epic, id, repo string) {
 	}
 }
 
+// Item 9: `cox story done` for a scout refuses without its report file and never requires --merge; with the report it
+// completes. Base-behavior probe: on the base sha there is no kind, so a scout completes with no report (wrongly).
+func TestScoutDoneRequiresReport(t *testing.T) {
+	t.Setenv("ORCA_RUN_ID", "")
+	epic := t.TempDir()
+	writeStoryFM(t, epic, "sc", "---\nid: sc\nrepo: app\nkind: scout\n---\nbody\n")
+	appendWorking(t, epic, "sc")
+
+	// No report yet: refused.
+	if rc := storyDone([]string{"sc", "--epic", epic}); rc == 0 {
+		t.Fatal("scout done without a report must be refused")
+	}
+	// Write the report; now it completes and records the report as evidence (no --merge needed).
+	if err := os.MkdirAll(filepath.Join(epic, "reports"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFileT(t, filepath.Join(epic, "reports", "sc.md"), "# scout report")
+	if rc := storyDone([]string{"sc", "--epic", epic}); rc != 0 {
+		t.Fatalf("scout done with a report rc=%d, want 0", rc)
+	}
+	events, _, _ := state.Load(epic)
+	if last := events[len(events)-1]; last.To != state.Completed || last.Evidence["report"] == nil {
+		t.Fatalf("scout completion must record the report: %+v", last)
+	}
+}
+
+// Item 9: `cox story promote` flips a scout to a ship story, sets the mode, and appends the Superseding contract section;
+// promoting a non-scout is refused. Base-behavior probe: on the base sha there is no `cox story promote` subcommand.
+func TestStoryPromote(t *testing.T) {
+	root := t.TempDir()
+	if _, err := workspace.Init(root, nil); err != nil {
+		t.Fatal(err)
+	}
+	epic := filepath.Join(root, "proj", "epics", "slug")
+	if err := os.MkdirAll(filepath.Join(epic, "stories"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeStoryFM(t, epic, "sc", "---\nid: sc\nrepo: app\nmode: direct-PR\nkind: scout\n---\n\n# sc\n")
+
+	if rc := storyPromote([]string{"sc", "--epic", epic, "--mode", "no-mistakes"}); rc != 0 {
+		t.Fatalf("promote rc=%d, want 0", rc)
+	}
+	b, err := os.ReadFile(filepath.Join(epic, "stories", "sc.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(b)
+	if !strings.Contains(text, "kind: ship") {
+		t.Errorf("promote must flip kind to ship:\n%s", text)
+	}
+	if !strings.Contains(text, "mode: no-mistakes") {
+		t.Errorf("promote must set the mode:\n%s", text)
+	}
+	if !strings.Contains(text, "Superseding contract") || !strings.Contains(text, "Delivery contract: mode=no-mistakes") {
+		t.Errorf("promote must append the superseding contract with the delivery line:\n%s", text)
+	}
+	if storyKind(epic, "sc") != "ship" {
+		t.Errorf("promoted story kind = %q, want ship", storyKind(epic, "sc"))
+	}
+	// Promoting a story that is already a ship is refused.
+	if rc := storyPromote([]string{"sc", "--epic", epic, "--mode", "direct-PR"}); rc == 0 {
+		t.Fatal("promoting a non-scout must be refused")
+	}
+}
+
 // writeStoryFM writes a story file with an explicit frontmatter block (for mode/kind tests).
 func writeStoryFM(t *testing.T, epic, id, content string) {
 	t.Helper()

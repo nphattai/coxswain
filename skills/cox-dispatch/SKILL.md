@@ -37,11 +37,13 @@ cox audit pr <story> --epic <epic> --json
 Three-state bundle bound to the head sha: shape, credential scan, CI, reviewer threads. Never mark a PR ready on an `unknown` (exit 3) or a `fail` (exit 1). Resolve every reviewer-bot comment first. A head that moved since the last audit prints `stale` - re-audit.
 
 ## 4. Release and done
-Only the captain merges. After the captain merges a story PR into `epic/<slug>`: reply `released` to the worker, which then sends `worker_done`. Release the story's resources and stop its worker:
+Only the captain merges, and `cox ship merge --pr <n> --epic <epic>` is the command the captain runs - it merges only an open, non-draft, mergeable PR green at the live head, pins the head, reads it back, and records a `merged` event in `ledger.jsonl`. It is refused from a worker terminal and, while `merge.yolo` is false (the default), unless `--captain`; `--check` is a read-only dry run the leader may run to preview the verdict. After the captain merges a story PR into `epic/<slug>`: reply `released` to the worker, which then sends `worker_done`. Release the story's resources and stop its worker:
 ```
 cox env release <story> --epic <epic>
 ```
 Refresh the epic backend if a merged story changed it (`cox env refresh --epic <epic>`).
+
+A **scout** story (`kind: scout`) has no PR: its deliverable is `<epic>/reports/<id>.md`. `cox audit pr` and `cox state` print `kind=scout report=<path|missing>` for it (no forge call), and `cox story done` refuses to complete it until the report lands. When a scout's findings become work, promote it: `cox story promote <id> --epic <epic> --mode <m>` flips it to a ship story, appends the superseding delivery contract to the story, and prints the `cox steer` command to deliver it - you send that steer to the warm worker; the command never sends it for you.
 
 ## 5. Follow-ups and status
 Follow-ups (steer) go to the same warm worker via the durable inbox (`cox steer <story> "<text>" --epic <epic>`), `--fyi` for a non-interrupting note. `cox state --epic <epic> --json` is the fleet view for the captain. A follow-up steer re-runs the worker: it MUST end with a completion signal. ON THE ORCHESTRATION PLANE Orca allows one `worker_done` per dispatch, so the first completion is `worker_done` (listing the commits) and every later completion in the same dispatch is `orca orchestration send --type status --subject "done: <3-line summary>"` - the watcher classifies a `done:` status as a completion and advances the story. ON THE TERMINAL PLANE there is no cap: the worker sends `cox story report done` every time (no `done:` convention). A plain progress `status` never advances the story, so a re-run that ends with only a plain `status` leaves the leader waiting; the watcher raises an `idle_no_done` wake when that happens.

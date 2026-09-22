@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/nphattai/coxswain/internal/adapter/backend"
 	"github.com/nphattai/coxswain/internal/adapter/harness"
@@ -29,7 +30,7 @@ func harnessOptions() string { return strings.Join(registry.Names(), "|") }
 // cmdStory implements `cox story dispatch|park|resume`.
 func cmdStory(args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: cox story dispatch|done|fail|cancel|park|resume <id> --epic <dir>")
+		fmt.Fprintln(os.Stderr, "usage: cox story dispatch|done|fail|cancel|park|resume|promote <id> --epic <dir>")
 		return 2
 	}
 	switch args[0] {
@@ -39,6 +40,8 @@ func cmdStory(args []string) int {
 		return cmdStoryReport(args[1:])
 	case "done":
 		return storyDone(args[1:])
+	case "promote":
+		return storyPromote(args[1:])
 	case "fail":
 		return storyTerminate(state.Failed, args[1:])
 	case "cancel":
@@ -312,7 +315,14 @@ func storyDone(args []string) int {
 	}
 
 	evidence := map[string]any{}
-	if *merge != "" {
+	if storyKind(*epicDir, story) == "scout" {
+		// A scout's deliverable is its report, not a PR (item 9): refuse to complete without it, and never require --merge.
+		report := filepath.Join(*epicDir, "reports", story+".md")
+		if _, err := os.Stat(report); err != nil {
+			return fail("refusing to complete scout %s: no report at %s (a scout's deliverable is the report, not a PR)", story, report)
+		}
+		evidence["report"] = report
+	} else if *merge != "" {
 		// The merge sha must be landed on the branch the story's delivery mode requires (item 8c): origin/epic/<slug> for
 		// no-mistakes|direct-PR, the repo's production branch for local-only. A refusal names the exact merge-base line.
 		contained, ranLine, cerr := mergeContained(*epicDir, story, *merge)
@@ -374,6 +384,86 @@ func productionBranch(epicDir, story string) string {
 		return repo.Production
 	}
 	return ""
+}
+
+// storyPromote implements `cox story promote <id> --epic <dir> --mode <m>` (item 9): it flips a scout story to a ship
+// story in its frontmatter, sets the delivery mode, appends a "Superseding contract (promoted <date>)" section carrying
+// the delivery contract to the story file, and prints the `cox steer` command that would deliver it to a running worker -
+// it never sends the steer itself (the leader decides when to interrupt).
+func storyPromote(args []string) int {
+	story, rest := onePositional(args)
+	fs := flag.NewFlagSet("story promote", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	epicDir := fs.String("epic", "", "epic directory")
+	mode := fs.String("mode", "", "delivery mode for the promoted ship story (no-mistakes|direct-PR|local-only)")
+	if err := fs.Parse(rest); err != nil {
+		return 2
+	}
+	if *epicDir == "" || story == "" {
+		return usageErr("cox story promote <id> --epic <dir> [--mode no-mistakes|direct-PR|local-only]")
+	}
+	m := *mode
+	if m == "" {
+		m = workspace.DefaultDeliveryMode
+	}
+	if !workspace.ValidDeliveryMode(m) {
+		return fail("invalid --mode %q (want no-mistakes|direct-PR|local-only)", m)
+	}
+	if k := storyKind(*epicDir, story); k != "scout" {
+		return fail("%s is kind=%s, not scout; nothing to promote", story, k)
+	}
+	storyPath := filepath.Join(*epicDir, "stories", story+".md")
+	b, err := os.ReadFile(storyPath)
+	if err != nil {
+		return fail("read story %s: %v", story, err)
+	}
+	updated := setFrontmatterKey(string(b), "kind", "ship")
+	updated = setFrontmatterKey(updated, "mode", m)
+	yolo := loadPolicyQuiet(*epicDir).MergeYolo()
+	date := time.Now().UTC().Format("2006-01-02")
+	if !strings.HasSuffix(updated, "\n") {
+		updated += "\n"
+	}
+	updated += fmt.Sprintf("\n## Superseding contract (promoted %s)\n\nThis scout was promoted to a ship story. %s. %s\n",
+		date, brief.ContractLine(m, yolo), brief.ModeParagraph(m))
+	if err := os.WriteFile(storyPath, []byte(updated), 0o644); err != nil {
+		return fail("write story %s: %v", story, err)
+	}
+	fmt.Printf("promoted %s: scout -> ship (mode=%s)\n", story, m)
+	fmt.Println("deliver it to a running worker with:")
+	fmt.Printf("  cox steer %s \"promoted to ship: read the Superseding contract section in your story file\" --epic %s\n", story, *epicDir)
+	return 0
+}
+
+// setFrontmatterKey replaces a top-level `key:` line inside the leading --- frontmatter block, or inserts one before the
+// closing fence when the key is absent. Content with no frontmatter is returned unchanged.
+func setFrontmatterKey(content, key, value string) string {
+	lines := strings.Split(content, "\n")
+	inFM := false
+	fmEnd := -1
+	for i, line := range lines {
+		if strings.TrimSpace(line) == "---" {
+			if !inFM {
+				inFM = true
+				continue
+			}
+			fmEnd = i
+			break
+		}
+		if inFM {
+			if k, _, ok := strings.Cut(line, ":"); ok && strings.TrimSpace(k) == key {
+				lines[i] = key + ": " + value
+				return strings.Join(lines, "\n")
+			}
+		}
+	}
+	if fmEnd < 0 {
+		return content // no frontmatter block to edit
+	}
+	out := append([]string{}, lines[:fmEnd]...)
+	out = append(out, key+": "+value)
+	out = append(out, lines[fmEnd:]...)
+	return strings.Join(out, "\n")
 }
 
 // storyTerminate records a terminal, non-success transition (failed or canceled) for a story and releases it exactly
