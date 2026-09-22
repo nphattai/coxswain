@@ -1,11 +1,13 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/nphattai/coxswain/internal/adapter/harness"
@@ -23,12 +25,16 @@ func cmdRoute(args []string) int {
 	fs.SetOutput(os.Stderr)
 	epicDir := fs.String("epic", "", "epic directory")
 	story := fs.String("story", "", "story id")
+	brief := fs.String("brief", "", "resolve a rule match for a story brief file via the opt-in typed path (Jev)")
 	asJSON := fs.Bool("json", false, "emit the Choice as JSON")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
+	if *brief != "" {
+		return cmdRouteBrief(*epicDir, *brief)
+	}
 	if *epicDir == "" || *story == "" {
-		return usageErr("cox route --story <id> --epic <dir> [--json]")
+		return usageErr("cox route --story <id> --epic <dir> [--json] | --brief <file> --epic <dir>")
 	}
 	choice, err := routeStory(*epicDir, *story)
 	if err != nil {
@@ -116,6 +122,144 @@ func storyEffort(pol *workspace.Policy, meta storyMeta) string {
 		return e
 	}
 	return pol.EffortForKind(nonEmpty(meta.Kind, "ship"))
+}
+
+// cmdRouteBrief implements `cox route --brief <file> --epic <dir>`: the opt-in typed match (DESIGN wave-4 item 10b). When
+// TYPESAFE_API_KEY is present (environment wins over the workspace's gitignored .env) AND routing.rules is non-empty, it
+// asks Jev for the one rule match, applies the confidence floor and the mechanical gates in code, and prints a TOON-style
+// block. Off (no key) prints one stderr line and exits 0 with the leader path unchanged; every resolution outcome exits
+// 0; a usage/config error (unreadable brief, no policy) exits 2. The key is used only as a request header, never printed.
+func cmdRouteBrief(epicDir, briefPath string) int {
+	if epicDir == "" || briefPath == "" {
+		return usageErr("cox route --brief <file> --epic <dir>")
+	}
+	// Opt-in gate: read the key from the environment, else the workspace's gitignored .env (environment wins). Copy into a
+	// local, never place it on argv, in a log, or in output.
+	apiKey := typedAPIKey(epicDir)
+	if apiKey == "" {
+		fmt.Fprintln(os.Stderr, "route: typed resolution off (TYPESAFE_API_KEY absent)")
+		return 0
+	}
+	briefBytes, err := os.ReadFile(briefPath)
+	if err != nil {
+		return fail("read brief %s: %v", briefPath, err)
+	}
+	pol := loadPolicyQuiet(epicDir)
+	if pol == nil {
+		return fail("cannot load policy for %s (need cox/policy.json above the epic)", epicDir)
+	}
+	cards := map[string]harness.Capability{}
+	for _, name := range registry.Names() {
+		h, _ := registry.Adapter(name)
+		cards[name] = h.Card()
+	}
+	if err := pol.ValidateRoutingCards(cards); err != nil {
+		return fail("%v", err)
+	}
+	meta := parseStoryMeta(briefBytes)
+	story := routing.Story{
+		Harness: meta.Harness, Model: modelAlias(meta.Model), Role: harness.RoleWorker,
+		Route: meta.Route, Effort: storyEffort(pol, meta), Kind: nonEmpty(meta.Kind, "ship"),
+	}
+	// COX_TYPESAFE_BASE_URL redirects the endpoint to an httptest server in tests; empty uses the production base. The
+	// real endpoint is never called from a test.
+	cfg := routing.TypedConfig{BaseURL: strings.TrimSpace(os.Getenv("COX_TYPESAFE_BASE_URL"))}
+	res := routing.ResolveTyped(context.Background(), cfg, apiKey, projectName(epicDir), string(briefBytes),
+		pol, cards, mergedQuotaReadings(epicDir), story)
+	printTypedResult(res)
+	return 0
+}
+
+// typedAPIKey returns the typed-resolution key: the environment TYPESAFE_API_KEY, else a TYPESAFE_API_KEY= line in the
+// workspace's gitignored .env (environment wins). It is read into a local and never logged.
+func typedAPIKey(epicDir string) string {
+	if k := strings.TrimSpace(os.Getenv("TYPESAFE_API_KEY")); k != "" {
+		return k
+	}
+	ws, err := findWorkspaceRoot(epicDir)
+	if err != nil {
+		return ""
+	}
+	b, err := os.ReadFile(filepath.Join(ws, ".env"))
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		line = strings.TrimSpace(line)
+		if v, ok := strings.CutPrefix(line, "TYPESAFE_API_KEY="); ok {
+			return strings.TrimSpace(strings.Trim(strings.TrimSpace(v), `"'`))
+		}
+	}
+	return ""
+}
+
+// projectName is the project label the typed request carries as state (never a secret): the epic slug.
+func projectName(epicDir string) string {
+	return filepath.Base(strings.TrimRight(epicDir, string(filepath.Separator)))
+}
+
+// printTypedResult renders a TypedResult as the TOON-style block: status, model/latency/confidence, one candidate line
+// per profile with its evidence, and on `clear` a ready-to-dispatch `profile:` line. It never prints the API key.
+func printTypedResult(res routing.TypedResult) {
+	fmt.Println("route (typed):")
+	fmt.Printf("  status: %s\n", res.Status)
+	tokens := "-"
+	if res.HasUsage {
+		tokens = fmt.Sprintf("%d/%d", res.InputTokens, res.OutputTokens)
+	}
+	fmt.Printf("  model: %s   latency_ms: %d   tokens: %s\n", orDashStr(res.Model), res.LatencyMS, tokens)
+	if res.Rule != "" {
+		fmt.Printf("  rule: %s (%s)   confidence: %.3g\n", res.Rule, res.RuleWhen, res.Confidence)
+	}
+	if len(res.Probabilities) > 0 {
+		fmt.Printf("  probabilities: %s\n", probLine(res.Probabilities))
+	}
+	if res.Reason != "" {
+		fmt.Printf("  reason: %s\n", res.Reason)
+	}
+	if res.Choice != nil {
+		for _, c := range res.Choice.Candidates {
+			fmt.Printf("  candidate: %s:%s  provider=%s  remaining=%d%%  spendPriority=%s  runway=%s  -> %s\n",
+				c.Harness, orDashStr(c.Model), orDashStr(c.Provider), c.PercentRemaining, spStr(c.SpendPriority), orDashStr(c.Runway), c.Reason)
+		}
+		if res.Status == routing.TypedClear && res.Choice.Harness != "" {
+			line := "  profile: --harness " + res.Choice.Harness
+			if res.Choice.Model != "" {
+				line += " --model " + res.Choice.Model
+			}
+			if res.Choice.Effort != "" {
+				line += " --effort " + res.Choice.Effort
+			}
+			fmt.Println(line)
+		}
+	}
+}
+
+func probLine(p map[string]float64) string {
+	keys := make([]string, 0, len(p))
+	for k := range p {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, fmt.Sprintf("%s=%.3g", k, p[k]))
+	}
+	return strings.Join(parts, " ")
+}
+
+func spStr(p *float64) string {
+	if p == nil {
+		return "unknown"
+	}
+	return fmt.Sprintf("%.4g", *p)
+}
+
+func orDashStr(s string) string {
+	if s == "" {
+		return "-"
+	}
+	return s
 }
 
 // baselinesDir returns <workspace>/docs/baselines, or "" when no workspace root is found (routing then sees no rows and
