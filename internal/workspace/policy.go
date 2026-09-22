@@ -6,8 +6,11 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/nphattai/coxswain/internal/adapter/harness"
 )
 
 // Meta is the mandatory justification every policy section carries: why the rule exists (a measurement or a captain
@@ -63,11 +66,32 @@ type Arena struct {
 	Trigger []string `json:"trigger"`
 }
 
-// Delivery is the story delivery style resolved into each story once at creation (F14). "default": draft PR at the plan
-// gate, push every phase. "pipo": commits stay local, one push at the end, PR opened ready.
+// Delivery is the story delivery style AND merge mode resolved into each story once at creation (F14, item 8). Style is
+// the phase/push rhythm - "default": draft PR at the plan gate, push every phase; "pipo": commits stay local, one push at
+// the end, PR opened ready. Mode is the merge posture the brief prints and `cox story done --merge` enforces:
+// "no-mistakes" (full gates + PR + wait for merge authority), "direct-PR" (push + PR, no extra pipeline; the default that
+// matches today's behaviour), or "local-only" (a clean ready branch, no push, wait). An empty Mode reads as direct-PR.
 type Delivery struct {
 	Meta
 	Style string `json:"style"` // "default" | "pipo"
+	Mode  string `json:"mode"`  // "no-mistakes" | "direct-PR" | "local-only"; "" => direct-PR
+}
+
+// Delivery modes (item 8). DefaultDeliveryMode is direct-PR so an epic policy that predates the field keeps today's
+// behaviour (push + PR).
+const (
+	ModeNoMistakes      = "no-mistakes"
+	ModeDirectPR        = "direct-PR"
+	ModeLocalOnly       = "local-only"
+	DefaultDeliveryMode = ModeDirectPR
+)
+
+// Merge is the epic's merge posture (item 8), a justified section. Yolo defaults false: `cox ship merge` is refused
+// unless the captain runs it (`--captain`), so the green-at-live-head rule is enforced rather than remembered. Flipping
+// yolo to true lets a non-captain terminal merge, which the captain owns the risk of.
+type Merge struct {
+	Meta
+	Yolo bool `json:"yolo"`
 }
 
 // HarnessRole is the option set and default for one role (leader | worker). Models maps a harness name to the default
@@ -103,6 +127,11 @@ type Harness struct {
 	Worker HarnessRole  `json:"worker"`
 	Arena  ArenaHarness `json:"arena"`
 	Launch Launch       `json:"launch"`
+	// BusyVerified opts codex into the harness-owned busy record (DESIGN wave-2 item 6). It defaults false: codex is not
+	// armed at dispatch and never writes a busy record until a captain flips this, which vouches that a codex-hook writer
+	// is wired. claude and pi report their own state from their cards, so this flag only governs codex. It never selects a
+	// harness or changes routing.
+	BusyVerified bool `json:"busy_verified"`
 }
 
 // Launch maps a harness to the flags a launch carries. The flat entries (Worker) are a dispatched worker's autonomy
@@ -139,12 +168,97 @@ func (l *Launch) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
-// Routing is the harness routing default (ADR 0011). It is a review_when default, never a hard rule, so it carries no
-// `why` and is not one of the justified sections(): it only records the baseline bar under which routing may choose a
-// non-default harness. Below that bar routing filters the harness options by card fit and keeps the harness default.
+// RoutingProfile is one candidate in a rule's or the default profile array (DESIGN wave-4 item 10). Harness is required;
+// Model/Effort/Provider are optional; Floor is a reasoning-class name (one of harness.EffortClasses) the story's effort
+// must meet for this candidate to stay eligible (gate 2). The array is quota-ranked by spendPriority after the three
+// gates; array order never breaks a tie.
+type RoutingProfile struct {
+	Harness  string `json:"harness"`
+	Model    string `json:"model,omitempty"`
+	Effort   string `json:"effort,omitempty"`
+	Provider string `json:"provider,omitempty"`
+	Floor    string `json:"floor,omitempty"`
+}
+
+// RoutingRule is one captain-authored routing rule (DESIGN wave-4 item 10). When is the natural-language match condition
+// a model's judgment resolves (the leader at decomposition, or Jev's opt-in typed path); code never matches it. Profiles
+// is the non-empty candidate array applied after the match. Approval "captain" makes a matched rule escalate to the
+// captain before dispatch instead of routing; "" or "none" dispatches on the ranked candidate.
+type RoutingRule struct {
+	When     string           `json:"when"`
+	Profiles []RoutingProfile `json:"profiles"`
+	Approval string           `json:"approval,omitempty"` // "" | "none" | "captain"
+}
+
+// Routing is the worker-routing posture (ADR 0011 baseline default + DESIGN wave-4 item 10 rules). It stays a review_when
+// default (no `why`, not a justified section): below the baseline bar and with no matching rule, routing filters the
+// harness options by card fit and keeps the harness default. Rules and DefaultProfiles add the captain-authored posture a
+// model's judgment matches and code applies through the three gates and the spendPriority ranking. Effort maps a story
+// kind to its default reasoning-effort class; a story's own `effort:` frontmatter overrides it. MinRunwaySeconds is the
+// runway-feasibility floor (gate 3, default DefaultMinRunwaySeconds); TieEpsilon is the spendPriority tie band (default
+// DefaultTieEpsilon). Adding these fields never invalidates an existing policy (all optional, code defaults apply).
 type Routing struct {
-	Default    string `json:"default"`     // "policy": fall back to the harness default until the bar is met
-	ReviewWhen string `json:"review_when"` // the baseline-row bar that unlocks a non-default choice
+	Default          string            `json:"default"`     // "policy": fall back to the harness default until the bar is met
+	ReviewWhen       string            `json:"review_when"` // the baseline-row bar that unlocks a non-default choice
+	Rules            []RoutingRule     `json:"rules,omitempty"`
+	DefaultProfiles  []RoutingProfile  `json:"default_profiles,omitempty"`
+	Effort           map[string]string `json:"effort,omitempty"`             // story kind -> default reasoning-effort class
+	MinRunwaySeconds int64             `json:"min_runway_seconds,omitempty"` // gate-3 runway floor; <=0 => DefaultMinRunwaySeconds
+	TieEpsilon       float64           `json:"tie_epsilon,omitempty"`        // spendPriority tie band; <=0 => DefaultTieEpsilon
+}
+
+// Routing defaults (DESIGN wave-4 item 10), applied when policy declares none.
+const (
+	DefaultMinRunwaySeconds int64   = 4 * 60 * 60 // 4h runway-feasibility floor (gate 3)
+	DefaultTieEpsilon       float64 = 0.01        // spendPriority values within this band are a tie -> escalate
+)
+
+// Effort-by-kind code defaults (DESIGN wave-4 item 10): a scout needs the strongest reasoning (ambiguous investigation),
+// a ship story the least (well-understood work), an arena role sits between. Any other kind falls back to the ship
+// default. A story's `effort:` frontmatter overrides all of this.
+var defaultEffortByKind = map[string]string{"scout": "xhigh", "ship": "low", "arena": "high"}
+
+// EffortForKind resolves the default reasoning-effort class for a story kind: the policy routing.effort override for that
+// kind, else the code default, else the ship default. A story's own frontmatter effort wins over this (resolved by the
+// caller). A nil policy still yields the code default.
+func (p *Policy) EffortForKind(kind string) string {
+	if kind == "" {
+		kind = "ship"
+	}
+	if p != nil {
+		if e, ok := p.Routing.Effort[kind]; ok && strings.TrimSpace(e) != "" {
+			return strings.TrimSpace(e)
+		}
+	}
+	if e, ok := defaultEffortByKind[kind]; ok {
+		return e
+	}
+	return defaultEffortByKind["ship"]
+}
+
+// RoutingMinRunwaySeconds returns the gate-3 runway-feasibility floor in seconds, or DefaultMinRunwaySeconds when policy
+// is nil or the value is unset. A caller that could not load policy still gets the 4h floor.
+func (p *Policy) RoutingMinRunwaySeconds() int64 {
+	if p == nil || p.Routing.MinRunwaySeconds <= 0 {
+		return DefaultMinRunwaySeconds
+	}
+	return p.Routing.MinRunwaySeconds
+}
+
+// RoutingTieEpsilon returns the spendPriority tie band, or DefaultTieEpsilon when policy is nil or the value is unset.
+func (p *Policy) RoutingTieEpsilon() float64 {
+	if p == nil || p.Routing.TieEpsilon <= 0 {
+		return DefaultTieEpsilon
+	}
+	return p.Routing.TieEpsilon
+}
+
+// Alerts is the optional out-of-band notification policy (item 3, adapts firstmate's wedge alarm). channel is
+// off|osascript|command:<cmd>; the default (unset) is off, so cox never posts a notification unless the captain opts in.
+// The watcher fires it, rate-limited, when the leader terminal has been unreachable for three consecutive doorbell
+// nudges (see docs/reference/policy-json.md).
+type Alerts struct {
+	Channel string `json:"channel"`
 }
 
 // QuotaNPX is the explicit npx opt-in for the quota-axi adapter (policy quota.npx): an exact version and integrity value.
@@ -201,6 +315,13 @@ type Backend struct {
 	Orca OrcaBackend `json:"orca"`
 }
 
+// Watch groups the watcher-window overrides. Like backend and quota it is additive and not a justified section, so an
+// epic policy without it uses the code defaults (an absent section never invalidates a policy). BusyTurnMaxMin overrides
+// the busy-turn-max window (DESIGN wave-2 item 6d); <=0 means the watcher default (DefaultBusyTurnMax).
+type Watch struct {
+	BusyTurnMaxMin int `json:"busy_turn_max_min"`
+}
+
 // ReviewNPX is the explicit npx opt-in for the lavish review adapter (policy review.npx): an exact version and integrity
 // value. null (the default) means npx is never used; the installed binary is the trustworthy default (same rule as
 // quota.npx, M13).
@@ -235,6 +356,59 @@ type Policy struct {
 	Backend        Backend        `json:"backend"`
 	Quota          Quota          `json:"quota"`
 	Review         Review         `json:"review"`
+	Alerts         Alerts         `json:"alerts"`
+	Watch          Watch          `json:"watch"`
+	MergePosture   Merge          `json:"merge"`
+}
+
+// DeliveryMode returns the resolved delivery mode, or DefaultDeliveryMode (direct-PR) when policy is nil or the mode is
+// unset, so a caller that could not load policy still resolves a mode.
+func (p *Policy) DeliveryMode() string {
+	if p == nil || strings.TrimSpace(p.Delivery.Mode) == "" {
+		return DefaultDeliveryMode
+	}
+	return strings.TrimSpace(p.Delivery.Mode)
+}
+
+// MergeYolo reports whether policy opts a non-captain terminal into `cox ship merge` (default false). A nil policy is
+// false, so a caller that could not load policy never lets a worker or leader merge.
+func (p *Policy) MergeYolo() bool {
+	return p != nil && p.MergePosture.Yolo
+}
+
+// ValidDeliveryMode reports whether a delivery mode string is one cox understands. An empty string is valid (it reads as
+// DefaultDeliveryMode); any other unrecognised value is a load error, so a typo never silently disables the gates.
+func ValidDeliveryMode(mode string) bool {
+	switch mode {
+	case "", ModeNoMistakes, ModeDirectPR, ModeLocalOnly:
+		return true
+	default:
+		return false
+	}
+}
+
+// BusyVerified reports whether policy opts codex into the harness-owned busy record (default false, DESIGN wave-2 item
+// 6). A nil policy is false, so a caller that could not load policy never arms codex.
+func (p *Policy) BusyVerified() bool {
+	return p != nil && p.Harness.BusyVerified
+}
+
+// BusyTurnMaxMinutes returns the busy-turn-max override in minutes, or 0 when policy is nil or the value is unset (the
+// caller then falls back to the watcher default). See DESIGN wave-2 item 6d.
+func (p *Policy) BusyTurnMaxMinutes() int {
+	if p == nil || p.Watch.BusyTurnMaxMin <= 0 {
+		return 0
+	}
+	return p.Watch.BusyTurnMaxMin
+}
+
+// AlertsChannel returns the configured out-of-band alarm channel (off|osascript|command:<cmd>), or "off" when policy is
+// nil or the channel is unset, so a caller that could not load policy never fires a notification (item 3).
+func (p *Policy) AlertsChannel() string {
+	if p == nil || strings.TrimSpace(p.Alerts.Channel) == "" {
+		return "off"
+	}
+	return strings.TrimSpace(p.Alerts.Channel)
 }
 
 // QuotaLowPercent/QuotaOKPercent/QuotaMinRunwayHours/QuotaPollMinutes return the quota thresholds, falling back to the
@@ -398,6 +572,7 @@ func (p *Policy) sections() []struct {
 		{"arena", p.Arena.Meta},
 		{"delivery", p.Delivery.Meta},
 		{"harness", p.Harness.Meta},
+		{"merge", p.MergePosture.Meta},
 	}
 }
 
@@ -410,11 +585,124 @@ func (p *Policy) Validate() error {
 			problems = append(problems, fmt.Sprintf("%s (missing %s)", s.name, strings.Join(m, "+")))
 		}
 	}
+	if !ValidDeliveryMode(strings.TrimSpace(p.Delivery.Mode)) {
+		problems = append(problems, fmt.Sprintf("delivery (invalid mode %q; want no-mistakes|direct-PR|local-only)", p.Delivery.Mode))
+	}
+	problems = append(problems, p.routingProblems()...)
 	if len(problems) == 0 {
 		return nil
 	}
 	sort.Strings(problems)
 	return fmt.Errorf("policy validation failed: %s", strings.Join(problems, "; "))
+}
+
+// providerIDRe is the provider-id shape a routing profile's/rule's `provider` must match when present (lower-case,
+// hyphen-separated), the same shape firstmate enforces so a fabricated provider name never selects a quota row.
+var providerIDRe = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
+
+// routingProblems reports every malformed routing rule or default profile, each naming its field, so a typo refuses
+// dispatch rather than being silently selected around (DESIGN wave-4 item 10). These are the card-free structural
+// checks; the card-fit checks (unknown harness, effort a card does not support) are ValidateRoutingCards, run at dispatch
+// where the capability cards are available. Order-stable for a deterministic message.
+func (p *Policy) routingProblems() []string {
+	var problems []string
+	for i, r := range p.Routing.Rules {
+		where := fmt.Sprintf("routing.rules[%d]", i)
+		if strings.TrimSpace(r.When) == "" {
+			problems = append(problems, where+" (missing when)")
+		}
+		switch r.Approval {
+		case "", "none", "captain":
+		default:
+			problems = append(problems, fmt.Sprintf("%s (invalid approval %q; want none|captain)", where, r.Approval))
+		}
+		problems = append(problems, profileArrayProblems(where+".profiles", r.Profiles, true)...)
+	}
+	if p.Routing.DefaultProfiles != nil {
+		problems = append(problems, profileArrayProblems("routing.default_profiles", p.Routing.DefaultProfiles, true)...)
+	}
+	for kind, e := range p.Routing.Effort {
+		if _, ok := harness.EffortRank(e); !ok {
+			problems = append(problems, fmt.Sprintf("routing.effort[%s] (unknown effort class %q; want %s)", kind, e, strings.Join(harness.EffortClasses, "|")))
+		}
+	}
+	return problems
+}
+
+// profileArrayProblems validates one profile array: non-empty (when requireNonEmpty), no duplicate (harness, model,
+// effort) triple, and each profile's fields well formed (harness required; effort/floor a known reasoning class; provider
+// matching providerIDRe). Each problem names its field.
+func profileArrayProblems(where string, profiles []RoutingProfile, requireNonEmpty bool) []string {
+	var problems []string
+	if requireNonEmpty && len(profiles) == 0 {
+		return []string{where + " (empty; a rule and the default need at least one profile)"}
+	}
+	seen := map[string]bool{}
+	for i, pr := range profiles {
+		at := fmt.Sprintf("%s[%d]", where, i)
+		if strings.TrimSpace(pr.Harness) == "" {
+			problems = append(problems, at+" (missing harness)")
+		}
+		if pr.Effort != "" {
+			if _, ok := harness.EffortRank(pr.Effort); !ok {
+				problems = append(problems, fmt.Sprintf("%s (unknown effort class %q; want %s)", at, pr.Effort, strings.Join(harness.EffortClasses, "|")))
+			}
+		}
+		if pr.Floor != "" {
+			if _, ok := harness.EffortRank(pr.Floor); !ok {
+				problems = append(problems, fmt.Sprintf("%s (unknown floor class %q; want %s)", at, pr.Floor, strings.Join(harness.EffortClasses, "|")))
+			}
+		}
+		if pr.Provider != "" && !providerIDRe.MatchString(pr.Provider) {
+			problems = append(problems, fmt.Sprintf("%s (invalid provider %q; want %s)", at, pr.Provider, providerIDRe.String()))
+		}
+		key := pr.Harness + "\x00" + pr.Model + "\x00" + pr.Effort
+		if seen[key] {
+			problems = append(problems, fmt.Sprintf("%s (duplicate profile harness=%s model=%s effort=%s)", at, pr.Harness, orDash(pr.Model), orDash(pr.Effort)))
+		}
+		seen[key] = true
+	}
+	return problems
+}
+
+func orDash(s string) string {
+	if s == "" {
+		return "-"
+	}
+	return s
+}
+
+// ValidateRoutingCards is the card-fit half of routing validation, run at dispatch where the capability cards are known:
+// every routing profile's harness must have a card (else it is an "unknown harness"), and the card must accept the
+// profile's effort (else "effort a card does not support"). It refuses dispatch naming the field, never selecting around
+// a bad profile (DESIGN wave-4 item 10). A nil policy is clean (nothing to validate).
+func (p *Policy) ValidateRoutingCards(cards map[string]harness.Capability) error {
+	if p == nil {
+		return nil
+	}
+	var problems []string
+	check := func(where string, profiles []RoutingProfile) {
+		for i, pr := range profiles {
+			at := fmt.Sprintf("%s[%d]", where, i)
+			card, ok := cards[pr.Harness]
+			if !ok {
+				problems = append(problems, fmt.Sprintf("%s (unknown harness %q: no capability card)", at, pr.Harness))
+				continue
+			}
+			if !card.CardAcceptsEffort(pr.Effort) {
+				problems = append(problems, fmt.Sprintf("%s (effort %q not supported by harness %q; card accepts %s)", at, pr.Effort, pr.Harness, strings.Join(card.Efforts, "|")))
+			}
+		}
+	}
+	for i, r := range p.Routing.Rules {
+		check(fmt.Sprintf("routing.rules[%d].profiles", i), r.Profiles)
+	}
+	check("routing.default_profiles", p.Routing.DefaultProfiles)
+	if len(problems) == 0 {
+		return nil
+	}
+	sort.Strings(problems)
+	return fmt.Errorf("routing profile validation failed: %s", strings.Join(problems, "; "))
 }
 
 // LoadPolicy reads and parses <ws>/cox/policy.json and validates it. An invalid policy (a section without why or
@@ -503,6 +791,9 @@ func Resolve(wsRoot, projectDir string) (*Policy, error) {
 		return nil, err
 	}
 	if err := replace("review", &base.Review, &Review{}); err != nil {
+		return nil, err
+	}
+	if err := replace("merge", &base.MergePosture, &Merge{}); err != nil {
 		return nil, err
 	}
 	if err := base.Validate(); err != nil {

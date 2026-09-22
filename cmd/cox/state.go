@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -111,7 +112,13 @@ func buildFleet(epicDir, storyFilter string, now time.Time, noForge bool) (state
 		if storyFilter != "" && s.ID != storyFilter {
 			continue
 		}
-		forgeObs := fo.observe(epicDir, s)
+		// A scout story has no PR (item 9, B-05): skip the forge so `gh pr view` never errors, and report its report file.
+		var forgeObs state.Observation
+		if storyKind(epicDir, s.ID) == "scout" {
+			forgeObs = scoutForgeObs(epicDir, s.ID, now)
+		} else {
+			forgeObs = fo.observe(epicDir, s)
+		}
 		in := state.Inputs{
 			Liveness: probeLiveness(b, epicDir, s.ID),
 			ProbeAt:  now,
@@ -172,10 +179,30 @@ func storyHarnessModel(epicDir string, s *state.StorySnap) (string, string) {
 	return h, modelAlias(m)
 }
 
+// scoutVal is the forge-column value for a scout story: it carries no PR, only whether the report was written (item 9).
+type scoutVal struct {
+	Kind   string `json:"kind"`
+	Report string `json:"report"`
+}
+
+// scoutForgeObs builds a scout story's forge observation without touching the forge: kind=scout plus the report path or
+// "missing" (B-05: a scout never triggers a `gh pr view` error).
+func scoutForgeObs(epicDir, story string, now time.Time) state.Observation {
+	report := filepath.Join(epicDir, "reports", story+".md")
+	status := "missing"
+	if _, err := os.Stat(report); err == nil {
+		status = report
+	}
+	return state.Observation{Value: scoutVal{Kind: "scout", Report: status}, Source: "forge", ObservedAt: now.Format(time.RFC3339)}
+}
+
 // forgeSummary renders a forge observation for the human table: "PR #<n> checks=<v> merged=<m>" when a PR was found,
-// else a short classified reason. The full error stays in the JSON (obs.Error); this only shortens the human line so a
-// story with no PR reads "no-pr" instead of the whole "gh pr view story/m4 --json ...: exit status 1" (M8 A0).
+// "kind=scout report=<path|missing>" for a scout, else a short classified reason. The full error stays in the JSON
+// (obs.Error); this only shortens the human line so a story with no PR reads "no-pr" instead of the whole gh error (M8 A0).
 func forgeSummary(obs state.Observation) string {
+	if v, ok := obs.Value.(scoutVal); ok {
+		return fmt.Sprintf("kind=scout report=%s", v.Report)
+	}
 	if v, ok := obs.Value.(forgeVal); ok && v.PR != nil {
 		return fmt.Sprintf("PR #%d checks=%s merged=%s", *v.PR, v.Checks, v.Merged)
 	}

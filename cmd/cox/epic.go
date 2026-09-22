@@ -193,11 +193,16 @@ func storySpecs(epicDir string, storyFlags repoList) ([]epic.StorySpec, error) {
 	if len(storyFlags) > 0 {
 		var specs []epic.StorySpec
 		for _, s := range storyFlags {
-			id, repo, ok := strings.Cut(s, "=")
+			id, repoSpec, ok := strings.Cut(s, "=")
 			if !ok {
-				return nil, fmt.Errorf("--story must be id=repo, got %q", s)
+				return nil, fmt.Errorf("--story must be id=repo[:scout|:ship], got %q", s)
 			}
-			specs = append(specs, epic.StorySpec{ID: id, Repo: repo, Title: id})
+			// A repo token may carry a kind suffix, id=repo:scout (item 9). Default kind is ship.
+			repo, kind, hasKind := strings.Cut(repoSpec, ":")
+			if hasKind && kind != "scout" && kind != "ship" {
+				return nil, fmt.Errorf("--story kind must be scout|ship, got %q in %q", kind, s)
+			}
+			specs = append(specs, epic.StorySpec{ID: id, Repo: repo, Title: id, Kind: kind})
 		}
 		return specs, nil
 	}
@@ -222,19 +227,21 @@ func epicClose(args []string) int {
 	fs.SetOutput(os.Stderr)
 	epicDir := fs.String("epic", "", "epic directory")
 	yes := fs.Bool("yes", false, "execute (default is a dry run)")
-	force := fs.Bool("force", false, "remove dirty/unpushed worktrees")
+	force := fs.Bool("force", false, "remove unlanded worktrees")
 	storiesOnly := fs.Bool("stories-only", false, "skip epic backend and epic worktrees")
+	captain := fs.Bool("captain", false, "close from a terminal that is not the epic's leader")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 	if *epicDir == "" {
-		return usageErr("cox epic close --epic <dir> [--yes] [--force] [--stories-only]")
+		return usageErr("cox epic close --epic <dir> [--yes] [--force] [--stories-only] [--captain]")
 	}
 	rt, _ := newBackend(*epicDir) // may be nil; dry run and no-session close tolerate it
 	alloc := &env.Allocator{EpicDir: *epicDir, Ops: env.RealOps()}
 	err := epic.Close(epic.CloseOptions{
 		EpicDir: *epicDir, Runtime: rt, Alloc: alloc,
 		Yes: *yes, Force: *force, StoriesOnly: *storiesOnly,
+		Captain: *captain, TerminalHandle: os.Getenv("ORCA_TERMINAL_HANDLE"),
 	})
 	if err != nil {
 		return fail("%v", err)

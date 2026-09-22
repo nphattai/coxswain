@@ -583,6 +583,68 @@ func TestWorktreeRemoveDetachKeepsBranchRealRepo(t *testing.T) {
 	}
 }
 
+// B-16: WorktreeRemove refuses a branch that is not on origin (git ls-remote --heads finds nothing), never calling
+// `orca worktree rm` for it; a branch on origin proceeds (detach + rm), and an explicit force overrides the guard.
+func TestWorktreeRemoveRefusesBranchNotOnOrigin(t *testing.T) {
+	newClient := func(onOrigin bool) (*Client, *bool) {
+		rmCalled := false
+		c := New("run")
+		c.git = func(args ...string) ([]byte, error) {
+			if len(args) > 0 && contains(args, "ls-remote") {
+				if onOrigin {
+					return []byte("abc123\trefs/heads/epic/x\n"), nil
+				}
+				return nil, nil // not on origin
+			}
+			return nil, nil
+		}
+		c.run = func(args ...string) ([]byte, error) {
+			if contains(args, "rm") {
+				rmCalled = true
+			}
+			return []byte(`{"ok":true,"result":{}}`), nil
+		}
+		return c, &rmCalled
+	}
+
+	// Not on origin -> refuse, and rm is never called.
+	c, rmCalled := newClient(false)
+	err := c.WorktreeRemove(backend.Worktree{Path: "/wt/x", Branch: "epic/x"})
+	if err == nil || !strings.Contains(err.Error(), "not on origin") {
+		t.Fatalf("want a not-on-origin refusal, got %v", err)
+	}
+	if *rmCalled {
+		t.Error("orca worktree rm must not be called for a branch not on origin (B-16)")
+	}
+
+	// On origin -> proceeds.
+	c2, rmCalled2 := newClient(true)
+	if err := c2.WorktreeRemove(backend.Worktree{Path: "/wt/x", Branch: "epic/x"}); err != nil {
+		t.Fatalf("a branch on origin must be removable: %v", err)
+	}
+	if !*rmCalled2 {
+		t.Error("orca worktree rm must run for a branch on origin")
+	}
+
+	// Explicit force overrides the guard even when not on origin.
+	c3, rmCalled3 := newClient(false)
+	if err := c3.WorktreeRemove(backend.Worktree{Path: "/wt/x", Branch: "epic/x", Force: true}); err != nil {
+		t.Fatalf("force must override the guard: %v", err)
+	}
+	if !*rmCalled3 {
+		t.Error("force must allow orca worktree rm to run")
+	}
+}
+
+func contains(ss []string, want string) bool {
+	for _, s := range ss {
+		if s == want {
+			return true
+		}
+	}
+	return false
+}
+
 func TestClassifyComposer(t *testing.T) {
 	cases := []struct {
 		name string
@@ -1134,7 +1196,7 @@ func TestRingConsultsBusyRecordFirst(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			epic := t.TempDir()
-			gen, err := busy.Arm(epic, "w1")
+			gen, err := busy.Arm(epic, "w1", "pi", []string{"pi-ext", "dispatch", "interrupt", "recovery"})
 			if err != nil {
 				t.Fatalf("arm: %v", err)
 			}
@@ -1174,7 +1236,7 @@ func TestRingConsultsBusyRecordFirst(t *testing.T) {
 
 func TestComposerConsultsBusyRecordFirst(t *testing.T) {
 	epic := t.TempDir()
-	gen, _ := busy.Arm(epic, "w1")
+	gen, _ := busy.Arm(epic, "w1", "pi", []string{"pi-ext", "dispatch", "interrupt", "recovery"})
 	c := New("run_1")
 	c.Epic = epic
 	// The composer read must never be consulted while the harness reports a state; route it to a fatal so a fallthrough

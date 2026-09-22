@@ -49,6 +49,11 @@ func cmdSteer(args []string) int {
 		return fail("%v", err)
 	}
 	fmt.Println(path)
+	// Records from a previous attempt do not count against this attempt's budget (item 11); surface them as history so
+	// the leader knows they exist without them refusing a fresh steer.
+	if hist, herr := inbox.History(*epicDir, story); herr == nil && len(hist) > 0 {
+		fmt.Printf("%d earlier records from a previous attempt are history\n", len(hist))
+	}
 
 	// Knock on the worker now so it reads the record at its next tool boundary, instead of waiting for the watcher's
 	// re-ring. The doorbell only types into an empty composer, so it never clobbers a busy turn (F: fyi never interrupts).

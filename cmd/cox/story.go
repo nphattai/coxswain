@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/nphattai/coxswain/internal/adapter/backend"
 	"github.com/nphattai/coxswain/internal/adapter/harness"
@@ -29,7 +30,7 @@ func harnessOptions() string { return strings.Join(registry.Names(), "|") }
 // cmdStory implements `cox story dispatch|park|resume`.
 func cmdStory(args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: cox story dispatch|done|fail|cancel|park|resume <id> --epic <dir>")
+		fmt.Fprintln(os.Stderr, "usage: cox story dispatch|done|fail|cancel|park|resume|promote <id> --epic <dir>")
 		return 2
 	}
 	switch args[0] {
@@ -39,6 +40,8 @@ func cmdStory(args []string) int {
 		return cmdStoryReport(args[1:])
 	case "done":
 		return storyDone(args[1:])
+	case "promote":
+		return storyPromote(args[1:])
 	case "fail":
 		return storyTerminate(state.Failed, args[1:])
 	case "cancel":
@@ -74,12 +77,20 @@ func storyDispatch(args []string) int {
 	// capability cards, quota, and the baseline table, and the Choice is recorded as evidence.route on the working
 	// event so the decision is auditable. An explicit --harness or a fixed frontmatter harness skips routing.
 	var routeChoice *routing.Choice
-	if *harnessFlag == "" && meta.Harness == "auto" {
+	// Route when the story asks to be routed (`harness: auto`) or carries a leader-written `route:` match, and no captain
+	// --harness override is present (an override is the top of the precedence and skips routing). A matched rule lets a
+	// pinned story be checked against the rule (a pin the rule forbids is refused).
+	if *harnessFlag == "" && (meta.Harness == "auto" || meta.Route != "") {
 		ch, err := routeStory(*epicDir, story)
 		if err != nil {
 			return fail("route %s: %v", story, err)
 		}
 		routeChoice = &ch
+		// A profile array that cannot resolve to one candidate stops dispatch with a captain-facing question (no spawn); the
+		// route is not invented around a tie, an approval gate, or a tight fleet (DESIGN wave-4 item 10).
+		if ch.Escalate {
+			return routeEscalate(story, ch)
+		}
 		fmt.Printf("routed %s -> harness=%s (%s)\n", story, ch.Harness, strings.Join(ch.Reasons, "; "))
 	}
 	harnessName := nonEmpty(*harnessFlag, routedHarness(routeChoice, nonEmpty(meta.Harness, "claude")))
@@ -156,16 +167,13 @@ func storyDispatch(args []string) int {
 	if err != nil {
 		return fail("compose launch argv: %v", err)
 	}
-	// Harness-owned busy state (DESIGN wave-3): a harness that reports its own idle/busy gets a fresh incarnation gen
-	// armed here and threaded to it via COX_BUSY_GEN, so its hook Applies against the record and a stale hook is rejected.
-	// A harness whose hook is not wired yet (claude/codex) is not armed, so it is never stranded "busy".
-	busyGen := ""
-	if registry.Card(harnessName).BusyRecord {
-		g, err := busy.Arm(*epicDir, story)
-		if err != nil {
-			return fail("arm busy state: %v", err)
-		}
-		busyGen = g
+	// Harness-owned busy state (DESIGN wave-2 item 6): a harness that reports its own idle/busy gets a fresh incarnation
+	// gen armed here and threaded to it via COX_BUSY_GEN, and its worker busy hooks written into the worktree, so its hook
+	// Applies against the record and a stale hook is rejected. A harness whose hook is not wired (codex without
+	// busy_verified) is not armed, so it is never stranded "busy".
+	busyGen, err := armWorkerBusy(*epicDir, story, harnessName, wt.Path, pol)
+	if err != nil {
+		return fail("arm busy state: %v", err)
 	}
 	sess, err := b.Spawn(wt, backend.HarnessSpec{Name: harnessName, Model: modelID, Effort: effort, LaunchFlags: pol.LaunchFlags(harnessName), Argv: argv, BusyGen: busyGen}, backend.Brief{StoryPath: storyPath})
 	if err != nil {
@@ -195,7 +203,7 @@ func storyDispatch(args []string) int {
 		return fail("%v", err)
 	}
 	if h := os.Getenv("ORCA_TERMINAL_HANDLE"); h != "" {
-		_ = writeCoxFile(*epicDir, "leader", h)
+		_ = state.WriteLeader(*epicDir, h)
 	}
 	startWatcher(*epicDir, story)
 	fmt.Printf("dispatched %s (attempt %d) as %s on %s -> %s\n", story, attempt, harnessName, wt.Path, sess.ID)
@@ -218,13 +226,41 @@ func routedModel(ch *routing.Choice) string {
 	return ""
 }
 
-// routeEvidence records the routing Choice under evidence.route on the working event, or nil when the story was not
-// routed (a fixed-harness dispatch carries no route evidence).
+// routeEvidence records the route under evidence.route on the working event, or nil when the story was not routed (a
+// fixed-harness dispatch with no rule carries no route evidence). The recorded shape names the rule, the resolver, the
+// confidence (typed path), the chosen harness/model/effort, the spendPriority behind the pick, and how many candidates
+// were considered - so the decision is auditable (DESIGN wave-4 item 10c).
 func routeEvidence(ch *routing.Choice) map[string]any {
 	if ch == nil {
 		return nil
 	}
-	return map[string]any{"route": ch}
+	route := map[string]any{
+		"rule":                  ch.Rule,
+		"resolver":              nonEmpty(ch.Resolver, "none"),
+		"harness":               ch.Harness,
+		"model":                 ch.Model,
+		"effort":                ch.Effort,
+		"candidates_considered": len(ch.Candidates),
+	}
+	if ch.Confidence != nil {
+		route["confidence"] = *ch.Confidence
+	}
+	if ch.SpendPriority != nil {
+		route["spendPriority"] = *ch.SpendPriority
+	}
+	return map[string]any{"route": route}
+}
+
+// routeEscalate stops dispatch when routing cannot resolve one candidate: it prints a `cox story report question`-shaped
+// message for the captain and returns non-zero without spawning. The candidates are listed so the captain sees why.
+func routeEscalate(story string, ch routing.Choice) int {
+	fmt.Fprintf(os.Stderr, "route %s: ESCALATE - %s\n", story, ch.EscalateReason)
+	for _, c := range ch.Candidates {
+		fmt.Fprintf(os.Stderr, "  candidate: %s:%s -> %s\n", c.Harness, nonEmpty(c.Model, "-"), c.Reason)
+	}
+	fmt.Fprintf(os.Stderr, "cox will not dispatch %s. Ask the captain to rule:\n", story)
+	fmt.Fprintf(os.Stderr, "  cox story report question %s \"routing escalated: %s\"\n", story, ch.EscalateReason)
+	return 1
 }
 
 // warnParallelSameRepo prints a warning when another story in the same repo alias is already working and the policy has
@@ -315,7 +351,23 @@ func storyDone(args []string) int {
 	}
 
 	evidence := map[string]any{}
-	if *merge != "" {
+	if storyKind(*epicDir, story) == "scout" {
+		// A scout's deliverable is its report, not a PR (item 9): refuse to complete without it, and never require --merge.
+		report := filepath.Join(*epicDir, "reports", story+".md")
+		if _, err := os.Stat(report); err != nil {
+			return fail("refusing to complete scout %s: no report at %s (a scout's deliverable is the report, not a PR)", story, report)
+		}
+		evidence["report"] = report
+	} else if *merge != "" {
+		// The merge sha must be landed on the branch the story's delivery mode requires (item 8c): origin/epic/<slug> for
+		// no-mistakes|direct-PR, the repo's production branch for local-only. A refusal names the exact merge-base line.
+		contained, ranLine, cerr := mergeContained(*epicDir, story, *merge)
+		if cerr != nil {
+			return fail("cannot verify --merge %s: %v", *merge, cerr)
+		}
+		if !contained {
+			return fail("refusing --merge %s: not contained in the branch for delivery mode %q\n  ran: %s", *merge, storyMode(*epicDir, story), ranLine)
+		}
 		evidence["merge"] = *merge
 	}
 	if err := releaseStory(*epicDir, story, snap, state.Completed, evidence, b, *closeWt); err != nil {
@@ -323,6 +375,131 @@ func storyDone(args []string) int {
 	}
 	fmt.Printf("done: %s completed (attempt %d)\n", story, snap.Attempt)
 	return 0
+}
+
+// mergeContained verifies a merge sha is landed on the branch the story's delivery mode requires (item 8c): for
+// no-mistakes|direct-PR it fetches origin first (an unknown fetch refuses) and checks origin/epic/<slug>; for local-only
+// it checks the repo's production branch. It returns the exact `git merge-base --is-ancestor` line it ran so a refusal
+// names it; contained is false when merge-base exits non-zero (the sha is not on the branch, or is unknown).
+func mergeContained(epicDir, story, sha string) (contained bool, ranLine string, err error) {
+	dir := readWorktree(epicDir, story)
+	if dir == "" {
+		dir = filepath.Join(epicDir, readStoryMeta(epicDir, story).Repo) // alias symlink checkout
+	}
+	var ref string
+	if storyMode(epicDir, story) == workspace.ModeLocalOnly {
+		ref = productionBranch(epicDir, story)
+		if ref == "" {
+			return false, "", fmt.Errorf("local-only mode: no production branch resolved for story %s's repo", story)
+		}
+	} else {
+		ref = "origin/epic/" + filepath.Base(epicDir)
+		if out, ferr := exec.Command("git", "-C", dir, "fetch", "origin").CombinedOutput(); ferr != nil {
+			return false, "", fmt.Errorf("git -C %s fetch origin failed, cannot verify containment: %v: %s", dir, ferr, strings.TrimSpace(string(out)))
+		}
+	}
+	ranLine = fmt.Sprintf("git -C %s merge-base --is-ancestor %s %s", dir, sha, ref)
+	if runErr := exec.Command("git", "-C", dir, "merge-base", "--is-ancestor", sha, ref).Run(); runErr != nil {
+		return false, ranLine, nil
+	}
+	return true, ranLine, nil
+}
+
+// productionBranch resolves the production branch of a story's repo from workspace.json, or "" when it cannot be
+// resolved (no workspace, unknown alias).
+func productionBranch(epicDir, story string) string {
+	wsRoot, err := findWorkspaceRoot(epicDir)
+	if err != nil {
+		return ""
+	}
+	ws, err := workspace.Load(wsRoot)
+	if err != nil {
+		return ""
+	}
+	if repo, ok := ws.Repo(readStoryMeta(epicDir, story).Repo); ok {
+		return repo.Production
+	}
+	return ""
+}
+
+// storyPromote implements `cox story promote <id> --epic <dir> --mode <m>` (item 9): it flips a scout story to a ship
+// story in its frontmatter, sets the delivery mode, appends a "Superseding contract (promoted <date>)" section carrying
+// the delivery contract to the story file, and prints the `cox steer` command that would deliver it to a running worker -
+// it never sends the steer itself (the leader decides when to interrupt).
+func storyPromote(args []string) int {
+	story, rest := onePositional(args)
+	fs := flag.NewFlagSet("story promote", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	epicDir := fs.String("epic", "", "epic directory")
+	mode := fs.String("mode", "", "delivery mode for the promoted ship story (no-mistakes|direct-PR|local-only)")
+	if err := fs.Parse(rest); err != nil {
+		return 2
+	}
+	if *epicDir == "" || story == "" {
+		return usageErr("cox story promote <id> --epic <dir> [--mode no-mistakes|direct-PR|local-only]")
+	}
+	m := *mode
+	if m == "" {
+		m = workspace.DefaultDeliveryMode
+	}
+	if !workspace.ValidDeliveryMode(m) {
+		return fail("invalid --mode %q (want no-mistakes|direct-PR|local-only)", m)
+	}
+	if k := storyKind(*epicDir, story); k != "scout" {
+		return fail("%s is kind=%s, not scout; nothing to promote", story, k)
+	}
+	storyPath := filepath.Join(*epicDir, "stories", story+".md")
+	b, err := os.ReadFile(storyPath)
+	if err != nil {
+		return fail("read story %s: %v", story, err)
+	}
+	updated := setFrontmatterKey(string(b), "kind", "ship")
+	updated = setFrontmatterKey(updated, "mode", m)
+	yolo := loadPolicyQuiet(*epicDir).MergeYolo()
+	date := time.Now().UTC().Format("2006-01-02")
+	if !strings.HasSuffix(updated, "\n") {
+		updated += "\n"
+	}
+	updated += fmt.Sprintf("\n## Superseding contract (promoted %s)\n\nThis scout was promoted to a ship story. %s. %s\n",
+		date, brief.ContractLine(m, yolo), brief.ModeParagraph(m))
+	if err := os.WriteFile(storyPath, []byte(updated), 0o644); err != nil {
+		return fail("write story %s: %v", story, err)
+	}
+	fmt.Printf("promoted %s: scout -> ship (mode=%s)\n", story, m)
+	fmt.Println("deliver it to a running worker with:")
+	fmt.Printf("  cox steer %s \"promoted to ship: read the Superseding contract section in your story file\" --epic %s\n", story, *epicDir)
+	return 0
+}
+
+// setFrontmatterKey replaces a top-level `key:` line inside the leading --- frontmatter block, or inserts one before the
+// closing fence when the key is absent. Content with no frontmatter is returned unchanged.
+func setFrontmatterKey(content, key, value string) string {
+	lines := strings.Split(content, "\n")
+	inFM := false
+	fmEnd := -1
+	for i, line := range lines {
+		if strings.TrimSpace(line) == "---" {
+			if !inFM {
+				inFM = true
+				continue
+			}
+			fmEnd = i
+			break
+		}
+		if inFM {
+			if k, _, ok := strings.Cut(line, ":"); ok && strings.TrimSpace(k) == key {
+				lines[i] = key + ": " + value
+				return strings.Join(lines, "\n")
+			}
+		}
+	}
+	if fmEnd < 0 {
+		return content // no frontmatter block to edit
+	}
+	out := append([]string{}, lines[:fmEnd]...)
+	out = append(out, key+": "+value)
+	out = append(out, lines[fmEnd:]...)
+	return strings.Join(out, "\n")
 }
 
 // storyTerminate records a terminal, non-success transition (failed or canceled) for a story and releases it exactly
@@ -394,6 +571,14 @@ func releaseStory(epicDir, story string, snap *state.StorySnap, to state.State, 
 		}
 		if err := os.Remove(sessionPath(epicDir, story)); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("release session: %w", err)
+		}
+	}
+	// Retire the harness-owned busy record for this incarnation (DESIGN wave-2 item 6c): read the current gen and Retire
+	// against it, so a re-arm's newer record survives and a terminal story never leaves a stale "busy" behind. Best-effort:
+	// a mismatch (a newer incarnation exists) or an absent record is fine, the story is already terminal.
+	if rec, ok := busy.ReadRecord(epicDir, story); ok {
+		if err := busy.Retire(epicDir, story, rec.Gen); err != nil {
+			fmt.Fprintf(os.Stderr, "cox: note: busy retire for %s: %v\n", story, err)
 		}
 	}
 	if closeWt {
@@ -512,14 +697,12 @@ func storyControl(verb string, args []string) int {
 		}
 		spec := backend.HarnessSpec{Name: targetHarness, Model: targetModel, Argv: argv}
 		// Re-arm the busy record for a fresh incarnation so a resumed worker's hook Applies against a new gen and any late
-		// event from the prior incarnation is rejected as stale (DESIGN wave-3).
-		if registry.Card(targetHarness).BusyRecord {
-			g, err := busy.Arm(*epicDir, story)
-			if err != nil {
-				return fail("arm busy state: %v", err)
-			}
-			spec.BusyGen = g
+		// event from the prior incarnation is rejected as stale (DESIGN wave-2 item 6).
+		g, err := armWorkerBusy(*epicDir, story, targetHarness, wtPath, loadPolicyQuiet(*epicDir))
+		if err != nil {
+			return fail("arm busy state: %v", err)
 		}
+		spec.BusyGen = g
 		prior, _ := loadSession(*epicDir, story) // previous attempt's terminal, closed before the new spawn (zero value when none)
 		sess, err := ctl.Relaunch(story, wtPath, *note, prior, spec, extra)
 		if err != nil {
@@ -528,7 +711,9 @@ func storyControl(verb string, args []string) int {
 		if _, notice := confirmPiActivation(targetHarness, extension, piExtDir(*epicDir, story)); notice != "" {
 			fmt.Println(notice)
 		}
-		if err := saveSession(*epicDir, story, sess); err != nil {
+		// Relaunch appended the working event at the new attempt, so currentAttempt reads it; the session is stamped with
+		// it, so a late writer from the prior attempt can never clobber this one (item 7).
+		if err := saveSession(*epicDir, story, sess, currentAttempt(*epicDir, story)); err != nil {
 			return fail("save session: %v", err)
 		}
 		if rerouting {

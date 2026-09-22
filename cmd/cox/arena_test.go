@@ -12,14 +12,14 @@ import (
 // non-arena story's worktree record untouched.
 func TestCloseArenaWorktrees(t *testing.T) {
 	epic := t.TempDir()
-	if err := saveWorktree(epic, "arena-adversary", "/wt/arena-adversary"); err != nil {
+	if err := saveWorktree(epic, "arena-adversary", "/wt/arena-adversary", 1); err != nil {
 		t.Fatal(err)
 	}
-	if err := saveWorktree(epic, "arena-reviewer", "/wt/arena-reviewer"); err != nil {
+	if err := saveWorktree(epic, "arena-reviewer", "/wt/arena-reviewer", 1); err != nil {
 		t.Fatal(err)
 	}
 	// A regular story worktree record must not be touched by arena close.
-	if err := saveWorktree(epic, "m6", "/wt/story-m6"); err != nil {
+	if err := saveWorktree(epic, "m6", "/wt/story-m6", 1); err != nil {
 		t.Fatal(err)
 	}
 
@@ -44,7 +44,7 @@ func TestCloseArenaWorktrees(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(epic, ".cox", "wt", "arena-adversary")); !os.IsNotExist(err) {
 		t.Fatal("arena-adversary record should be removed")
 	}
-	if got := readTrimmed(filepath.Join(epic, ".cox", "wt", "m6")); got != "/wt/story-m6" {
+	if got := readWorktree(epic, "m6"); got != "/wt/story-m6" {
 		t.Fatalf("regular story record = %q, want kept", got)
 	}
 	if openArenaWorktrees(epic) {
@@ -55,7 +55,7 @@ func TestCloseArenaWorktrees(t *testing.T) {
 // A WorktreeRemove failure keeps that record (for retry) and does not strand the others.
 func TestCloseArenaWorktreesSkipsFailures(t *testing.T) {
 	epic := t.TempDir()
-	if err := saveWorktree(epic, "arena-adversary", "/wt/a"); err != nil {
+	if err := saveWorktree(epic, "arena-adversary", "/wt/a", 1); err != nil {
 		t.Fatal(err)
 	}
 	b := fake.New()
@@ -68,7 +68,7 @@ func TestCloseArenaWorktreesSkipsFailures(t *testing.T) {
 		t.Fatalf("closed = %d, want 0 (the one remove failed)", closed)
 	}
 	// The record is kept so the failed removal can be retried.
-	if got := readTrimmed(filepath.Join(epic, ".cox", "wt", "arena-adversary")); got != "/wt/a" {
+	if got := readWorktree(epic, "arena-adversary"); got != "/wt/a" {
 		t.Fatalf("failed remove should keep the record, got %q", got)
 	}
 }

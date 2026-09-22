@@ -36,9 +36,9 @@ Before signing, offer the captain a visual review (M13): `cox epic design --html
 
 ## 5. Stories
 ```
-cox epic stories --epic <project>/epics/<slug> [--story <id>=<alias> ...]
+cox epic stories --epic <project>/epics/<slug> [--story <id>=<alias>[:scout|:ship] ...]
 ```
-Renders one story per repo (or the explicit `--story` list) from `templates/story.md` with the project policy resolved once: delivery style, context thresholds, and harness/model come from `cox/policy.json` (plus a `<project>/cox/policy.json` override), and `policy_source:` records the file and sha. Fill each story's Goal, Scope, Acceptance criteria, Verification table, and Files touched.
+Renders one story per repo (or the explicit `--story` list) from `templates/story.md` with the project policy resolved once: delivery style, delivery mode, context thresholds, and harness/model come from `cox/policy.json` (plus a `<project>/cox/policy.json` override), and `policy_source:` records the file and sha. Each story's frontmatter also carries `mode` (the delivery contract the brief prints) and `kind` (`ship` by default). Append `:scout` to a `--story` repo token (`id=alias:scout`) to render a **scout** story: report only, no PR, its deliverable a `reports/<id>.md` file. Fill each story's Goal, Scope, Acceptance criteria, Verification table, and Files touched.
 
 ## 6. Commit and hand off
 Commit the epic dir. Hand off to `cox-dispatch`.

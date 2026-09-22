@@ -57,13 +57,33 @@ doorbell or be replaced without losing the instruction. See [ADR 0012](decisions
 ## Idle/busy is harness-owned
 
 Whether a worker or leader is idle or busy is a fact the harness reports, not something a backend infers from a TUI. A
-harness whose card sets `BusyRecord` (Pi) arms a per-story record at `<epic>/.cox/sessions/<story>.busy.json` at
-dispatch (`cox busy arm`, incarnation gen threaded as `COX_BUSY_GEN`) and its extension Applies `busy`/`idle` on the
-turn-start/turn-end lifecycle (`cox busy apply`). Every backend ring/composer path and the watcher's idle/blocked passes
-consult this record FIRST and fall back to the backend's own signal only when the harness reports `unknown`. A stale
-gen is rejected and a missing gen writes nothing, so the record never fabricates a state. This closes the gap where a
-backend derived busy from a UI it did not recognize (dogfood F-A). `internal/protocol/busy/` owns the record;
-`cmd/cox/busy.go` is the harness-neutral CLI.
+harness whose card sets `BusyRecord` (Claude and Pi; Codex only behind policy `harness.busy_verified`) arms a per-story
+record at `<epic>/.cox/sessions/<story>.busy.json` at dispatch (incarnation gen threaded as `COX_BUSY_GEN`). Claude
+reports through worker hooks cox writes into the worktree's `.claude/settings.local.json` (the per-checkout,
+not-committed settings slot, excluded via `info/exclude` when not already gitignored, so the story worktree stays clean)
+(`UserPromptSubmit` -> busy, `Stop` -> idle, `SessionEnd` -> retire, via `${COX_BIN:-cox} busy apply|retire ... || true`);
+Pi reports through its extension. Every backend ring/composer path and the watcher's idle/blocked passes consult this record FIRST and fall back
+to the backend's own signal only when the harness reports `unknown`.
+
+Each capability card carries a `BusySources` trust table (its own hook source plus the leader-side `dispatch`,
+`interrupt`, `recovery` writers). `busy.Arm` stamps the harness and its trusted sources on the record; an Apply from a
+source the card does not list is rejected, and a record whose source is untrusted reads as `unknown` - a record a harness
+did not write never classifies its story. A stale gen is rejected (a hook that outlived its incarnation), and
+`busy.Retire` removes the record exact-gen so a `SessionEnd` or a leader release never clobbers a newer incarnation. A
+working story whose record stays busy past `BusyTurnMax` (60 min, policy `watch.busy_turn_max_min`) with no fresh event
+or checkpoint raises one routine `status` wake - a nudge, never an interrupt. This closes the gap where a backend derived
+busy from a UI it did not recognize (dogfood F-A). `internal/protocol/busy/` owns the record; `cmd/cox/busy.go` is the
+harness-neutral CLI.
+
+## Runtime records are versioned by attempt
+
+`sessions/<story>.json`, `wt/<story>`, and `.cox/leader` are written by temp + rename. The session and worktree records
+carry the `attempt` that wrote them; a write whose attempt is lower than the one already on disk is dropped, so a
+straggler from a prior incarnation (after a relaunch bumped the attempt) never clobbers the newer record. `.cox/leader`
+is a JSON record `{handle, pid, ts}`; the single reader `state.LeaderHandle` accepts both it and the legacy plain-handle
+text, and every reader (hooks, watcher, epic close, doctor) routes through it. The steer budget likewise counts only the
+current attempt: `inbox.Write` ignores records older than the attempt's dispatch, and `cox steer` reports the older ones
+as history rather than refusing a fresh steer (B-23).
 
 ## Interrupt through the harness when the backend cannot
 
@@ -113,6 +133,43 @@ local harness dialog; that channel is invisible to cox, so a question always goe
 
 A plain status is progress, not completion. A completion signal must follow the active backend plane's contract. The
 watcher classification in `internal/wake/classify.go` and integration tests own the exact compatibility behavior.
+
+### No turn ends blind (the turn-boundary guard)
+
+Before the leader waits, the Stop and `session-start` hooks verify that every led epic with an open story has a live,
+fresh watcher: `.cox/watch.pid` names a live process and `watch/lasttick` is younger than three tick intervals. A dead
+watcher is restarted (a detached `cox watch --epic <dir>`). A restart that cannot take over - a live-but-wedged watcher,
+or a launch error - reopens the turn with the exact repair line `cox watch --epic <dir> --replace`, bounded by a
+per-turn block budget (3) so a broken watcher can never wedge the leader: once the budget is spent the turn ends loudly
+instead. The guard sees an epic even when its watcher has died, so the failure that would hide the epic is the one it
+fixes. See [ADR 0014](decisions/0014-turn-boundary-guarded.md).
+
+A watcher whose epic dir, `.cox` tree, or own binary has vanished - or whose epic has a `.cox.closed` marker - evicts
+itself, and `cox doctor` lists any live `cox watch` process whose epic is outside every known workspace.
+
+### Leader reachability and the alerts channel
+
+The watcher nudges the leader terminal for a standing unacked urgent backlog, rate-limited so an unchanged backlog is
+re-nudged at most once per window (no nudge storm). When the doorbell fails three times in a row the leader is
+unreachable: the watcher raises one `_leader` stuck wake, `cox doctor` raises an ISSUE, and, when `policy.alerts.channel`
+is set, one out-of-band notification fires per 30 minutes. `alerts.channel` is `off` (default), `osascript` (a macOS
+banner), or `command:<cmd>` (runs `<cmd>` via `sh -c` with the alarm summary as `$1` and on stdin, for a phone or
+pager). See [Policy JSON](reference/policy-json.md#alerts).
+
+## Merge authority is the captain's, enforced in code
+
+The captain merges everything; a leader or worker never merges, pushes a default branch, or deletes a branch. `cox ship
+merge --pr <n> --epic <dir>` is the single merge command, so the green-at-the-live-head rule is enforced rather than
+remembered: it reads the PR live through the forge, merges only an open, non-draft, mergeable PR on the epic (or
+production) branch whose every check is green at the live head, pins that head (a push between the read and the merge is
+rejected), reads the result back, and appends a `merged` event to `ledger.jsonl` (`evidence: {pr, head, method, by}`). It
+is refused from a worker terminal (`COX_STORY` set) and, while `merge.yolo` is false, refused unless `--captain`. `--check`
+is a read-only dry run. Exit codes: `0` merged, `1` refused (every failing reason listed), `3` unknown.
+
+Each story's **delivery mode** (`delivery.mode`, printed in the brief as `Delivery contract: mode=<mode> yolo=<on|off>`)
+sets the posture: `no-mistakes` (full gates + PR + wait for merge authority), `direct-PR` (push + PR, the default), or
+`local-only` (clean ready branch, no push, wait). `cox story done --merge <sha>` refuses a sha that is not landed on the
+branch the mode requires (`origin/epic/<slug>`, or the production branch for `local-only`).
 
 ## Operator loop
 

@@ -47,6 +47,11 @@ func Build(epicDir, story string) (string, error) {
 		fmt.Fprintf(&b, "- %s\n", r)
 	}
 
+	mode, yolo := deliveryContract(epicDir, story)
+	b.WriteString("\n## Delivery contract\n")
+	fmt.Fprintf(&b, "%s\n\n", ContractLine(mode, yolo))
+	fmt.Fprintf(&b, "%s\n", ModeParagraph(mode))
+
 	path := filepath.Join(dir, "context.md")
 	if err := os.WriteFile(path, []byte(b.String()), 0o644); err != nil {
 		return "", fmt.Errorf("write brief context: %w", err)
@@ -93,6 +98,75 @@ func rulings(epicDir string) []string {
 		"delivery: " + pol.Delivery.Why,
 		"harness: " + pol.Harness.Why,
 	}
+}
+
+// deliveryContract resolves the story's delivery mode (from its frontmatter, defaulting to direct-PR) and the epic's
+// merge yolo posture (from policy, default off), the two values the brief's Delivery contract line prints (item 8b).
+func deliveryContract(epicDir, story string) (mode string, yolo bool) {
+	mode = frontmatterValue(epicDir, story, "mode")
+	if mode == "" {
+		mode = workspace.DefaultDeliveryMode
+	}
+	if wsRoot := workspaceRoot(epicDir); wsRoot != "" {
+		if pol, err := workspace.LoadPolicy(wsRoot); err == nil {
+			yolo = pol.MergeYolo()
+		}
+	}
+	return mode, yolo
+}
+
+// ContractLine renders the one-line delivery contract the brief and a promotion both print (item 8b/9).
+func ContractLine(mode string, yolo bool) string {
+	return fmt.Sprintf("Delivery contract: mode=%s yolo=%s", mode, onOff(yolo))
+}
+
+// ModeParagraph is the one-paragraph statement of what each delivery mode expects of the worker (item 8b). An unknown
+// mode falls back to the direct-PR text so the brief always carries a paragraph.
+func ModeParagraph(mode string) string {
+	switch mode {
+	case workspace.ModeNoMistakes:
+		return "no-mistakes: run every gate, open the PR, then WAIT for merge authority - the captain merges with `cox ship merge`. Never push a default branch, merge, or delete a branch."
+	case workspace.ModeLocalOnly:
+		return "local-only: leave a clean, ready branch; do NOT push and do NOT open a PR. Report done and wait; the captain takes it from here."
+	default:
+		return "direct-PR: push your branch and open the PR; no extra pipeline. Wait for the captain to merge with `cox ship merge`."
+	}
+}
+
+// onOff renders a bool as on|off for the delivery contract line.
+func onOff(b bool) string {
+	if b {
+		return "on"
+	}
+	return "off"
+}
+
+// frontmatterValue reads one top-level `key: value` from a story file's leading --- frontmatter block, or "" when the
+// file or key is absent. It mirrors cmd/cox's readStoryMeta without importing the command package.
+func frontmatterValue(epicDir, story, key string) string {
+	b, err := os.ReadFile(filepath.Join(epicDir, "stories", story+".md"))
+	if err != nil {
+		return ""
+	}
+	inFM := false
+	for _, line := range strings.Split(string(b), "\n") {
+		t := strings.TrimSpace(line)
+		if t == "---" {
+			if inFM {
+				break
+			}
+			inFM = true
+			continue
+		}
+		if !inFM {
+			continue
+		}
+		k, v, ok := strings.Cut(t, ":")
+		if ok && strings.TrimSpace(k) == key {
+			return strings.TrimSpace(strings.SplitN(v, "#", 2)[0])
+		}
+	}
+	return ""
 }
 
 // workspaceRoot walks up from the epic dir to the first ancestor holding cox/policy.json.

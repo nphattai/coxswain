@@ -24,6 +24,8 @@ type StorySpec struct {
 	Host    string
 	Harness string // "" => policy worker default
 	Model   string
+	Mode    string // "" => policy delivery.mode (item 8)
+	Kind    string // "" => "ship" (item 9)
 }
 
 // storyData is what the story template renders against.
@@ -40,6 +42,8 @@ type storyData struct {
 	EpicDir      string
 	PolicySource string
 	Delivery     workspace.Delivery
+	Mode         string // resolved delivery mode (item 8): the story's override, else policy delivery.mode
+	Kind         string // ship|scout (item 9): the story's override, else ship
 	Context      workspace.Context
 	// EpicToken/WorkspaceToken render as the LITERAL tokens {{.EpicDir}} / {{.WorkspaceDir}} into the story's Read first
 	// block, so the created story stays path-free; cox checkpoint inject resolves them to this machine's paths at inject
@@ -83,11 +87,19 @@ func Stories(epicDir, wsRoot, project string, specs []StorySpec) ([]string, erro
 		if harness == "" {
 			harness = pol.Harness.Worker.Default
 		}
+		mode := s.Mode
+		if mode == "" {
+			mode = pol.DeliveryMode()
+		}
+		kind := s.Kind
+		if kind == "" {
+			kind = "ship"
+		}
 		data := storyData{
 			ID: s.ID, Repo: s.Repo, Title: s.Title, Depends: strings.Join(s.Depends, ", "),
 			Device: s.Device, Host: s.Host, Harness: harness, Model: s.Model,
 			Slug: slug, EpicDir: epicDir, PolicySource: source,
-			Delivery: pol.Delivery, Context: pol.Context,
+			Delivery: pol.Delivery, Mode: mode, Kind: kind, Context: pol.Context,
 			EpicToken: "{{.EpicDir}}", WorkspaceToken: "{{.WorkspaceDir}}",
 		}
 		var buf bytes.Buffer

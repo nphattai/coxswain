@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -455,3 +456,92 @@ func TestPromptDrainWarnsDuplicateLeader(t *testing.T) {
 		t.Fatalf("expected a duplicate-leader warning naming both handles on stdout, got %q", out.String())
 	}
 }
+
+// --- item 1: turn-boundary watcher guard ---
+
+// A dead watcher for an epic with an open story is restarted (the startWatcher-equivalent) and the turn ends cleanly
+// (exit 0): the fresh watcher now delivers wakes, so the leader is not blind.
+func TestGuardRestartsDeadWatcher(t *testing.T) {
+	epic := t.TempDir() // no watch.pid => the watcher is dead
+	var out bytes.Buffer
+	launched := ""
+	code := runStopRewake(rewakeCfg{
+		epics: []string{epic}, guardEpics: []string{epic}, out: &out, sleep: noSleep,
+		launch: func(ep string) error { launched = ep; return nil },
+	})
+	if code != 0 {
+		t.Fatalf("a restarted watcher must end the turn with exit 0, got %d", code)
+	}
+	if launched != epic {
+		t.Fatalf("the guard must restart the dead watcher, launched=%q", launched)
+	}
+	if !bytes.Contains(out.Bytes(), []byte("restarted")) {
+		t.Fatalf("expected a restart notice, got %q", out.String())
+	}
+}
+
+// A restart that is refused (a live-but-wedged watcher, or a launch error) reopens the turn (exit 2) with the exact
+// repair line so the leader runs cox watch --replace.
+func TestGuardBlocksWhenRestartRefused(t *testing.T) {
+	epic := t.TempDir()
+	blocks := filepath.Join(t.TempDir(), "blocks")
+	var out bytes.Buffer
+	code := runStopRewake(rewakeCfg{
+		epics: []string{epic}, guardEpics: []string{epic}, out: &out, sleep: noSleep, blocksPath: blocks,
+		launch: func(string) error { return errWatchRefused },
+	})
+	if code != 2 {
+		t.Fatalf("a refused restart must reopen with exit 2, got %d", code)
+	}
+	want := "cox watch --epic " + epic + " --replace"
+	if !strings.Contains(out.String(), want) {
+		t.Fatalf("expected the repair line %q, got %q", want, out.String())
+	}
+}
+
+// The block budget bounds the wedge: once it is exhausted (a 4th block in one turn) the guard lets the turn end (exit 0)
+// with a warning, so a permanently broken watcher can never wedge the leader.
+func TestGuardWedgeReleaseAfterBudget(t *testing.T) {
+	epic := t.TempDir()
+	blocks := filepath.Join(t.TempDir(), "blocks")
+	if err := os.WriteFile(blocks, []byte("3"), 0o644); err != nil { // three blocks already spent this turn
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	code := runStopRewake(rewakeCfg{
+		epics: []string{epic}, guardEpics: []string{epic}, out: &out, sleep: noSleep, blocksPath: blocks,
+		launch: func(string) error { return errWatchRefused },
+	})
+	if code != 0 {
+		t.Fatalf("the 4th block in a turn must exit 0 to avoid a wedge, got %d", code)
+	}
+	if !bytes.Contains(out.Bytes(), []byte("wedge")) {
+		t.Fatalf("expected a wedge-release warning, got %q", out.String())
+	}
+}
+
+// A live, fresh watcher is healthy: the guard neither restarts it nor blocks, and the wait loop runs (a still-open
+// working story ticks, exit 2).
+func TestGuardHealthyWatcherProceeds(t *testing.T) {
+	epic := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(epic, controlDir, "watch"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(watchPidPath(epic), []byte(strconv.Itoa(os.Getpid())), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(epic, controlDir, "watch", "lasttick"), []byte(time.Now().UTC().Format(time.RFC3339)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	seedEvent(t, epic, state.Submitted, state.Working)
+	var out bytes.Buffer
+	code := runStopRewake(rewakeCfg{
+		epics: []string{epic}, guardEpics: []string{epic}, maxWait: 0, batchMax: time.Second, poll: time.Second, out: &out, sleep: noSleep,
+		launch: func(string) error { t.Fatal("healthy watcher must not be restarted"); return nil },
+	})
+	if code != 2 {
+		t.Fatalf("a healthy watcher must proceed to the wait loop (working story ticks, exit 2), got %d", code)
+	}
+}
+
+var errWatchRefused = errors.New("watcher refused")

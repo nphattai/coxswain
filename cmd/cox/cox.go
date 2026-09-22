@@ -175,8 +175,8 @@ func modelHarnessMismatch(harness, model string) (bool, string) {
 	return false, ""
 }
 
-// leaderPath / runPath / sessionPath live under <epic>/.cox.
-func leaderPath(epicDir string) string   { return filepath.Join(epicDir, controlDir, "leader") }
+// runPath / sessionPath live under <epic>/.cox. The leader record path and its reader/writer live in the state package
+// (state.LeaderHandle / state.WriteLeader), the single owner of the JSON + legacy format (DESIGN wave-2 item 7).
 func runPath(epicDir string) string      { return filepath.Join(epicDir, controlDir, "run") }
 func watchPidPath(epicDir string) string { return filepath.Join(epicDir, controlDir, "watch.pid") }
 
@@ -200,8 +200,9 @@ func writeCoxFile(epicDir, name, content string) error {
 	return os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644)
 }
 
-// readLeader returns the recorded leader terminal handle, or "".
-func readLeader(epicDir string) string { return readTrimmed(leaderPath(epicDir)) }
+// readLeader returns the recorded leader terminal handle, or "". It delegates to the single reader in the state package,
+// which accepts both the JSON leader record and the legacy plain-handle text (DESIGN wave-2 item 7).
+func readLeader(epicDir string) string { return state.LeaderHandle(epicDir) }
 
 // resolveRun returns the run id from .cox/run or the ORCA_RUN_ID env, else "".
 func resolveRun(epicDir string) string {
@@ -238,16 +239,46 @@ func resolveOrcaPlane(epicDir string) string {
 	return loadPolicyQuiet(epicDir).OrcaPlane()
 }
 
-func saveSession(epicDir, story string, s backend.Session) error {
+// sessionFile is the on-disk session record: the backend session flattened, plus the attempt that wrote it (DESIGN
+// wave-2 item 7). The attempt lets a later reader drop a stale write from an earlier incarnation. Embedding flattens
+// backend.Session's fields, so an older file with no `attempt` reads back as attempt 0 (dropped by nothing, since a
+// current write is >= 1).
+type sessionFile struct {
+	backend.Session
+	Attempt int `json:"attempt"`
+}
+
+// saveSession writes the story's session record by temp + rename, stamped with the attempt. A write whose attempt is
+// LOWER than the attempt already on disk is dropped with a stderr note: a late writer from a prior incarnation (after a
+// relaunch bumped the attempt) can never clobber the newer session (DESIGN wave-2 item 7).
+func saveSession(epicDir, story string, s backend.Session, attempt int) error {
+	if cur, ok := readSessionAttempt(epicDir, story); ok && attempt < cur {
+		fmt.Fprintf(os.Stderr, "cox: note: dropped session write for %s (attempt %d < %d on disk)\n", story, attempt, cur)
+		return nil
+	}
 	dir := filepath.Join(epicDir, controlDir, "sessions")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	b, err := json.Marshal(s)
+	b, err := json.Marshal(sessionFile{Session: s, Attempt: attempt})
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(sessionPath(epicDir, story), b, 0o644)
+	return state.AtomicWrite(sessionPath(epicDir, story), b, 0o644)
+}
+
+// readSessionAttempt returns the attempt stamped on the story's saved session, or (0, false) when there is no readable
+// session (an absent file, or a legacy file with no attempt, reads as not-known so a first write is never dropped).
+func readSessionAttempt(epicDir, story string) (int, bool) {
+	b, err := os.ReadFile(sessionPath(epicDir, story))
+	if err != nil {
+		return 0, false
+	}
+	var f sessionFile
+	if err := json.Unmarshal(b, &f); err != nil || f.Attempt < 1 {
+		return 0, false
+	}
+	return f.Attempt, true
 }
 
 func loadSession(epicDir, story string) (backend.Session, error) {
@@ -255,10 +286,11 @@ func loadSession(epicDir, story string) (backend.Session, error) {
 	if err != nil {
 		return backend.Session{}, err
 	}
-	var s backend.Session
-	if err := json.Unmarshal(b, &s); err != nil {
+	var f sessionFile
+	if err := json.Unmarshal(b, &f); err != nil {
 		return backend.Session{}, err
 	}
+	s := f.Session
 	s.Story = story // stamp the story so the backend can consult the busy record even for a session persisted before this field existed
 	return s, nil
 }
@@ -293,15 +325,25 @@ type storyMeta struct {
 	Repo    string
 	Harness string
 	Model   string
+	Mode    string // delivery mode (item 8): no-mistakes|direct-PR|local-only; "" reads as direct-PR
+	Kind    string // story kind (item 9): ship|scout; "" reads as ship
+	Route   string // routing match (item 10): "rule=<n>" | "override" | ""; written by the leader at decomposition
+	Effort  string // reasoning-effort class override (item 10): low|medium|high|xhigh|max; "" => the kind default
 }
 
 // readStoryMeta parses id/repo/agent/harness/model from stories/<id>.md frontmatter (simple key: value).
 func readStoryMeta(epicDir, story string) storyMeta {
-	var m storyMeta
 	b, err := os.ReadFile(filepath.Join(epicDir, "stories", story+".md"))
 	if err != nil {
-		return m
+		return storyMeta{}
 	}
+	return parseStoryMeta(b)
+}
+
+// parseStoryMeta reads the frontmatter subset dispatch and routing need from a story file's bytes, so a caller with a
+// brief path (cox route --brief) parses the same fields as a caller with a story id.
+func parseStoryMeta(b []byte) storyMeta {
+	var m storyMeta
 	inFM := false
 	for _, line := range strings.Split(string(b), "\n") {
 		t := strings.TrimSpace(line)
@@ -329,9 +371,34 @@ func readStoryMeta(epicDir, story string) storyMeta {
 			}
 		case "model":
 			m.Model = v
+		case "mode":
+			m.Mode = v
+		case "kind":
+			m.Kind = v
+		case "route":
+			m.Route = v
+		case "effort":
+			m.Effort = v
 		}
 	}
 	return m
+}
+
+// storyMode returns the story's resolved delivery mode: its frontmatter `mode`, or DefaultDeliveryMode (direct-PR) when
+// unset (item 8).
+func storyMode(epicDir, story string) string {
+	if m := readStoryMeta(epicDir, story).Mode; m != "" {
+		return m
+	}
+	return workspace.DefaultDeliveryMode
+}
+
+// storyKind returns the story's kind: its frontmatter `kind`, or "ship" when unset (item 9).
+func storyKind(epicDir, story string) string {
+	if k := readStoryMeta(epicDir, story).Kind; k != "" {
+		return k
+	}
+	return "ship"
 }
 
 // envDuration parses a Go duration (e.g. "120s", "5m") from env var name, falling back to def when unset or unparsable.

@@ -19,6 +19,10 @@ Both planes preserve the same core guarantees:
 
 - Worktree identity and branch are reverified. Failure never falls back to a shared checkout.
 - Removal detaches first. If detach fails, removal is skipped because preserving the branch wins.
+- Removal also refuses a branch not on origin (`git ls-remote --heads`) unless the caller passes an explicit force,
+  since `orca worktree rm` can delete the local branch and an off-origin branch holds the only copy of its work (B-16).
+- `OwnedPaths()` reports the worktree-relative prefixes Orca writes into a managed checkout (`.orca/` scratch and
+  screenshot drops), so epic close ignores those untracked artifacts when judging whether a worktree holds work (B-39).
 - Missing, unreadable, or unrecognized liveness is unknown.
 - A doorbell is not the durable steer channel.
 - Stop clears ownership only after confirmation.

@@ -51,7 +51,7 @@ func stderrTail(err error) string {
 
 // PR resolves the PR for a head branch via `gh pr view <head> --json ...`. A head with no PR is an error.
 func (c *Client) PR(headRef string) (forge.PR, error) {
-	out, err := c.run(c.Dir, "pr", "view", headRef, "--json", "number,headRefOid,headRefName,baseRefName,state")
+	out, err := c.run(c.Dir, "pr", "view", headRef, "--json", "number,headRefOid,headRefName,baseRefName,state,isDraft,mergeable")
 	if err != nil {
 		return forge.PR{}, err
 	}
@@ -61,6 +61,8 @@ func (c *Client) PR(headRef string) (forge.PR, error) {
 		HeadRefName string `json:"headRefName"`
 		BaseRefName string `json:"baseRefName"`
 		State       string `json:"state"`
+		IsDraft     bool   `json:"isDraft"`
+		Mergeable   string `json:"mergeable"` // MERGEABLE | CONFLICTING | UNKNOWN
 	}
 	if err := json.Unmarshal(out, &r); err != nil {
 		return forge.PR{}, fmt.Errorf("parse pr view: %w", err)
@@ -69,11 +71,13 @@ func (c *Client) PR(headRef string) (forge.PR, error) {
 		return forge.PR{}, fmt.Errorf("no PR for head %q", headRef)
 	}
 	return forge.PR{
-		Number:  r.Number,
-		Head:    r.HeadRefOid,
-		HeadRef: r.HeadRefName,
-		Base:    r.BaseRefName,
-		State:   strings.ToLower(r.State),
+		Number:    r.Number,
+		Head:      r.HeadRefOid,
+		HeadRef:   r.HeadRefName,
+		Base:      r.BaseRefName,
+		State:     strings.ToLower(r.State),
+		Draft:     r.IsDraft,
+		Mergeable: strings.EqualFold(r.Mergeable, "MERGEABLE"), // only a known-clean state is mergeable; UNKNOWN fails closed
 	}, nil
 }
 
@@ -178,4 +182,23 @@ func (c *Client) Comments(pr forge.PR) ([]forge.Comment, error) {
 // Merged reports whether the PR is merged.
 func (c *Client) Merged(pr forge.PR) (bool, error) {
 	return pr.State == "merged", nil
+}
+
+// Merge merges the PR through `gh pr merge`, pinning the head with --match-head-commit so gh (and GitHub) reject the
+// merge if the head moved since the read. method selects the strategy flag; an unknown method is an error before any gh
+// call so a typo never falls through to gh's default.
+func (c *Client) Merge(pr forge.PR, method string) error {
+	var strategy string
+	switch method {
+	case "squash":
+		strategy = "--squash"
+	case "merge":
+		strategy = "--merge"
+	case "rebase":
+		strategy = "--rebase"
+	default:
+		return fmt.Errorf("unknown merge method %q (want squash|merge|rebase)", method)
+	}
+	_, err := c.run(c.Dir, "pr", "merge", strconv.Itoa(pr.Number), strategy, "--match-head-commit", pr.Head)
+	return err
 }

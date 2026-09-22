@@ -36,6 +36,8 @@ Every guarantee below is enforced by the `cox` binary and its tests, not by conv
 - **The captain merges everything** - Coxswain never merges and never pushes a default branch. Design approval, releases, and every merge are the human's call.
 - **Arena design review that can block** - an adversary in a *different* harness reads a blinded pack and raises machine-checked, verified claims against a design before it is signed.
 - **Event-driven, zero-token supervision** - a watcher sleeps on the fleet and wakes the leader only when something changes: push harnesses through hooks, pull harnesses through `cox wake wait`.
+- **No leader turn ends blind** - before the leader waits, the Stop and session-start hooks check that every led epic with an open story has a live, fresh watcher and restart a dead one, or reopen the turn with the exact `cox watch --replace` repair line (bounded by a per-turn block budget so a broken watcher can never wedge the leader). A watcher whose epic or binary has vanished evicts itself, and an unreachable leader raises a `stuck` wake, a `cox doctor` ISSUE, and - when `policy.alerts.channel` is set - one rate-limited out-of-band notification.
+- **Harness-owned idle/busy** - whether a worker is idle or busy is a fact the harness reports through a per-story record, not something a backend guesses from a TUI. Each capability card names the sources it trusts, so a record another harness wrote never classifies a story; a stale incarnation is rejected; and a story that stays busy too long nudges the leader without interrupting it.
 - **Workspace-level hooks** - leader hooks belong to the workspace, not to an epic, so one leader terminal drains and rewakes for every active epic under it.
 - **Orca backend** - worktrees and terminals come from an Orca backend through a thin adapter, keeping the core independent of any one backend.
 
@@ -93,6 +95,17 @@ cox story dispatch checkout-api --epic "$HOME/Work/acme-ops/acme/epics/checkout"
 The worker runs in its own worktree on `story/<id>`. That is the setup goal reached: a dispatched story.
 [First epic](docs/getting-started/first-epic.md) explains each command in full and the leader wake loop, and every command in the fences above is exercised by the onboarding end-to-end test, so you can copy it with confidence.
 
+### Route a story
+
+A story with `harness: auto` is routed by policy rules a model's judgment matches; Go applies the gates and the
+quota ranking. To ask which harness a set of candidates the current quota reading favours (no side effects):
+
+```sh
+cox route --candidates claude:opus,codex:gpt-5.6-sol --epic "$HOME/Work/acme-ops/acme/epics/checkout"
+```
+
+It prints the first quota-eligible candidate, or `none` (exit 1) when the fleet is tight. See [Worker routing](docs/routing.md).
+
 ### Talk to it
 
 You steer the whole crew by chatting with the leader; it escalates only real decisions.
@@ -115,6 +128,52 @@ You steer the whole crew by chatting with the leader; it escalates only real dec
 
   recorded the merge sha, released the worker, and closed the worktree.
 ```
+
+### Ship an epic
+
+The captain merges everything. `cox ship merge --pr <n> --epic <dir>` is the single merge command, so the
+green-at-the-live-head rule is enforced in code rather than remembered: through the forge it reads the PR live and
+merges only an open, non-draft, mergeable PR on the epic (or production) branch whose every check is green at the live
+head, pins that head so a push between the read and the merge is rejected, reads the result back, and appends a `merged`
+event to `ledger.jsonl`. It is refused from a worker terminal, and - while `merge.yolo` is false (the default) - refused
+unless the captain runs it with `--captain`. Add `--check` for a read-only dry run that prints the verdict and merges
+nothing (allowed against a real PR); exit codes are `0` merged, `1` refused (every failing reason listed), `3` unknown.
+
+Each story also carries a **delivery mode** resolved from policy (`delivery.mode`): `no-mistakes` (full gates + PR + wait
+for merge authority), `direct-PR` (push + PR, the default that matches today), or `local-only` (a clean ready branch, no
+push, wait). The brief prints `Delivery contract: mode=<mode> yolo=<on|off>`, and `cox story done --merge <sha>` refuses
+a sha that is not landed on the branch the mode requires.
+
+### Story kinds
+
+A story is one of two kinds (frontmatter `kind`, default `ship`). A **ship** story delivers a PR the captain merges. A
+**scout** story reports only - no PR: its deliverable is `<epic>/reports/<id>.md`. `cox epic stories --story id=repo:scout`
+renders one; its brief says "report only, no PR". `cox story done` refuses to complete a scout until that report exists,
+and `cox audit pr` and `cox state` skip the forge for it (they print `kind=scout report=<path|missing>` instead of a
+`gh pr view` error). When a scout's findings should become work, `cox story promote <id> --epic <dir> --mode <m>` flips it
+to a ship story, sets its delivery mode, appends a "Superseding contract" section to the story, and prints the `cox steer`
+command to deliver it to a running worker (it never sends the steer itself).
+
+### Close an epic
+
+When an epic is done, `cox epic close --epic <dir>` tears it down and only archives its runtime once every step is
+verified - it refuses or repairs rather than printing `ok` over unverified state:
+
+```bash
+cox epic close --epic <epic-dir>            # dry run: print the plan, change nothing
+cox epic close --epic <epic-dir> --yes      # execute (from the leader terminal)
+```
+
+- **Landed vs kept.** A worktree is removed only when its work has **landed**: no uncommitted tracked changes, and its
+  branch is contained in `origin/<branch>` (fetched first) or a production branch - so a merged branch with no upstream
+  is still removed, and a backend's own untracked artifact (Orca's `.orca/` screenshots) never makes it look dirty.
+  Anything not landed is **kept** with a reason; `--force` removes it anyway. A branch is never deleted, and a removal
+  that did not actually take is caught and the epic is not archived.
+- **`--captain`.** Close is refused from a terminal that is not the epic's leader (it prints who owns the epic); the
+  captain runs it with `--captain`.
+
+[Close an epic](docs/operations/index.md#close-an-epic) covers landed-vs-kept, verified removal, and re-attaching a
+cloned epic in full.
 
 ## How It Works
 

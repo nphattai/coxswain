@@ -159,11 +159,14 @@ func cmdWatch(args []string) int {
 	if b == nil {
 		return fail("watch needs a live backend: set ORCA_RUN_ID or %s/.cox/run", *epicDir)
 	}
+	pol := loadPolicyQuiet(*epicDir)
 	w := &watch.Watcher{
-		EpicDir:  *epicDir,
-		Backend:  b,
-		Sessions: loadAllSessions(*epicDir),
-		Quota:    newQuotaProbe(*epicDir),
+		EpicDir:      *epicDir,
+		Backend:      b,
+		Sessions:     loadAllSessions(*epicDir),
+		Quota:        newQuotaProbe(*epicDir),
+		AlarmChannel: pol.AlertsChannel(),
+		BusyTurnMax:  time.Duration(pol.BusyTurnMaxMinutes()) * time.Minute, // 0 => watcher default (DefaultBusyTurnMax)
 	}
 	if *once {
 		n, err := w.Tick()

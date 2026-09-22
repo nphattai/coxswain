@@ -6,8 +6,8 @@ with the Go type by `internal/workspace/docs_parity_test.go`, which fails if a f
 matching row here.
 
 A `<project>/cox/policy.json` may replace whole top-level sections (see [Configuration authority](configuration.md)).
-Every *justified* section (`workers_per_repo`, `waves`, `context`, `arena`, `delivery`, `harness`) must carry both a
-`why` and a `review_when`, or the file fails to load with the section named. The remaining sections
+Every *justified* section (`workers_per_repo`, `waves`, `context`, `arena`, `delivery`, `harness`, `merge`) must carry
+both a `why` and a `review_when`, or the file fails to load with the section named. The remaining sections
 (`routing`, `backend`, `quota`, `review`) are optional: an older policy without them keeps working on code defaults.
 
 ## Justification, on every justified section
@@ -25,12 +25,15 @@ Every *justified* section (`workers_per_repo`, `waves`, `context`, `arena`, `del
 | `waves` | Wave ordering for stories in an epic. |
 | `context` | Compaction thresholds in tokens. |
 | `arena` | When adversarial design review is triggered. |
-| `delivery` | The story delivery style resolved into each story. |
+| `delivery` | The story delivery style and merge mode resolved into each story. |
 | `harness` | Model-agnostic harness options, defaults, and launch flags. |
+| `merge` | Merge posture: whether a non-captain terminal may run `cox ship merge`. |
 | `routing` | The harness-routing baseline (a `review_when` default, not a hard rule). |
 | `backend` | Per-backend switches (today only Orca). |
 | `quota` | Observe-only quota thresholds. |
 | `review` | Visual-review surface. |
+| `alerts` | Out-of-band notification channel for a leader that has gone unreachable. |
+| `watch` | Watcher-window overrides (optional; code defaults otherwise). |
 
 ### `workers_per_repo`
 
@@ -63,6 +66,7 @@ Every *justified* section (`workers_per_repo`, `waves`, `context`, `arena`, `del
 | Field | Type | Meaning |
 |---|---|---|
 | `style` | string | `"default"` (draft PR at the plan gate, push every phase) or `"pipo"` (commits stay local, one push, PR opened ready). |
+| `mode` | string | Merge posture resolved into each story and printed in the brief (item 8): `"no-mistakes"` (full gates + PR + wait for merge authority), `"direct-PR"` (push + PR, no extra pipeline; the default that matches today), or `"local-only"` (a clean ready branch, no push, wait). Empty reads as `direct-PR`; any other value fails to load. |
 
 ### `harness`
 
@@ -74,15 +78,53 @@ Model-agnostic (decision 8): the leader is not locked to one harness.
 | `worker` | object | Worker role: `options`, `default`, per-harness `models` (harness → default model id), and the legacy single `model` (read as claude's default). |
 | `arena` | object | Arena roles: `adversary` (`rule`, `default`) and `reviewer` (`rule`). |
 | `launch` | object | Per-harness launch flags. A top-level `<harness>` key lists a dispatched worker's autonomy flags; the nested `arena` key holds each harness's read-only arena flags. |
+| `busy_verified` | bool | Opt codex into the harness-owned busy record (DESIGN wave-2 item 6). Default false: codex is not armed at dispatch and writes no busy record until this is set, which vouches that a `codex-hook` writer is wired. `claude` and `pi` report their own state from their capability cards, so this flag governs only codex. It never selects a harness or changes routing. |
 
 `options`, `default`, `model`, `models`, `adversary`, `reviewer`, and `rule` are the fields inside these objects.
 
+### `merge`
+
+Justified (item 8). `cox ship merge` is the single merge command; it merges only an open, non-draft, mergeable PR whose
+every check is green at the live head, pins that head to the forge, and reads the result back.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `yolo` | bool | Default `false`: `cox ship merge` is refused unless the captain runs it (`--captain`), so the green-at-live-head rule is enforced rather than remembered, and a worker terminal (`COX_STORY` set) never merges. `true` lets a non-captain terminal merge; the captain owns that risk. |
+
 ### `routing`
+
+The baseline default (ADR 0011) plus the captain-authored routing rules (DESIGN wave-4 item 10). The rule *match* is a
+model's judgment (the leader at decomposition, or the opt-in Jev typed path in `cox route --brief`); code never matches a
+`when`. After the match, code owns the mechanical part: validation at load, the three gates, the `spendPriority` ranking,
+and the escalation. A malformed rule refuses dispatch and names the field; it is never selected around.
 
 | Field | Type | Meaning |
 |---|---|---|
 | `default` | string | `"policy"`: fall back to the harness default until the baseline bar is met. |
 | `review_when` | string | The baseline-row bar that unlocks a non-default choice. |
+| `rules` | array | Captain-authored routing rules, each matched by a model's judgment and applied by code. |
+| `default_profiles` | array | The profile array used when no rule matches (or the leader's `route: override`); same shape as a rule's `profiles`. |
+| `effort` | object | Story-kind → default reasoning-effort class (`scout` → `xhigh`, `ship` → `low`, `arena` → `high` when unset); a story's `effort:` frontmatter overrides it. |
+| `min_runway_seconds` | int | Gate-3 runway-feasibility floor: a `projected_exhaustion` reading with less usable runway than this is ineligible. Default 14400 (4h). |
+| `tie_epsilon` | number | `spendPriority` values within this band are a genuine tie and escalate to the captain rather than being broken by array order. Default 0.01. |
+
+Each entry in `rules` is an object:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `when` | string | The natural-language match condition a model's judgment resolves; code never matches it. |
+| `approval` | string | `"captain"` makes a matched rule escalate for the captain's explicit approval before dispatch; `"none"` or absent dispatches on the ranked candidate. |
+| `profiles` | array | The non-empty candidate array applied after the match (each candidate is a profile object below). |
+
+Each profile object (in `rules[].profiles` and in `default_profiles`) is:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `harness` | string | Required. The harness this candidate runs on; it must have a capability card. |
+| `model` | string | Optional model id for this candidate. |
+| `effort` | string | Optional reasoning-effort class for this candidate; the card must accept it. |
+| `provider` | string | Optional quota provider id (lower-case, hyphen-separated) when it differs from the harness. |
+| `floor` | string | Optional reasoning-class floor (one of `low`\|`medium`\|`high`\|`xhigh`\|`max`) the story's effort must meet, else the candidate is ineligible (gate 2). |
 
 ### `backend`
 
@@ -112,6 +154,24 @@ Observe-only; `cox` never reroutes automatically.
 | `binary` | string | Overrides the PATH lookup for `lavish-axi`. |
 | `npx` | object or null | The explicit npx opt-in: `version` and `integrity`. |
 | `share` | bool | Whether outward-facing publishing is allowed (defaults false). |
+
+### `alerts`
+
+Optional. The watcher fires this channel, rate-limited to one notification per 30 minutes, when the leader terminal has
+gone unreachable for three consecutive doorbell nudges (a dead handle after a restart, a closed terminal). Unset means
+`off`, so `cox` never posts a notification unless the captain opts in.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `channel` | string | `"off"` (default), `"osascript"` (a macOS Notification Center banner), or `"command:<cmd>"` (runs `<cmd>` via `sh -c` with the alarm summary as `$1` and on stdin, for a phone or pager). |
+
+### `watch`
+
+Optional watcher-window overrides; an absent section keeps the code defaults.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `busy_turn_max_min` | int (minutes) | How long a story's busy record may stay busy - with no fresh busy event and no fresh checkpoint - before the watcher raises one routine `status` wake for the leader (DESIGN wave-2 item 6d). `<=0` or unset uses the default (60 minutes). It is a nudge, never an interrupt. |
 
 For exact defaults, read `templates/policy.json`. For where a change belongs, see
 [Configuration authority](configuration.md).

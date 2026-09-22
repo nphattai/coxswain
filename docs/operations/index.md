@@ -28,6 +28,36 @@ and recovery.
 [FAQ and troubleshooting](../faq.md) covers common setup failures. Adapter-specific ceilings belong in
 [Adapters](../adapters/index.md).
 
+## Close an epic
+
+`cox epic close --epic <dir>` tears an epic down in a fixed order and only archives `.cox -> .cox.closed` once every
+step is verified (decision [0015](../decisions/0015-close-attach-fail-closed.md)). A dry run (no `--yes`) prints the
+plan and changes nothing.
+
+- **Landed vs kept.** Each worktree is removed only when its work has **landed**: no uncommitted tracked changes, and
+  its branch tip is contained in `origin/<branch>` (fetched first) or in a production branch. A branch with no upstream
+  is still landed when it is contained in `origin/<branch>`. An untracked file under a backend-owned path (Orca's
+  `.orca/` screenshot drops) is ignored, so a screenshot never makes a clean worktree look dirty. A worktree that has
+  **not** landed is **kept** with a `keep <path> (<reason>)` line; pass `--force` to remove it anyway. A branch is
+  never deleted.
+- **Verified removal.** After a removal, close re-reads `git worktree list`; a path still registered fails the step
+  (`FAILED at remove-worktrees: <path> still registered`), writes `close.incomplete.json`, and does not archive.
+- **No runtime.** An epic with no `.cox/` (v1-migrated or never attached) is archived directly: the steps print
+  `(no runtime)` and `.cox.closed/closed.json` records `no_runtime: true`.
+- **`--captain`.** Close is refused from a terminal that is not the epic's recorded leader (`.cox/leader`); it prints
+  who owns the epic. The captain overrides with `--captain`.
+
+```bash
+cox epic close --epic <epic-dir>            # dry run: print the plan
+cox epic close --epic <epic-dir> --yes      # execute (leader terminal)
+cox epic close --epic <epic-dir> --yes --force    # also remove worktrees whose work has not landed
+cox epic close --epic <epic-dir> --yes --captain  # close from a non-leader terminal
+```
+
+Re-attaching a cloned or discarded epic with `cox epic attach --epic <dir>` adopts a worktree already on `epic/<slug>`
+(found by branch, even without an alias symlink) instead of creating a second one, and refuses a backend that renames
+the branch. See [0015](../decisions/0015-close-attach-fail-closed.md).
+
 ## Park and resume a worker
 
 Park a worker only after it has written a checkpoint for the current attempt and git head. Resume starts attempt N+1

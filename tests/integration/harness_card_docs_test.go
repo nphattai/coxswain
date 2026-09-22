@@ -33,6 +33,8 @@ func TestHarnessCardsMatchDocs(t *testing.T) {
 			"| telemetry | " + boolStr(c.Telemetry) + " |",
 			"| sandbox | " + boolStr(c.Sandbox) + " |",
 			"| unsandboxed_ack | " + boolStr(c.UnsandboxedAck) + " |",
+			"| busy_record | " + boolStr(c.BusyRecord) + " |",
+			"| busy_sources | " + strings.Join(c.BusySources, ", ") + " |",
 			"| instructions | " + c.Instructions + " |",
 		}
 		for _, w := range wants {

@@ -18,6 +18,7 @@ import (
 
 	"github.com/nphattai/coxswain/internal/adapter/backend"
 	"github.com/nphattai/coxswain/internal/protocol/checkpoint"
+	"github.com/nphattai/coxswain/internal/state"
 	"github.com/nphattai/coxswain/internal/wake"
 	"github.com/nphattai/coxswain/internal/watch"
 )
@@ -106,6 +107,55 @@ func activeEpics(wsRoot string) []string {
 	return out
 }
 
+// allEpics enumerates every epic control dir under a workspace regardless of watcher liveness. Unlike activeEpics it
+// keeps an epic whose watcher has died, so the turn-boundary guard (item 1) can see - and restart - the very watcher
+// whose death would otherwise hide the epic from every leader hook.
+func allEpics(wsRoot string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, pat := range []string{
+		filepath.Join(wsRoot, "*", "epics", "*"),
+		filepath.Join(wsRoot, "*", "*", "epics", "*"),
+	} {
+		matches, _ := filepath.Glob(pat)
+		for _, ep := range matches {
+			if seen[ep] {
+				continue
+			}
+			if info, err := os.Stat(ep); err != nil || !info.IsDir() {
+				continue
+			}
+			seen[ep] = true
+			out = append(out, ep)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// guardEpics returns the led epics with at least one open story (working or input_required), regardless of watcher
+// liveness, so the turn-boundary guard restarts a dead watcher for an epic that still has work (item 1). An explicit
+// --epic narrows to it; otherwise it walks up to the workspace. Leader-filtered so a worker worktree never guards the
+// leader's epics.
+func guardEpics(epicDir string) []string {
+	var eps []string
+	if epicDir != "" {
+		eps = []string{epicDir}
+	} else if wsRoot, err := findWorkspaceRoot("."); err == nil {
+		eps = allEpics(wsRoot)
+	} else {
+		return nil
+	}
+	eps = filterLeaderEpics(eps)
+	var out []string
+	for _, ep := range eps {
+		if open, err := watch.OpenStories(ep); err == nil && len(open) > 0 {
+			out = append(out, ep)
+		}
+	}
+	return out
+}
+
 // outsideWorkspace prints one line to stderr and returns exit 0: a hook fired in a terminal that leads nothing must be
 // silent-but-visible, never crash the session (DESIGN §3).
 func outsideWorkspace(hook string) int {
@@ -132,6 +182,12 @@ func hookLeaderCheckpoint(name, epicDir, story, worktree string, fn func(epicDir
 	if !in {
 		return outsideWorkspace(name)
 	}
+	// On a leader resume/compact, restart a dead watcher for every led epic with an open story before injecting the
+	// checkpoint, so the resumed leader is not blind (item 1). session-start cannot block a turn, so a watcher it cannot
+	// take over is surfaced as the repair line in the session context.
+	if name == "session-start" {
+		guardWatchersSessionStart(guardEpics(epicDir), os.Stdout, os.Stderr)
+	}
 	st := story
 	if st == "" {
 		st = leaderStory
@@ -140,6 +196,22 @@ func hookLeaderCheckpoint(name, epicDir, story, worktree string, fn func(epicDir
 		_ = fn(ep, st, worktree)
 	}
 	return 0
+}
+
+// guardWatchersSessionStart restarts a dead watcher for every led epic with an open story when the leader session
+// resumes or compacts (item 1). Unlike the Stop guard it cannot block, so a watcher it cannot take over (a wedged one,
+// or a launch error) is surfaced as the repair line in the session context (out); a restart prints a note to errw.
+func guardWatchersSessionStart(epics []string, out, errw io.Writer) {
+	for _, ep := range epics {
+		if watcherHealthy(ep, time.Now()) {
+			continue
+		}
+		if err := launchWatcher(ep); err == nil {
+			fmt.Fprintf(errw, "cox: watcher for %s was not alive; restarted it (cox watch --epic %s)\n", filepath.Base(ep), ep)
+			continue
+		}
+		fmt.Fprintf(out, "Watcher for %s is not alive; run: cox watch --epic %s --replace\n", filepath.Base(ep), ep)
+	}
 }
 
 // orcaDoorbellRe matches Orca's terminal doorbell prompt ("You have N orchestration messages. Run `orca orchestration
@@ -157,6 +229,8 @@ func hookPromptDrain(epicDir, harnessName string) int {
 	if !in {
 		return outsideWorkspace("prompt-drain")
 	}
+	// A real turn is starting, so the turn-boundary guard's per-turn block budget resets here (item 1).
+	resetRewakeBlocks(os.Getenv("ORCA_TERMINAL_HANDLE"))
 	return runPromptDrainAll(filterLeaderEpics(epics), harnessName, os.Stdin, os.Stdout, os.Stderr)
 }
 
@@ -220,7 +294,7 @@ func leaderTerminal(epicDir string) (isLeader bool, rebound bool) {
 		return false, false // recorded handle is dead, but we are not in the epic's workspace
 	}
 	// Restart case: the recorded leader handle died and this terminal leads the epic's workspace. Re-bind to it.
-	_ = writeCoxFile(epicDir, "leader", handle)
+	_ = state.WriteLeader(epicDir, handle)
 	return true, true
 }
 
@@ -335,10 +409,11 @@ func hookStopRewake(epicDir, harnessName string) int {
 		return outsideWorkspace("stop-rewake")
 	}
 	epics = filterLeaderEpics(epics)
-	if len(epics) == 0 {
-		return 0 // nothing active to wait on
-	}
-	if handle := os.Getenv("ORCA_TERMINAL_HANDLE"); handle != "" {
+	// The guard set (open-story epics regardless of watcher liveness) is computed before the single-waiter lock and the
+	// len(epics)==0 return, so a dead-watcher epic - which activeEpics hides - is still guarded (item 1).
+	guard := guardEpics(epicDir)
+	handle := os.Getenv("ORCA_TERMINAL_HANDLE")
+	if handle != "" {
 		lock := filepath.Join(tmpDir(), "cox-rewake-"+handle+".lock")
 		if rewakeWaiterAlive(lock) {
 			return 0 // another waiter already runs for this terminal
@@ -348,28 +423,37 @@ func hookStopRewake(epicDir, harnessName string) int {
 		}
 	}
 	return runStopRewake(rewakeCfg{
-		epics:    epics,
-		harness:  harnessName,
-		maxWait:  envSeconds("REWAKE_MAX_WAIT", 3300),
-		batchMax: envSeconds("WAKE_BATCH", 300),
-		poll:     15 * time.Second,
-		out:      os.Stderr,
-		stdout:   os.Stdout,
-		sleep:    time.Sleep,
+		epics:      epics,
+		guardEpics: guard,
+		harness:    harnessName,
+		maxWait:    envSeconds("REWAKE_MAX_WAIT", 3300),
+		batchMax:   envSeconds("WAKE_BATCH", 300),
+		poll:       15 * time.Second,
+		out:        os.Stderr,
+		stdout:     os.Stdout,
+		sleep:      time.Sleep,
+		blocksPath: rewakeBlocksPath(handle),
 	})
 }
 
 // rewakeCfg is the stop-rewake loop's inputs, injected so the loop is unit-tested without real waiting (sleep is a
 // no-op in tests; maxWait/batchMax/poll are durations, not env reads). epics is every active epic the leader waits on.
 type rewakeCfg struct {
-	epics    []string
-	harness  string // "codex" reopens via a stdout block decision; anything else (claude) reopens via exit 2
-	maxWait  time.Duration
-	batchMax time.Duration
-	poll     time.Duration
-	out      io.Writer // reopen/tick text sink for the exit-2 path (stderr)
-	stdout   io.Writer // codex block-decision sink (stdout); defaults handled by the caller
-	sleep    func(time.Duration)
+	epics      []string
+	guardEpics []string // epics with open stories to run the turn-boundary watcher guard over, regardless of watcher liveness (item 1)
+	harness    string   // "codex" reopens via a stdout block decision; anything else (claude) reopens via exit 2
+	maxWait    time.Duration
+	batchMax   time.Duration
+	poll       time.Duration
+	out        io.Writer // reopen/tick text sink for the exit-2 path (stderr)
+	stdout     io.Writer // codex block-decision sink (stdout); defaults handled by the caller
+	sleep      func(time.Duration)
+	// launch restarts a dead epic watcher (the startWatcher-equivalent). nil => launchWatcher; a test injects a stub so
+	// no real process is spawned and the refused path is exercised (item 1).
+	launch func(epicDir string) error
+	// blocksPath is the per-terminal turn block-budget file (cox-rewake-<handle>.blocks). "" disables the budget (no
+	// handle to key it), so a block always reopens; a test sets it to a temp file to exercise the wedge release (item 1).
+	blocksPath string
 }
 
 // reopen ends the idle wait by opening a new turn: codex reads a stdout block decision (exit 0), every other harness
@@ -383,8 +467,20 @@ func (cfg rewakeCfg) reopen(msg string) int {
 	return 2
 }
 
-// runStopRewake is the testable core: peek every led epic's wake queue each poll up to maxWait, then decide the tick.
+// rewakeBlockBudget is how many times one turn may block on a dead-and-unrestartable watcher before the guard gives up
+// and lets the turn end (exit 0 with a warning), so a broken watcher can never wedge the leader (item 1, firstmate's
+// FM_CLAUDE_TURNEND_BLOCK_BUDGET). The budget resets when the next turn's prompt-drain runs.
+const rewakeBlockBudget = 3
+
+// runStopRewake is the testable core: first guard every led epic's watcher (item 1), then peek every led epic's wake
+// queue each poll up to maxWait and decide the tick.
 func runStopRewake(cfg rewakeCfg) int {
+	if code, proceed := cfg.guardWatchers(); !proceed {
+		return code
+	}
+	if len(cfg.epics) == 0 {
+		return 0 // nothing active to wait on
+	}
 	poll := cfg.poll
 	if poll <= 0 {
 		poll = 15 * time.Second
@@ -417,6 +513,124 @@ func runStopRewake(cfg rewakeCfg) int {
 		return cfg.reopen(msg)
 	}
 	return 0
+}
+
+// guardWatchers is the turn-boundary guard (item 1): before the leader waits, every led epic with an open story must
+// have a live, fresh watcher, or a leader turn ends blind over a dead watcher (the recurring "watcher dead, N stories
+// active" doctor ISSUE). For each such epic it restarts a dead watcher (the startWatcher-equivalent); a restart that
+// cannot take over (a live-but-wedged watcher, or a launch error) reopens the turn with the repair line so the leader
+// runs `cox watch --epic <dir> --replace`. That block is charged against a per-turn budget: once the budget is
+// exhausted the guard lets the turn end (exit 0 with a warning) so a broken watcher never wedges the leader. It returns
+// (exit code, proceed): proceed=true means run the wait loop; proceed=false means return the code now.
+func (cfg rewakeCfg) guardWatchers() (code int, proceed bool) {
+	restarted := false
+	var blocked []string
+	for _, ep := range cfg.guardEpics {
+		if watcherHealthy(ep, time.Now()) {
+			continue
+		}
+		if err := cfg.launchWatcher(ep); err == nil {
+			fmt.Fprintf(cfg.out, "cox: watcher for %s was not alive; restarted it (cox watch --epic %s)\n", filepath.Base(ep), ep)
+			restarted = true
+			continue
+		}
+		blocked = append(blocked, ep)
+	}
+	if len(blocked) > 0 {
+		count := bumpRewakeBlocks(cfg.blocksPath)
+		if cfg.blocksPath != "" && count > rewakeBlockBudget {
+			fmt.Fprintf(cfg.out, "cox: watcher for %s still not alive after %d blocks this turn; ending the turn to avoid a wedge - run: cox watch --epic %s --replace\n",
+				filepath.Base(blocked[0]), count-1, blocked[0])
+			return 0, false
+		}
+		return cfg.reopen(rewakeRepairMsg(blocked)), false
+	}
+	if restarted {
+		// A freshly restarted watcher now delivers wakes and rings the doorbell; end the turn (exit 0) so the leader is not
+		// held waiting on a watcher this same turn spawned, and the next Stop re-arms the waiter over the live watcher.
+		return 0, false
+	}
+	return 0, true
+}
+
+// launchWatcher restarts a dead epic watcher the way dispatch's startWatcher does (detached `cox watch --epic <dir>`),
+// returning an error when it cannot take over so the guard reopens with the repair line. A watcher pid that is still
+// alive (a wedged watcher whose lasttick is stale) is NOT killed here - the auto-restart never runs --replace - so it is
+// reported as a refusal and the leader is told to --replace it. cfg.launch overrides it in tests.
+func (cfg rewakeCfg) launchWatcher(epicDir string) error {
+	if cfg.launch != nil {
+		return cfg.launch(epicDir)
+	}
+	return launchWatcher(epicDir)
+}
+
+func launchWatcher(epicDir string) error {
+	if pid := readPid(watchPidPath(epicDir)); pid > 0 && processAlive(pid) {
+		return fmt.Errorf("watcher pid %d is alive but not ticking; run cox watch --epic %s --replace", pid, epicDir)
+	}
+	self, err := os.Executable()
+	if err != nil {
+		self = "cox"
+	}
+	cmd := exec.Command(self, "watch", "--epic", epicDir)
+	cmd.Stdout, cmd.Stderr = nil, nil
+	return cmd.Start()
+}
+
+// watcherHealthy reports whether the epic's watcher is alive AND fresh: its watch.pid names a live process and
+// watch/lasttick was written within 3 tick intervals (watch.DefaultPoll, the same constant the loop uses). A live
+// watcher whose beacon has gone stale is unhealthy (wedged), exactly as a dead one is (item 1).
+func watcherHealthy(epicDir string, now time.Time) bool {
+	pid := readPid(watchPidPath(epicDir))
+	if pid <= 0 || !processAlive(pid) {
+		return false
+	}
+	info, err := os.Stat(filepath.Join(epicDir, controlDir, "watch", "lasttick"))
+	if err != nil {
+		return false
+	}
+	return now.Sub(info.ModTime()) < 3*watch.DefaultPoll
+}
+
+// rewakeRepairMsg is the reopen text naming every blocked epic and the exact repair command.
+func rewakeRepairMsg(blocked []string) string {
+	var b strings.Builder
+	for _, ep := range blocked {
+		fmt.Fprintf(&b, "Watcher for %s is not alive; run: cox watch --epic %s --replace\n", filepath.Base(ep), ep)
+	}
+	return b.String()
+}
+
+// rewakeBlocksPath is the per-terminal turn block-budget file, or "" when there is no ORCA_TERMINAL_HANDLE to key it on
+// (the budget is best-effort, like the single-waiter lock).
+func rewakeBlocksPath(handle string) string {
+	if handle == "" {
+		return ""
+	}
+	return filepath.Join(tmpDir(), "cox-rewake-"+handle+".blocks")
+}
+
+// bumpRewakeBlocks increments and returns the per-turn block count. An empty path (no handle) returns 1 so a block
+// always reopens (no wedge protection without a handle, but never a false wedge-release either).
+func bumpRewakeBlocks(path string) int {
+	if path == "" {
+		return 1
+	}
+	n := 0
+	if b, err := os.ReadFile(path); err == nil {
+		n, _ = strconv.Atoi(strings.TrimSpace(string(b)))
+	}
+	n++
+	_ = os.WriteFile(path, []byte(strconv.Itoa(n)), 0o644)
+	return n
+}
+
+// resetRewakeBlocks clears the per-turn block budget. prompt-drain calls it at the start of a real turn so each turn
+// starts with a full budget (item 1).
+func resetRewakeBlocks(handle string) {
+	if p := rewakeBlocksPath(handle); p != "" {
+		_ = os.Remove(p)
+	}
 }
 
 // drainAll peeks every epic's unacked wakes and returns them merged (each wake carries its own epic name). A per-epic

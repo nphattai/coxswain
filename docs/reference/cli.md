@@ -25,7 +25,7 @@ and implementation file under `cmd/cox/` own its exact flags, validation, and ex
 
 | Task | Command family | Owner |
 |---|---|---|
-| Dispatch, park, resume, or terminate a story | `cox story` | `cmd/cox/story.go` |
+| Dispatch, park, resume, promote, or terminate a story | `cox story` | `cmd/cox/story.go` |
 | Send durable guidance | `cox steer` | `cmd/cox/steer.go`, `internal/protocol/inbox/` |
 | Apply a bounded control verb | `cox control` | `cmd/cox/control.go`, `internal/protocol/control/` |
 | Report progress or completion | `cox story report`, `cox status` | `cmd/cox/report.go`, `cmd/cox/status.go` |
@@ -43,7 +43,7 @@ and implementation file under `cmd/cox/` own its exact flags, validation, and ex
 | Recover an unconfirmed transition | `cox reconcile` | `cmd/cox/reconcile.go`, `internal/reconcile/` |
 | Inspect captain dashboard | `cox board` | `cmd/cox/board.go` |
 | Inspect scorecard or baseline evidence | `cox scorecard`, `cox baseline` | `cmd/cox/scorecard.go`, `cmd/cox/baseline.go` |
-| Inspect quota or route a story | `cox quota`, `cox route` | `cmd/cox/quota.go`, `cmd/cox/route.go` |
+| Inspect quota or route a story | `cox quota`, `cox route` (`--story`, `--candidates`, `--brief`) | `cmd/cox/quota.go`, `cmd/cox/route.go` |
 | Run a policy experiment | `cox lab` | `cmd/cox/lab.go`, `internal/lab/` |
 
 ## Audit and release
@@ -52,6 +52,7 @@ and implementation file under `cmd/cox/` own its exact flags, validation, and ex
 |---|---|---|
 | Audit a pull request | `cox audit` | `cmd/cox/audit.go`, `internal/verdict/` |
 | Gather release facts | `cox ship facts` | `cmd/cox/ship.go`, `internal/verdict/ship.go` |
+| Merge a green PR at its live head (captain-run) | `cox ship merge` | `cmd/cox/ship.go`, `internal/verdict/merge.go` |
 | Open or poll visual review | `cox review` | `cmd/cox/review.go`, `internal/adapter/review/` |
 | Manage story-owned services | `cox env` | `cmd/cox/env.go`, `internal/env/` |
 

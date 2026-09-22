@@ -169,17 +169,26 @@ type quotaAxiSemantics struct {
 }
 
 type quotaAxiScope struct {
-	Scope                     string         `json:"scope"`
-	Status                    string         `json:"status"`
-	EffectivePercentRemaining int            `json:"effectivePercentRemaining"`
-	BoundedBy                 []string       `json:"boundedBy"`
-	LimitingWindowIDs         []string       `json:"limitingWindowIds"`
-	Runway                    quotaAxiRunway `json:"runway"`
+	Scope                     string            `json:"scope"`
+	Status                    string            `json:"status"`
+	EffectivePercentRemaining int               `json:"effectivePercentRemaining"`
+	BoundedBy                 []string          `json:"boundedBy"`
+	LimitingWindowIDs         []string          `json:"limitingWindowIds"`
+	Runway                    quotaAxiRunway    `json:"runway"`
+	Selection                 quotaAxiSelection `json:"selection"`
 }
 
 type quotaAxiRunway struct {
 	Status              string `json:"status"`
 	UsableRunwaySeconds *int64 `json:"usableRunwaySeconds"`
+}
+
+// quotaAxiSelection carries quota-axi's spend-perspective ranker for a scope. SpendPriority is meaningful only when
+// Status is "known"; any other status (unknown, unmeasurable) leaves it absent so routing never reads a stale or missing
+// scalar as zero.
+type quotaAxiSelection struct {
+	Status        string   `json:"status"`
+	SpendPriority *float64 `json:"spendPriority"`
 }
 
 // parseQuotaAxi projects quota-axi JSON to Readings. Non-JSON, wrong schema, or a provider quota-axi did not return all
@@ -219,7 +228,11 @@ func parseQuotaAxi(data []byte, now time.Time) []Reading {
 // percent, runway, usable-runway-seconds, and the binding window's reset from that scope's effectiveAvailability entry.
 func providerReadings(h string, p quotaAxiProvider, observedAt string) []Reading {
 	if p.State.Status != "fresh" || p.State.Stale {
-		return []Reading{unknownReading(h, "", SourceQuotaAxi, providerUnknownReason(p.State), observedAt)}
+		r := unknownReading(h, "", SourceQuotaAxi, providerUnknownReason(p.State), observedAt)
+		if a := credentialAttention(p.State); a != "" {
+			r.Attention = a // a credential-attention provider is gate-1 ineligible for routing, distinct from mere staleness
+		}
+		return []Reading{r}
 	}
 	resets := map[string]string{}
 	for _, w := range p.Windows {
@@ -253,6 +266,12 @@ func providerReadings(h string, p quotaAxiProvider, observedAt string) []Reading
 		if ea.Runway.UsableRunwaySeconds != nil {
 			r.UsableRunwaySeconds = *ea.Runway.UsableRunwaySeconds
 		}
+		// spendPriority is quota-axi's own economics scalar; carry it only when the scope's selection is itself "known", so
+		// an unmeasurable selection stays absent (nil) rather than reading as 0 (DESIGN wave-4 item 10: unknown != zero).
+		if ea.Selection.Status == "known" && ea.Selection.SpendPriority != nil {
+			v := *ea.Selection.SpendPriority
+			r.SpendPriority = &v
+		}
 		if len(ea.LimitingWindowIDs) > 0 {
 			r.ResetsAt = resets[ea.LimitingWindowIDs[0]]
 		}
@@ -282,6 +301,26 @@ func providerUnknownReason(s quotaAxiState) string {
 		parts = append(parts, "remedy: "+s.RemedyCommand)
 	}
 	return strings.Join(parts, "; ")
+}
+
+// credentialAttention returns a short attention note when a provider's state indicates its credential needs attention
+// (auth required, keychain/login/token/credential), so routing's gate 1 can refuse that candidate for an auth reason
+// rather than treating it as ordinary staleness. It returns "" for a non-credential unknown (stale, generic error).
+func credentialAttention(s quotaAxiState) string {
+	hay := strings.ToLower(s.Status + " " + s.Error + " " + s.Reason)
+	for _, kw := range []string{"auth", "keychain", "login", "credential", "token", "sign_in", "signin", "unauthorized"} {
+		if strings.Contains(hay, kw) {
+			note := s.Error
+			if note == "" {
+				note = s.Reason
+			}
+			if note == "" {
+				note = s.Status
+			}
+			return "credential attention: " + note
+		}
+	}
+	return ""
 }
 
 func orUnknownRunway(status string) string {
