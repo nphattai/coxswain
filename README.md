@@ -118,6 +118,31 @@ You steer the whole crew by chatting with the leader; it escalates only real dec
   recorded the merge sha, released the worker, and closed the worktree.
 ```
 
+### Ship an epic
+
+The captain merges everything. `cox ship merge --pr <n> --epic <dir>` is the single merge command, so the
+green-at-the-live-head rule is enforced in code rather than remembered: through the forge it reads the PR live and
+merges only an open, non-draft, mergeable PR on the epic (or production) branch whose every check is green at the live
+head, pins that head so a push between the read and the merge is rejected, reads the result back, and appends a `merged`
+event to `ledger.jsonl`. It is refused from a worker terminal, and - while `merge.yolo` is false (the default) - refused
+unless the captain runs it with `--captain`. Add `--check` for a read-only dry run that prints the verdict and merges
+nothing (allowed against a real PR); exit codes are `0` merged, `1` refused (every failing reason listed), `3` unknown.
+
+Each story also carries a **delivery mode** resolved from policy (`delivery.mode`): `no-mistakes` (full gates + PR + wait
+for merge authority), `direct-PR` (push + PR, the default that matches today), or `local-only` (a clean ready branch, no
+push, wait). The brief prints `Delivery contract: mode=<mode> yolo=<on|off>`, and `cox story done --merge <sha>` refuses
+a sha that is not landed on the branch the mode requires.
+
+### Story kinds
+
+A story is one of two kinds (frontmatter `kind`, default `ship`). A **ship** story delivers a PR the captain merges. A
+**scout** story reports only - no PR: its deliverable is `<epic>/reports/<id>.md`. `cox epic stories --story id=repo:scout`
+renders one; its brief says "report only, no PR". `cox story done` refuses to complete a scout until that report exists,
+and `cox audit pr` and `cox state` skip the forge for it (they print `kind=scout report=<path|missing>` instead of a
+`gh pr view` error). When a scout's findings should become work, `cox story promote <id> --epic <dir> --mode <m>` flips it
+to a ship story, sets its delivery mode, appends a "Superseding contract" section to the story, and prints the `cox steer`
+command to deliver it to a running worker (it never sends the steer itself).
+
 ### Close an epic
 
 When an epic is done, `cox epic close --epic <dir>` tears it down and only archives its runtime once every step is

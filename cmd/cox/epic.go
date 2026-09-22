@@ -193,11 +193,16 @@ func storySpecs(epicDir string, storyFlags repoList) ([]epic.StorySpec, error) {
 	if len(storyFlags) > 0 {
 		var specs []epic.StorySpec
 		for _, s := range storyFlags {
-			id, repo, ok := strings.Cut(s, "=")
+			id, repoSpec, ok := strings.Cut(s, "=")
 			if !ok {
-				return nil, fmt.Errorf("--story must be id=repo, got %q", s)
+				return nil, fmt.Errorf("--story must be id=repo[:scout|:ship], got %q", s)
 			}
-			specs = append(specs, epic.StorySpec{ID: id, Repo: repo, Title: id})
+			// A repo token may carry a kind suffix, id=repo:scout (item 9). Default kind is ship.
+			repo, kind, hasKind := strings.Cut(repoSpec, ":")
+			if hasKind && kind != "scout" && kind != "ship" {
+				return nil, fmt.Errorf("--story kind must be scout|ship, got %q in %q", kind, s)
+			}
+			specs = append(specs, epic.StorySpec{ID: id, Repo: repo, Title: id, Kind: kind})
 		}
 		return specs, nil
 	}

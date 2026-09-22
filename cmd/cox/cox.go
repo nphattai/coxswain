@@ -325,6 +325,8 @@ type storyMeta struct {
 	Repo    string
 	Harness string
 	Model   string
+	Mode    string // delivery mode (item 8): no-mistakes|direct-PR|local-only; "" reads as direct-PR
+	Kind    string // story kind (item 9): ship|scout; "" reads as ship
 }
 
 // readStoryMeta parses id/repo/agent/harness/model from stories/<id>.md frontmatter (simple key: value).
@@ -361,9 +363,30 @@ func readStoryMeta(epicDir, story string) storyMeta {
 			}
 		case "model":
 			m.Model = v
+		case "mode":
+			m.Mode = v
+		case "kind":
+			m.Kind = v
 		}
 	}
 	return m
+}
+
+// storyMode returns the story's resolved delivery mode: its frontmatter `mode`, or DefaultDeliveryMode (direct-PR) when
+// unset (item 8).
+func storyMode(epicDir, story string) string {
+	if m := readStoryMeta(epicDir, story).Mode; m != "" {
+		return m
+	}
+	return workspace.DefaultDeliveryMode
+}
+
+// storyKind returns the story's kind: its frontmatter `kind`, or "ship" when unset (item 9).
+func storyKind(epicDir, story string) string {
+	if k := readStoryMeta(epicDir, story).Kind; k != "" {
+		return k
+	}
+	return "ship"
 }
 
 // envDuration parses a Go duration (e.g. "120s", "5m") from env var name, falling back to def when unset or unparsable.

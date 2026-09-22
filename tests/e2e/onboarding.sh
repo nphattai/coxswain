@@ -135,6 +135,16 @@ echo "$OUT" | grep -q "epic hello" && ok "epic listed" || no "epic not listed"
 echo "$OUT" | grep -q "watcher" && ok "watcher listed" || no "watcher not listed"
 echo "$OUT" | grep -q "hooks:" && ok "hooks listed" || no "hooks not listed"
 
+step "5c. cox ship merge --check reads the forge and reports unknown, never merging (item 8)"
+# No gh on PATH here, so the forge read fails: --check must print the verdict and exit 3 (unknown, retrieval failed),
+# never merge and never write a merged ledger row. This exercises the whole cox ship merge command path in the E2E
+# without a real GitHub (the fake forge covers the green/red/head-moved decision matrix in the unit tests).
+"$COX" ship merge --check --pr 1 --epic "$EPIC" > "$TMP/ship-merge.out" 2>&1; sc=$?
+cat "$TMP/ship-merge.out"
+[ $sc -eq 3 ] && ok "ship merge --check exit 3 (unknown, forge unreadable)" || no "ship merge --check exit $sc (want 3)"
+grep -q "verdict=unknown" "$TMP/ship-merge.out" && ok "ship merge --check printed verdict=unknown" || no "ship merge --check did not print the unknown verdict"
+if [ -f "$EPIC/ledger.jsonl" ] && grep -q '"type":"merged"' "$EPIC/ledger.jsonl"; then no "ship merge --check wrote a merged ledger row"; else ok "ship merge --check wrote no merged ledger row"; fi
+
 step "6. discard only .cox, cox epic attach reuses the surviving clean worktree"
 pkill -f "cox watch --epic $WS" 2>/dev/null || true
 REUSE_TGT="$(readlink "$EPIC/app")"

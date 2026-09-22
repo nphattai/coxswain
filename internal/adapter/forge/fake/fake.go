@@ -13,16 +13,21 @@ import (
 
 // Fixture is the on-disk shape (tests/fixtures/verdict/<name>/pr.json).
 type Fixture struct {
-	PR       forge.PR          `json:"pr"`
-	Diff     string            `json:"diff"`
-	Checks   []forge.Check     `json:"checks"`
-	Comments []forge.Comment   `json:"comments"`
-	Merged   bool              `json:"merged"`
-	Errors   map[string]string `json:"errors"` // method name ("pr","diff","checks","comments","merged") -> error text
+	PR        forge.PR          `json:"pr"`
+	Diff      string            `json:"diff"`
+	Checks    []forge.Check     `json:"checks"`
+	Comments  []forge.Comment   `json:"comments"`
+	Merged    bool              `json:"merged"`
+	HeadMoved bool              `json:"head_moved"` // when true, Merge fails as if the head moved since the read (pinned-sha reject)
+	Errors    map[string]string `json:"errors"`     // method name ("pr","diff","checks","comments","merged","merge") -> error text
 }
 
-// Forge replays a Fixture.
-type Forge struct{ F Fixture }
+// Forge replays a Fixture. merged tracks a successful Merge call so a read-back (Merged) after Merge reflects it, the way
+// the real forge would report the PR merged only after the merge landed.
+type Forge struct {
+	F      Fixture
+	merged bool
+}
 
 // Load reads a fixture JSON file.
 func Load(path string) (*Forge, error) {
@@ -72,5 +77,18 @@ func (f *Forge) Merged(pr forge.PR) (bool, error) {
 	if err := f.err("merged"); err != nil {
 		return false, err
 	}
-	return f.F.Merged, nil
+	return f.F.Merged || f.merged, nil
+}
+
+// Merge records a successful merge, or fails: an explicit errors["merge"] entry, or head_moved (the pinned-sha reject the
+// real forge returns when the head advanced between the read and the merge).
+func (f *Forge) Merge(pr forge.PR, method string) error {
+	if err := f.err("merge"); err != nil {
+		return err
+	}
+	if f.F.HeadMoved {
+		return fmt.Errorf("head moved: pull request head no longer %s", pr.Head)
+	}
+	f.merged = true
+	return nil
 }

@@ -32,6 +32,23 @@ func cmdAudit(args []string) int {
 	if *epicDir == "" || story == "" {
 		return usageErr("cox audit pr <story> --epic <dir> [--pr <n>] [--json]")
 	}
+	// A scout story has no PR (item 9, B-05): skip the forge entirely so `gh pr view` never errors, and report the
+	// report file's presence instead.
+	if storyKind(*epicDir, story) == "scout" {
+		report := filepath.Join(*epicDir, "reports", story+".md")
+		status := "missing"
+		if _, err := os.Stat(report); err == nil {
+			status = report
+		}
+		if *asJSON {
+			enc := json.NewEncoder(os.Stdout)
+			enc.SetIndent("", "  ")
+			_ = enc.Encode(map[string]any{"story": story, "kind": "scout", "report": status})
+		} else {
+			fmt.Printf("audit %s  kind=scout report=%s\n", story, status)
+		}
+		return 0
+	}
 	dir := readWorktree(*epicDir, story)
 	if dir == "" {
 		dir = *epicDir // fall back to the epic dir if the worktree is not recorded

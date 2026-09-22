@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -52,12 +53,12 @@ func TestStoryDone(t *testing.T) {
 	epic := t.TempDir()
 	appendWorking(t, epic, "s1")
 
-	if rc := storyDone([]string{"s1", "--epic", epic, "--merge", "abc123"}); rc != 0 {
+	if rc := storyDone([]string{"s1", "--epic", epic}); rc != 0 {
 		t.Fatalf("storyDone rc=%d, want 0", rc)
 	}
 	events, _, _ := state.Load(epic)
 	last := events[len(events)-1]
-	if last.From != state.Working || last.To != state.Completed || last.Evidence["merge"] != "abc123" || last.Actor != state.Leader {
+	if last.From != state.Working || last.To != state.Completed || last.Actor != state.Leader {
 		t.Fatalf("completed event wrong: %+v", last)
 	}
 	// Completing an already-completed story is refused (only working/input_required can complete).
@@ -67,6 +68,57 @@ func TestStoryDone(t *testing.T) {
 	// An unknown story is refused too.
 	if rc := storyDone([]string{"ghost", "--epic", epic}); rc == 0 {
 		t.Fatal("completing an unknown story should fail")
+	}
+}
+
+// Item 8c: `cox story done --merge <sha>` refuses a sha that is not landed on the branch the story's delivery mode
+// requires (here local-only -> the repo's production branch). Base-behavior probe: on the base sha done records ANY
+// --merge sha as evidence with no containment check, so the uncontained case below is (wrongly) accepted.
+func TestStoryDoneMergeContainment(t *testing.T) {
+	t.Setenv("ORCA_RUN_ID", "")
+	root := t.TempDir()
+	if _, err := workspace.Init(root, nil); err != nil {
+		t.Fatal(err)
+	}
+	// A git repo whose `production` branch holds one commit; a second commit on the default branch is NOT on production.
+	repo := t.TempDir()
+	gitT(t, repo, "init", "-q", "-b", "main")
+	gitT(t, repo, "config", "user.email", "t@t")
+	gitT(t, repo, "config", "user.name", "t")
+	writeFileT(t, filepath.Join(repo, "a"), "1")
+	gitT(t, repo, "add", "-A")
+	gitT(t, repo, "commit", "-q", "-m", "one")
+	onProd := gitOutT(t, repo, "rev-parse", "HEAD")
+	gitT(t, repo, "branch", "production")
+	writeFileT(t, filepath.Join(repo, "b"), "2")
+	gitT(t, repo, "add", "-A")
+	gitT(t, repo, "commit", "-q", "-m", "two")
+	offProd := gitOutT(t, repo, "rev-parse", "HEAD")
+	if err := workspace.AddRepo(root, workspace.Repo{Alias: "app", Path: repo, Production: "production"}); err != nil {
+		t.Fatal(err)
+	}
+
+	epic := filepath.Join(root, "proj", "epics", "slug")
+	if err := os.MkdirAll(filepath.Join(epic, "stories"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeStoryFM(t, epic, "s1", "---\nid: s1\nrepo: app\nmode: local-only\n---\nbody\n")
+	if err := saveWorktree(epic, "s1", repo, 1); err != nil {
+		t.Fatal(err)
+	}
+
+	// A sha not on production is refused.
+	appendWorking(t, epic, "s1")
+	if rc := storyDone([]string{"s1", "--epic", epic, "--merge", offProd}); rc == 0 {
+		t.Fatal("done --merge with a sha not on production must be refused (local-only)")
+	}
+	// A sha on production is accepted and recorded as evidence.
+	if rc := storyDone([]string{"s1", "--epic", epic, "--merge", onProd}); rc != 0 {
+		t.Fatalf("done --merge with a sha on production must be accepted, rc=%d", rc)
+	}
+	events, _, _ := state.Load(epic)
+	if last := events[len(events)-1]; last.To != state.Completed || last.Evidence["merge"] != onProd {
+		t.Fatalf("completed event wrong: %+v", last)
 	}
 }
 
@@ -228,6 +280,106 @@ func writeStory(t *testing.T, epic, id, repo string) {
 	if err := os.WriteFile(filepath.Join(dir, id+".md"), []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// Item 9: `cox story done` for a scout refuses without its report file and never requires --merge; with the report it
+// completes. Base-behavior probe: on the base sha there is no kind, so a scout completes with no report (wrongly).
+func TestScoutDoneRequiresReport(t *testing.T) {
+	t.Setenv("ORCA_RUN_ID", "")
+	epic := t.TempDir()
+	writeStoryFM(t, epic, "sc", "---\nid: sc\nrepo: app\nkind: scout\n---\nbody\n")
+	appendWorking(t, epic, "sc")
+
+	// No report yet: refused.
+	if rc := storyDone([]string{"sc", "--epic", epic}); rc == 0 {
+		t.Fatal("scout done without a report must be refused")
+	}
+	// Write the report; now it completes and records the report as evidence (no --merge needed).
+	if err := os.MkdirAll(filepath.Join(epic, "reports"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFileT(t, filepath.Join(epic, "reports", "sc.md"), "# scout report")
+	if rc := storyDone([]string{"sc", "--epic", epic}); rc != 0 {
+		t.Fatalf("scout done with a report rc=%d, want 0", rc)
+	}
+	events, _, _ := state.Load(epic)
+	if last := events[len(events)-1]; last.To != state.Completed || last.Evidence["report"] == nil {
+		t.Fatalf("scout completion must record the report: %+v", last)
+	}
+}
+
+// Item 9: `cox story promote` flips a scout to a ship story, sets the mode, and appends the Superseding contract section;
+// promoting a non-scout is refused. Base-behavior probe: on the base sha there is no `cox story promote` subcommand.
+func TestStoryPromote(t *testing.T) {
+	root := t.TempDir()
+	if _, err := workspace.Init(root, nil); err != nil {
+		t.Fatal(err)
+	}
+	epic := filepath.Join(root, "proj", "epics", "slug")
+	if err := os.MkdirAll(filepath.Join(epic, "stories"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeStoryFM(t, epic, "sc", "---\nid: sc\nrepo: app\nmode: direct-PR\nkind: scout\n---\n\n# sc\n")
+
+	if rc := storyPromote([]string{"sc", "--epic", epic, "--mode", "no-mistakes"}); rc != 0 {
+		t.Fatalf("promote rc=%d, want 0", rc)
+	}
+	b, err := os.ReadFile(filepath.Join(epic, "stories", "sc.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(b)
+	if !strings.Contains(text, "kind: ship") {
+		t.Errorf("promote must flip kind to ship:\n%s", text)
+	}
+	if !strings.Contains(text, "mode: no-mistakes") {
+		t.Errorf("promote must set the mode:\n%s", text)
+	}
+	if !strings.Contains(text, "Superseding contract") || !strings.Contains(text, "Delivery contract: mode=no-mistakes") {
+		t.Errorf("promote must append the superseding contract with the delivery line:\n%s", text)
+	}
+	if storyKind(epic, "sc") != "ship" {
+		t.Errorf("promoted story kind = %q, want ship", storyKind(epic, "sc"))
+	}
+	// Promoting a story that is already a ship is refused.
+	if rc := storyPromote([]string{"sc", "--epic", epic, "--mode", "direct-PR"}); rc == 0 {
+		t.Fatal("promoting a non-scout must be refused")
+	}
+}
+
+// writeStoryFM writes a story file with an explicit frontmatter block (for mode/kind tests).
+func writeStoryFM(t *testing.T, epic, id, content string) {
+	t.Helper()
+	dir := filepath.Join(epic, "stories")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, id+".md"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeFileT(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func gitT(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	if out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v: %s", args, err, out)
+	}
+}
+
+func gitOutT(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).Output()
+	if err != nil {
+		t.Fatalf("git %v: %v", args, err)
+	}
+	return strings.TrimSpace(string(out))
 }
 
 func appendWorking(t *testing.T, epic, id string) {

@@ -23,8 +23,9 @@
   },
   "delivery": {
     "style": "default",
-    "why": "workflow v3 (captain 2026-09-02): draft PR at the plan gate, one phase = one commit, push every phase.",
-    "review_when": "a project (e.g. pipo) declares style: pipo in its <project>/cox/policy.json: commits stay local, one final push, PR opened ready."
+    "mode": "direct-PR",
+    "why": "workflow v3 (captain 2026-09-02): draft PR at the plan gate, one phase = one commit, push every phase. mode direct-PR (item 8) matches today's behaviour: push + PR, no extra pipeline.",
+    "review_when": "a project declares style: pipo (commits stay local, one final push, PR opened ready) or a harder mode (no-mistakes: full gates; local-only: clean ready branch, no push) in its <project>/cox/policy.json."
   },
   "harness": {
     "leader": { "options": ["claude", "codex", "pi"], "default": "claude" },
@@ -47,6 +48,11 @@
   "routing": {
     "default": "policy",
     "review_when": "baseline rows >= 12 (3 stories x 2 harnesses x 2 conditions)"
+  },
+  "merge": {
+    "yolo": false,
+    "why": "captain 2026-09-21 (item 8): the captain merges everything. cox ship merge is refused unless --captain runs it, so the green-at-live-head rule is enforced rather than remembered; a worker or leader terminal never merges.",
+    "review_when": "a project trusts an unattended merge and flips yolo: true in its <project>/cox/policy.json, taking the risk of a non-captain merge."
   },
   "backend": {
     "orca": { "plane": "terminal", "launch_confirm_s": 60 }
