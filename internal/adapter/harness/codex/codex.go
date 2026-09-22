@@ -41,6 +41,7 @@ func (h *Harness) Card() harness.Capability {
 		BusySources:      []string{"codex-hook", "dispatch", "interrupt", "recovery"}, // inert until codex is armed; the codex-hook source is trusted only once busy_verified enables arming
 		Telemetry:        false,
 		Sandbox:          true,
+		Efforts:          []string{"low", "medium", "high", "xhigh"}, // codex accepts up to xhigh; max is model-specific and not offered generically (routing gate 2)
 		Instructions:     "AGENTS.md + markdown skills",
 	}
 }

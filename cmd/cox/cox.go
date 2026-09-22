@@ -327,15 +327,23 @@ type storyMeta struct {
 	Model   string
 	Mode    string // delivery mode (item 8): no-mistakes|direct-PR|local-only; "" reads as direct-PR
 	Kind    string // story kind (item 9): ship|scout; "" reads as ship
+	Route   string // routing match (item 10): "rule=<n>" | "override" | ""; written by the leader at decomposition
+	Effort  string // reasoning-effort class override (item 10): low|medium|high|xhigh|max; "" => the kind default
 }
 
 // readStoryMeta parses id/repo/agent/harness/model from stories/<id>.md frontmatter (simple key: value).
 func readStoryMeta(epicDir, story string) storyMeta {
-	var m storyMeta
 	b, err := os.ReadFile(filepath.Join(epicDir, "stories", story+".md"))
 	if err != nil {
-		return m
+		return storyMeta{}
 	}
+	return parseStoryMeta(b)
+}
+
+// parseStoryMeta reads the frontmatter subset dispatch and routing need from a story file's bytes, so a caller with a
+// brief path (cox route --brief) parses the same fields as a caller with a story id.
+func parseStoryMeta(b []byte) storyMeta {
+	var m storyMeta
 	inFM := false
 	for _, line := range strings.Split(string(b), "\n") {
 		t := strings.TrimSpace(line)
@@ -367,6 +375,10 @@ func readStoryMeta(epicDir, story string) storyMeta {
 			m.Mode = v
 		case "kind":
 			m.Kind = v
+		case "route":
+			m.Route = v
+		case "effort":
+			m.Effort = v
 		}
 	}
 	return m

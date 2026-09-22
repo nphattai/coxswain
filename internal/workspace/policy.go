@@ -6,8 +6,11 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/nphattai/coxswain/internal/adapter/harness"
 )
 
 // Meta is the mandatory justification every policy section carries: why the rule exists (a measurement or a captain
@@ -165,12 +168,89 @@ func (l *Launch) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
-// Routing is the harness routing default (ADR 0011). It is a review_when default, never a hard rule, so it carries no
-// `why` and is not one of the justified sections(): it only records the baseline bar under which routing may choose a
-// non-default harness. Below that bar routing filters the harness options by card fit and keeps the harness default.
+// RoutingProfile is one candidate in a rule's or the default profile array (DESIGN wave-4 item 10). Harness is required;
+// Model/Effort/Provider are optional; Floor is a reasoning-class name (one of harness.EffortClasses) the story's effort
+// must meet for this candidate to stay eligible (gate 2). The array is quota-ranked by spendPriority after the three
+// gates; array order never breaks a tie.
+type RoutingProfile struct {
+	Harness  string `json:"harness"`
+	Model    string `json:"model,omitempty"`
+	Effort   string `json:"effort,omitempty"`
+	Provider string `json:"provider,omitempty"`
+	Floor    string `json:"floor,omitempty"`
+}
+
+// RoutingRule is one captain-authored routing rule (DESIGN wave-4 item 10). When is the natural-language match condition
+// a model's judgment resolves (the leader at decomposition, or Jev's opt-in typed path); code never matches it. Profiles
+// is the non-empty candidate array applied after the match. Approval "captain" makes a matched rule escalate to the
+// captain before dispatch instead of routing; "" or "none" dispatches on the ranked candidate.
+type RoutingRule struct {
+	When     string           `json:"when"`
+	Profiles []RoutingProfile `json:"profiles"`
+	Approval string           `json:"approval,omitempty"` // "" | "none" | "captain"
+}
+
+// Routing is the worker-routing posture (ADR 0011 baseline default + DESIGN wave-4 item 10 rules). It stays a review_when
+// default (no `why`, not a justified section): below the baseline bar and with no matching rule, routing filters the
+// harness options by card fit and keeps the harness default. Rules and DefaultProfiles add the captain-authored posture a
+// model's judgment matches and code applies through the three gates and the spendPriority ranking. Effort maps a story
+// kind to its default reasoning-effort class; a story's own `effort:` frontmatter overrides it. MinRunwaySeconds is the
+// runway-feasibility floor (gate 3, default DefaultMinRunwaySeconds); TieEpsilon is the spendPriority tie band (default
+// DefaultTieEpsilon). Adding these fields never invalidates an existing policy (all optional, code defaults apply).
 type Routing struct {
-	Default    string `json:"default"`     // "policy": fall back to the harness default until the bar is met
-	ReviewWhen string `json:"review_when"` // the baseline-row bar that unlocks a non-default choice
+	Default          string            `json:"default"`     // "policy": fall back to the harness default until the bar is met
+	ReviewWhen       string            `json:"review_when"` // the baseline-row bar that unlocks a non-default choice
+	Rules            []RoutingRule     `json:"rules,omitempty"`
+	DefaultProfiles  []RoutingProfile  `json:"default_profiles,omitempty"`
+	Effort           map[string]string `json:"effort,omitempty"`             // story kind -> default reasoning-effort class
+	MinRunwaySeconds int64             `json:"min_runway_seconds,omitempty"` // gate-3 runway floor; <=0 => DefaultMinRunwaySeconds
+	TieEpsilon       float64           `json:"tie_epsilon,omitempty"`        // spendPriority tie band; <=0 => DefaultTieEpsilon
+}
+
+// Routing defaults (DESIGN wave-4 item 10), applied when policy declares none.
+const (
+	DefaultMinRunwaySeconds int64   = 4 * 60 * 60 // 4h runway-feasibility floor (gate 3)
+	DefaultTieEpsilon       float64 = 0.01        // spendPriority values within this band are a tie -> escalate
+)
+
+// Effort-by-kind code defaults (DESIGN wave-4 item 10): a scout needs the strongest reasoning (ambiguous investigation),
+// a ship story the least (well-understood work), an arena role sits between. Any other kind falls back to the ship
+// default. A story's `effort:` frontmatter overrides all of this.
+var defaultEffortByKind = map[string]string{"scout": "xhigh", "ship": "low", "arena": "high"}
+
+// EffortForKind resolves the default reasoning-effort class for a story kind: the policy routing.effort override for that
+// kind, else the code default, else the ship default. A story's own frontmatter effort wins over this (resolved by the
+// caller). A nil policy still yields the code default.
+func (p *Policy) EffortForKind(kind string) string {
+	if kind == "" {
+		kind = "ship"
+	}
+	if p != nil {
+		if e, ok := p.Routing.Effort[kind]; ok && strings.TrimSpace(e) != "" {
+			return strings.TrimSpace(e)
+		}
+	}
+	if e, ok := defaultEffortByKind[kind]; ok {
+		return e
+	}
+	return defaultEffortByKind["ship"]
+}
+
+// RoutingMinRunwaySeconds returns the gate-3 runway-feasibility floor in seconds, or DefaultMinRunwaySeconds when policy
+// is nil or the value is unset. A caller that could not load policy still gets the 4h floor.
+func (p *Policy) RoutingMinRunwaySeconds() int64 {
+	if p == nil || p.Routing.MinRunwaySeconds <= 0 {
+		return DefaultMinRunwaySeconds
+	}
+	return p.Routing.MinRunwaySeconds
+}
+
+// RoutingTieEpsilon returns the spendPriority tie band, or DefaultTieEpsilon when policy is nil or the value is unset.
+func (p *Policy) RoutingTieEpsilon() float64 {
+	if p == nil || p.Routing.TieEpsilon <= 0 {
+		return DefaultTieEpsilon
+	}
+	return p.Routing.TieEpsilon
 }
 
 // Alerts is the optional out-of-band notification policy (item 3, adapts firstmate's wedge alarm). channel is
@@ -508,11 +588,121 @@ func (p *Policy) Validate() error {
 	if !ValidDeliveryMode(strings.TrimSpace(p.Delivery.Mode)) {
 		problems = append(problems, fmt.Sprintf("delivery (invalid mode %q; want no-mistakes|direct-PR|local-only)", p.Delivery.Mode))
 	}
+	problems = append(problems, p.routingProblems()...)
 	if len(problems) == 0 {
 		return nil
 	}
 	sort.Strings(problems)
 	return fmt.Errorf("policy validation failed: %s", strings.Join(problems, "; "))
+}
+
+// providerIDRe is the provider-id shape a routing profile's/rule's `provider` must match when present (lower-case,
+// hyphen-separated), the same shape firstmate enforces so a fabricated provider name never selects a quota row.
+var providerIDRe = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
+
+// routingProblems reports every malformed routing rule or default profile, each naming its field, so a typo refuses
+// dispatch rather than being silently selected around (DESIGN wave-4 item 10). These are the card-free structural
+// checks; the card-fit checks (unknown harness, effort a card does not support) are ValidateRoutingCards, run at dispatch
+// where the capability cards are available. Order-stable for a deterministic message.
+func (p *Policy) routingProblems() []string {
+	var problems []string
+	for i, r := range p.Routing.Rules {
+		where := fmt.Sprintf("routing.rules[%d]", i)
+		if strings.TrimSpace(r.When) == "" {
+			problems = append(problems, where+" (missing when)")
+		}
+		switch r.Approval {
+		case "", "none", "captain":
+		default:
+			problems = append(problems, fmt.Sprintf("%s (invalid approval %q; want none|captain)", where, r.Approval))
+		}
+		problems = append(problems, profileArrayProblems(where+".profiles", r.Profiles, true)...)
+	}
+	if p.Routing.DefaultProfiles != nil {
+		problems = append(problems, profileArrayProblems("routing.default_profiles", p.Routing.DefaultProfiles, true)...)
+	}
+	for kind, e := range p.Routing.Effort {
+		if _, ok := harness.EffortRank(e); !ok {
+			problems = append(problems, fmt.Sprintf("routing.effort[%s] (unknown effort class %q; want %s)", kind, e, strings.Join(harness.EffortClasses, "|")))
+		}
+	}
+	return problems
+}
+
+// profileArrayProblems validates one profile array: non-empty (when requireNonEmpty), no duplicate (harness, model,
+// effort) triple, and each profile's fields well formed (harness required; effort/floor a known reasoning class; provider
+// matching providerIDRe). Each problem names its field.
+func profileArrayProblems(where string, profiles []RoutingProfile, requireNonEmpty bool) []string {
+	var problems []string
+	if requireNonEmpty && len(profiles) == 0 {
+		return []string{where + " (empty; a rule and the default need at least one profile)"}
+	}
+	seen := map[string]bool{}
+	for i, pr := range profiles {
+		at := fmt.Sprintf("%s[%d]", where, i)
+		if strings.TrimSpace(pr.Harness) == "" {
+			problems = append(problems, at+" (missing harness)")
+		}
+		if pr.Effort != "" {
+			if _, ok := harness.EffortRank(pr.Effort); !ok {
+				problems = append(problems, fmt.Sprintf("%s (unknown effort class %q; want %s)", at, pr.Effort, strings.Join(harness.EffortClasses, "|")))
+			}
+		}
+		if pr.Floor != "" {
+			if _, ok := harness.EffortRank(pr.Floor); !ok {
+				problems = append(problems, fmt.Sprintf("%s (unknown floor class %q; want %s)", at, pr.Floor, strings.Join(harness.EffortClasses, "|")))
+			}
+		}
+		if pr.Provider != "" && !providerIDRe.MatchString(pr.Provider) {
+			problems = append(problems, fmt.Sprintf("%s (invalid provider %q; want %s)", at, pr.Provider, providerIDRe.String()))
+		}
+		key := pr.Harness + "\x00" + pr.Model + "\x00" + pr.Effort
+		if seen[key] {
+			problems = append(problems, fmt.Sprintf("%s (duplicate profile harness=%s model=%s effort=%s)", at, pr.Harness, orDash(pr.Model), orDash(pr.Effort)))
+		}
+		seen[key] = true
+	}
+	return problems
+}
+
+func orDash(s string) string {
+	if s == "" {
+		return "-"
+	}
+	return s
+}
+
+// ValidateRoutingCards is the card-fit half of routing validation, run at dispatch where the capability cards are known:
+// every routing profile's harness must have a card (else it is an "unknown harness"), and the card must accept the
+// profile's effort (else "effort a card does not support"). It refuses dispatch naming the field, never selecting around
+// a bad profile (DESIGN wave-4 item 10). A nil policy is clean (nothing to validate).
+func (p *Policy) ValidateRoutingCards(cards map[string]harness.Capability) error {
+	if p == nil {
+		return nil
+	}
+	var problems []string
+	check := func(where string, profiles []RoutingProfile) {
+		for i, pr := range profiles {
+			at := fmt.Sprintf("%s[%d]", where, i)
+			card, ok := cards[pr.Harness]
+			if !ok {
+				problems = append(problems, fmt.Sprintf("%s (unknown harness %q: no capability card)", at, pr.Harness))
+				continue
+			}
+			if !card.CardAcceptsEffort(pr.Effort) {
+				problems = append(problems, fmt.Sprintf("%s (effort %q not supported by harness %q; card accepts %s)", at, pr.Effort, pr.Harness, strings.Join(card.Efforts, "|")))
+			}
+		}
+	}
+	for i, r := range p.Routing.Rules {
+		check(fmt.Sprintf("routing.rules[%d].profiles", i), r.Profiles)
+	}
+	check("routing.default_profiles", p.Routing.DefaultProfiles)
+	if len(problems) == 0 {
+		return nil
+	}
+	sort.Strings(problems)
+	return fmt.Errorf("routing profile validation failed: %s", strings.Join(problems, "; "))
 }
 
 // LoadPolicy reads and parses <ws>/cox/policy.json and validates it. An invalid policy (a section without why or

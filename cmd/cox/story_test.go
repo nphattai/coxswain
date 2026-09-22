@@ -9,6 +9,7 @@ import (
 
 	"github.com/nphattai/coxswain/internal/adapter/backend"
 	"github.com/nphattai/coxswain/internal/adapter/backend/fake"
+	"github.com/nphattai/coxswain/internal/routing"
 	"github.com/nphattai/coxswain/internal/state"
 	"github.com/nphattai/coxswain/internal/workspace"
 )
@@ -267,6 +268,51 @@ func TestDispatchArmsClaudeNotCodexByDefault(t *testing.T) {
 	pol.Harness.BusyVerified = true
 	if gen, err := armWorkerBusy(epic, "s3", "codex", t.TempDir(), pol); err != nil || gen == "" {
 		t.Fatalf("codex with busy_verified arm = (%q, %v), want a gen and no error", gen, err)
+	}
+}
+
+// Item 10: dispatch stops (no spawn, non-zero) when routing escalates - here a matched rule whose whole array reads
+// exhausted_now, so no candidate is rankable. Base-behavior probe: on the base sha routing has no rules/gates, so an auto
+// story would dispatch on the ladder default rather than escalate.
+func TestDispatchStopsOnRoutingEscalate(t *testing.T) {
+	t.Setenv("ORCA_RUN_ID", "")
+	epic := ruledWorkspaceQuota(t, allTightQuotaAxiJSON, "---\nid: s\nharness: auto\nroute: rule=1\nkind: ship\n---\nbody\n")
+	rc := storyDispatch([]string{"s", "--epic", epic})
+	if rc == 0 {
+		t.Fatal("a routing escalate must stop dispatch (non-zero), not spawn")
+	}
+	// Nothing was dispatched: no working/submitted event was written.
+	if events, _, _ := state.Load(epic); len(events) != 0 {
+		t.Fatalf("escalate must not record a dispatch event, got %d", len(events))
+	}
+}
+
+// Item 10: evidence.route records the rule, resolver, chosen harness/model/effort, the spendPriority behind the pick, and
+// the candidate count, so a routed dispatch is auditable. This checks the recorded shape directly (a full spawn needs a
+// backend).
+func TestRouteEvidenceShape(t *testing.T) {
+	sp := 0.7
+	conf := 0.92
+	ch := routing.Choice{
+		Harness: "codex", Model: "gpt-5.6-sol", Effort: "low", Rule: "rule=1", Resolver: "jev",
+		SpendPriority: &sp, Confidence: &conf,
+		Candidates: []routing.Candidate{{Harness: "claude"}, {Harness: "codex"}},
+	}
+	ev := routeEvidence(&ch)
+	route, ok := ev["route"].(map[string]any)
+	if !ok {
+		t.Fatalf("evidence.route must be a map, got %T", ev["route"])
+	}
+	for k, want := range map[string]any{
+		"rule": "rule=1", "resolver": "jev", "harness": "codex", "model": "gpt-5.6-sol",
+		"effort": "low", "candidates_considered": 2, "spendPriority": 0.7, "confidence": 0.92,
+	} {
+		if route[k] != want {
+			t.Errorf("evidence.route[%q] = %v, want %v", k, route[k], want)
+		}
+	}
+	if routeEvidence(nil) != nil {
+		t.Fatal("routeEvidence(nil) must be nil (a fixed dispatch carries no route evidence)")
 	}
 }
 

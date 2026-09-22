@@ -77,12 +77,20 @@ func storyDispatch(args []string) int {
 	// capability cards, quota, and the baseline table, and the Choice is recorded as evidence.route on the working
 	// event so the decision is auditable. An explicit --harness or a fixed frontmatter harness skips routing.
 	var routeChoice *routing.Choice
-	if *harnessFlag == "" && meta.Harness == "auto" {
+	// Route when the story asks to be routed (`harness: auto`) or carries a leader-written `route:` match, and no captain
+	// --harness override is present (an override is the top of the precedence and skips routing). A matched rule lets a
+	// pinned story be checked against the rule (a pin the rule forbids is refused).
+	if *harnessFlag == "" && (meta.Harness == "auto" || meta.Route != "") {
 		ch, err := routeStory(*epicDir, story)
 		if err != nil {
 			return fail("route %s: %v", story, err)
 		}
 		routeChoice = &ch
+		// A profile array that cannot resolve to one candidate stops dispatch with a captain-facing question (no spawn); the
+		// route is not invented around a tie, an approval gate, or a tight fleet (DESIGN wave-4 item 10).
+		if ch.Escalate {
+			return routeEscalate(story, ch)
+		}
 		fmt.Printf("routed %s -> harness=%s (%s)\n", story, ch.Harness, strings.Join(ch.Reasons, "; "))
 	}
 	harnessName := nonEmpty(*harnessFlag, routedHarness(routeChoice, nonEmpty(meta.Harness, "claude")))
@@ -218,13 +226,41 @@ func routedModel(ch *routing.Choice) string {
 	return ""
 }
 
-// routeEvidence records the routing Choice under evidence.route on the working event, or nil when the story was not
-// routed (a fixed-harness dispatch carries no route evidence).
+// routeEvidence records the route under evidence.route on the working event, or nil when the story was not routed (a
+// fixed-harness dispatch with no rule carries no route evidence). The recorded shape names the rule, the resolver, the
+// confidence (typed path), the chosen harness/model/effort, the spendPriority behind the pick, and how many candidates
+// were considered - so the decision is auditable (DESIGN wave-4 item 10c).
 func routeEvidence(ch *routing.Choice) map[string]any {
 	if ch == nil {
 		return nil
 	}
-	return map[string]any{"route": ch}
+	route := map[string]any{
+		"rule":                  ch.Rule,
+		"resolver":              nonEmpty(ch.Resolver, "none"),
+		"harness":               ch.Harness,
+		"model":                 ch.Model,
+		"effort":                ch.Effort,
+		"candidates_considered": len(ch.Candidates),
+	}
+	if ch.Confidence != nil {
+		route["confidence"] = *ch.Confidence
+	}
+	if ch.SpendPriority != nil {
+		route["spendPriority"] = *ch.SpendPriority
+	}
+	return map[string]any{"route": route}
+}
+
+// routeEscalate stops dispatch when routing cannot resolve one candidate: it prints a `cox story report question`-shaped
+// message for the captain and returns non-zero without spawning. The candidates are listed so the captain sees why.
+func routeEscalate(story string, ch routing.Choice) int {
+	fmt.Fprintf(os.Stderr, "route %s: ESCALATE - %s\n", story, ch.EscalateReason)
+	for _, c := range ch.Candidates {
+		fmt.Fprintf(os.Stderr, "  candidate: %s:%s -> %s\n", c.Harness, nonEmpty(c.Model, "-"), c.Reason)
+	}
+	fmt.Fprintf(os.Stderr, "cox will not dispatch %s. Ask the captain to rule:\n", story)
+	fmt.Fprintf(os.Stderr, "  cox story report question %s \"routing escalated: %s\"\n", story, ch.EscalateReason)
+	return 1
 }
 
 // warnParallelSameRepo prints a warning when another story in the same repo alias is already working and the policy has

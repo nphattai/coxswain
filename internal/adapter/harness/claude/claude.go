@@ -35,7 +35,8 @@ func (h *Harness) Card() harness.Capability {
 		BusySources:      []string{"claude-hook", "dispatch", "interrupt", "recovery"}, // the worker hook, plus the leader-side writers every card trusts
 		Telemetry:        true,
 		Sandbox:          false,
-		UnsandboxedAck:   true, // captain ruling: claude workers run bypassPermissions autonomously; unsandboxed dispatch is accepted
+		UnsandboxedAck:   true,                                              // captain ruling: claude workers run bypassPermissions autonomously; unsandboxed dispatch is accepted
+		Efforts:          []string{"low", "medium", "high", "xhigh", "max"}, // reasoning-effort classes claude accepts (routing gate 2)
 		Instructions:     "plugin skills + AGENTS.md",
 	}
 }

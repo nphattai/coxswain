@@ -56,6 +56,17 @@ type Reading struct {
 	ObservedAt          string   `json:"observed_at,omitempty"` // RFC3339 when the projection was read
 	Reason              string   `json:"reason,omitempty"`      // why unknown (empty when Known), or a health note
 	WindowIDs           []string `json:"window_ids,omitempty"`
+	// SpendPriority is quota-axi's inspectable spend-perspective ranker for this scope (selection.spendPriority, schema
+	// 5): higher is better (paid allowance on track to reach reset unused; 0 is exact utilization; negative is overdrawn).
+	// It is a pointer so absent/unmeasurable ("selection.status" != "known") is distinct from 0, which is a real value:
+	// routing ranks eligible candidates by it and treats a nil SpendPriority as unrankable, never as zero (DESIGN wave-4
+	// item 10). It is meaningful only when Known.
+	SpendPriority *float64 `json:"spend_priority,omitempty"`
+	// Attention is a credential/auth attention note (quota-axi's attention facts, e.g. keychain_prompt_required): non-empty
+	// when the provider's own state says its credential needs attention, so routing's eligibility gate can refuse a
+	// candidate whose provider cannot be read for an auth reason with that reason, distinct from mere staleness (DESIGN
+	// wave-4 item 10 gate 1). Empty means no credential attention.
+	Attention string `json:"attention,omitempty"`
 }
 
 // Provider fills the contract from one source. Read runs the source (a quota-axi invocation, a manual file scan) and
