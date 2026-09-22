@@ -64,7 +64,59 @@ type Capability struct {
 	// card-notice gate generic: it branches on "authorized?" (this field OR the flag), never on a harness name. It is
 	// authorization, never confinement - it does not mean the harness is sandboxed.
 	UnsandboxedAck bool
-	Instructions   string // how Package() renders instructions for this harness
+	// Efforts is the reasoning-effort ladder this harness accepts (a subset of EffortClasses), weakest to strongest. It
+	// is the authority routing uses to validate a profile's `effort` and its reasoning-class `floor` (DESIGN wave-4 item
+	// 10 gate 2): a profile whose effort a card does not list is refused, never routed around. Empty means the harness
+	// accepts any of EffortClasses (no known restriction). It is card data, never a name branch.
+	Efforts      []string
+	Instructions string // how Package() renders instructions for this harness
+}
+
+// EffortClasses is the reasoning-effort ladder, weakest to strongest, shared by every harness and by routing's
+// reasoning-class floor gate (DESIGN wave-4 item 10). It never branches on a harness name; a card narrows the ladder it
+// accepts through Capability.Efforts, and a profile's `floor` names a class here that the story's `effort` must meet.
+var EffortClasses = []string{"low", "medium", "high", "xhigh", "max"}
+
+// EffortRank returns the ladder position of a reasoning-effort class (0-based, higher is stronger) and whether it is a
+// known class. An unknown class is not comparable, so a floor gate treats it as a validation error rather than silently
+// passing or failing it.
+func EffortRank(class string) (int, bool) {
+	for i, c := range EffortClasses {
+		if c == class {
+			return i, true
+		}
+	}
+	return -1, false
+}
+
+// EffortMeets reports whether a story's effort meets a profile's reasoning-class floor: both must be known classes and
+// effort's rank must be >= floor's. An empty floor is no floor (always met). ok is false when either class is unknown,
+// so the caller surfaces a validation error rather than a silent gate result.
+func EffortMeets(effort, floor string) (meets, ok bool) {
+	if floor == "" {
+		return true, true
+	}
+	er, eok := EffortRank(effort)
+	fr, fok := EffortRank(floor)
+	if !eok || !fok {
+		return false, false
+	}
+	return er >= fr, true
+}
+
+// CardAcceptsEffort reports whether a capability card accepts a reasoning-effort class. An empty Efforts list means the
+// harness places no known restriction (any EffortClasses value is accepted); an empty effort is always accepted (the
+// caller resolves the default elsewhere).
+func (c Capability) CardAcceptsEffort(effort string) bool {
+	if effort == "" || len(c.Efforts) == 0 {
+		return true
+	}
+	for _, e := range c.Efforts {
+		if e == effort {
+			return true
+		}
+	}
+	return false
 }
 
 // Brief is the launch payload for a worker or leader. StoryPath is the file the agent reads in full; ContextPath is

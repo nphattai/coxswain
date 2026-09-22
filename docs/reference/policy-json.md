@@ -93,10 +93,38 @@ every check is green at the live head, pins that head to the forge, and reads th
 
 ### `routing`
 
+The baseline default (ADR 0011) plus the captain-authored routing rules (DESIGN wave-4 item 10). The rule *match* is a
+model's judgment (the leader at decomposition, or the opt-in Jev typed path in `cox route --brief`); code never matches a
+`when`. After the match, code owns the mechanical part: validation at load, the three gates, the `spendPriority` ranking,
+and the escalation. A malformed rule refuses dispatch and names the field; it is never selected around.
+
 | Field | Type | Meaning |
 |---|---|---|
 | `default` | string | `"policy"`: fall back to the harness default until the baseline bar is met. |
 | `review_when` | string | The baseline-row bar that unlocks a non-default choice. |
+| `rules` | array | Captain-authored routing rules, each matched by a model's judgment and applied by code. |
+| `default_profiles` | array | The profile array used when no rule matches (or the leader's `route: override`); same shape as a rule's `profiles`. |
+| `effort` | object | Story-kind → default reasoning-effort class (`scout` → `xhigh`, `ship` → `low`, `arena` → `high` when unset); a story's `effort:` frontmatter overrides it. |
+| `min_runway_seconds` | int | Gate-3 runway-feasibility floor: a `projected_exhaustion` reading with less usable runway than this is ineligible. Default 14400 (4h). |
+| `tie_epsilon` | number | `spendPriority` values within this band are a genuine tie and escalate to the captain rather than being broken by array order. Default 0.01. |
+
+Each entry in `rules` is an object:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `when` | string | The natural-language match condition a model's judgment resolves; code never matches it. |
+| `approval` | string | `"captain"` makes a matched rule escalate for the captain's explicit approval before dispatch; `"none"` or absent dispatches on the ranked candidate. |
+| `profiles` | array | The non-empty candidate array applied after the match (each candidate is a profile object below). |
+
+Each profile object (in `rules[].profiles` and in `default_profiles`) is:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `harness` | string | Required. The harness this candidate runs on; it must have a capability card. |
+| `model` | string | Optional model id for this candidate. |
+| `effort` | string | Optional reasoning-effort class for this candidate; the card must accept it. |
+| `provider` | string | Optional quota provider id (lower-case, hyphen-separated) when it differs from the harness. |
+| `floor` | string | Optional reasoning-class floor (one of `low`\|`medium`\|`high`\|`xhigh`\|`max`) the story's effort must meet, else the candidate is ineligible (gate 2). |
 
 ### `backend`
 

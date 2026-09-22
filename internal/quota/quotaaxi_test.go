@@ -61,9 +61,27 @@ func TestParseSchema5Mixed(t *testing.T) {
 	if !strings.Contains(claude.Reason, "keychain") || !strings.Contains(claude.Reason, "remedy:") {
 		t.Fatalf("claude reason should carry keychain + remedy: %q", claude.Reason)
 	}
+	// The auth_required provider carries a credential-attention note so routing's gate 1 can refuse it for an auth reason,
+	// distinct from mere staleness (item 10).
+	if claude.Attention == "" || !strings.Contains(claude.Attention, "credential attention") {
+		t.Fatalf("auth_required provider must set a credential-attention note: %q", claude.Attention)
+	}
 	codex, ok := findReading(rs, "codex", "")
 	if !ok || !codex.Known || codex.Runway != RunwayThroughReset || codex.UsableRunwaySeconds != NoRunway {
 		t.Fatalf("codex all_models: %+v", codex)
+	}
+	// spendPriority is projected from selection.spendPriority when the scope's selection is "known" (item 10 ranker).
+	if codex.SpendPriority == nil || *codex.SpendPriority != 0.005 {
+		t.Fatalf("codex all_models spendPriority = %v, want 0.005", codex.SpendPriority)
+	}
+	// A stale provider carries no credential attention (staleness is uncertainty, not an auth block).
+	if codex.Attention != "" {
+		t.Fatalf("a fresh reading must not carry credential attention: %q", codex.Attention)
+	}
+	// The codex model:* scope reports selection.status unknown in the fixture, so its spendPriority stays absent (unknown
+	// != zero).
+	if m, ok := findReading(rs, "codex", "codex_bengalfox"); ok && m.SpendPriority != nil {
+		t.Fatalf("an unmeasurable selection must leave spendPriority nil, got %v", m.SpendPriority)
 	}
 }
 

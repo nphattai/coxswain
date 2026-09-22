@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/nphattai/coxswain/internal/adapter/harness"
 	"github.com/nphattai/coxswain/internal/adapter/harness/registry"
 	"github.com/nphattai/coxswain/internal/quota"
 	"github.com/nphattai/coxswain/internal/routing"
+	"github.com/nphattai/coxswain/internal/workspace"
 )
 
 // cmdRoute implements `cox route --story <id> --epic <dir> [--json]`: it prints the harness/model routing would pick
@@ -89,16 +91,31 @@ func routeStory(epicDir, story string) (routing.Choice, error) {
 		h, _ := registry.Adapter(name)
 		cards[name] = h.Card()
 	}
-	cardList := make([]harness.Capability, 0, len(cards))
-	for _, name := range registry.Names() {
-		cardList = append(cardList, cards[name])
-	}
 	rows, err := routing.ParseBaselines(baselinesDir(epicDir))
 	if err != nil {
 		return routing.Choice{}, fmt.Errorf("parse baselines: %w", err)
 	}
-	in := routing.Story{ID: story, Harness: meta.Harness, Model: modelAlias(meta.Model), Role: harness.RoleWorker}
-	return routing.Decide(in, pol, cards, quota.Readings(cardList), rows), nil
+	// Refuse dispatch on a routing profile whose harness has no card or whose effort the card rejects (the card-fit half
+	// of routing validation; the structural half runs at policy.Load). Named field, never selected around.
+	if err := pol.ValidateRoutingCards(cards); err != nil {
+		return routing.Choice{}, err
+	}
+	in := routing.Story{
+		ID: story, Harness: meta.Harness, Model: modelAlias(meta.Model), Role: harness.RoleWorker,
+		Route: meta.Route, Effort: storyEffort(pol, meta), Kind: nonEmpty(meta.Kind, "ship"),
+	}
+	// The rules path gates over the live quota reading; the baseline ladder reads it observe-only (ADR 0011).
+	return routing.Decide(in, pol, cards, mergedQuotaReadings(epicDir), rows), nil
+}
+
+// storyEffort resolves the reasoning-effort class a story routes at: its `effort:` frontmatter when set, else the policy
+// default for its kind (routing.effort[kind], else the code default: scout xhigh, ship low, arena high). (DESIGN wave-4
+// item 10.)
+func storyEffort(pol *workspace.Policy, meta storyMeta) string {
+	if e := strings.TrimSpace(meta.Effort); e != "" {
+		return e
+	}
+	return pol.EffortForKind(nonEmpty(meta.Kind, "ship"))
 }
 
 // baselinesDir returns <workspace>/docs/baselines, or "" when no workspace root is found (routing then sees no rows and
