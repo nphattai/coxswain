@@ -34,9 +34,11 @@ This table is checked against `internal/adapter/harness/pi.Harness.Card()` by
   provider-less model, or an unsupported `--thinking` level, fails before spawn with a bounded diagnostic.
 - A dispatched worker cannot answer the interactive workspace-trust dialog, so launch marks the cox-created worktree
   trusted with `--approve` (Pi's per-run trust). Coxswain never mutates user-level Pi configuration.
-- Push wake and automatic checkpoint are delivered by the project-local extension installed with
-  `cox workspace hooks --harness pi` (hash-verifiable, under `.pi/extensions/`). Worker launch loads it explicitly with
-  `--no-extensions -e <path>`, so worker correctness does not depend on project trust or ambient discovery.
+- Push wake and automatic checkpoint are delivered by the project-local, hash-verifiable extension under
+  `.pi/extensions/`. `cox workspace init` installs it once per workspace for the leader (unbound; see
+  [Leader install and hooks](#leader-install-and-hooks)); `cox workspace hooks --harness pi [--epic <dir>]` (re)installs
+  it. Worker launch loads it explicitly with `--approve -e <path>`, so the user's global Pi packages still load and
+  worker correctness does not depend on ambient discovery.
 - **Reduced mode.** If the extension is missing, its hash is unverified, or it fails to load, dispatch downgrades the
   effective card to pull/manual through the card-notice path (the leader must run `cox wake wait`; the worker must write
   `cox checkpoint facts` at each phase boundary). The reduced mode is emitted, never inferred from the static card.
@@ -60,6 +62,32 @@ This table is checked against `internal/adapter/harness/pi.Harness.Card()` by
   carries `BackendInterrupt: false`. `cox control interrupt` still sends the keystroke (the fallback) and additionally
   delivers a durable `interrupt` inbox record; the extension aborts the running turn via the Pi extension API
   (`ctx.abort()`) when it sees that record. See [Handoff](../handoff.md).
+
+## Leader install and hooks
+
+The Pi leader is a workspace-level peer of a Claude/Codex leader. `cox workspace init` installs the extension into
+`<ws>/.pi/extensions/` **without** an epic marker (an *unbound* leader) and adds `.pi/extensions/` to `<ws>/.gitignore`
+(per-machine, never committed - captain ruling 2026-09-23). `cox workspace hooks --harness pi` does the same without
+`--epic`; `--epic <dir>` binds one epic instead. A driver upgrade needs `cox workspace init` again; `cox doctor` reports
+an ISSUE with the repair `cox workspace init` when the installed extension is missing or its hash differs from the
+running binary's.
+
+An unbound leader supervises **every** active epic of the workspace - the same set `cox hook` resolves - and picks up an
+epic opened or closed mid-session without a restart. The extension maps Pi lifecycle events onto the same Go-owned leader
+hooks the Claude/Codex leader hooks run, so the Go side stays the single owner of what a wake means:
+
+| Pi event | cox hook | Behaviour |
+|---|---|---|
+| `before_agent_start` | `cox hook prompt-drain` | drain every active epic's unread wakes (a per-epic header names each) and inject them as turn context; the pending idle child is retired first so a wake is delivered once |
+| `agent_settled` | `cox hook stop-rewake` | wait for a wake while idle, then reopen the turn with one visible follow-up; run the turn-boundary watcher guard (restart a dead watcher, or surface the `cox watch --replace` repair line) |
+| `session_before_compact` | `cox hook precompact` | persist the per-epic leader checkpoint before compaction |
+| `session_start` | `cox hook session-start` | inject the recovery checkpoint on start/resume |
+
+The reopen loop is bounded: the extension threads a stable per-session handle (`ORCA_TERMINAL_HANDLE`, else a stable Pi
+session id) so the cox-firstmate turn-boundary block budget (3 blocks per turn, then the turn ends with a warning)
+applies, and it caps per-turn reopens as a client-side backstop. A hook exit 2 is always surfaced as a visible block,
+never swallowed. Only one cox extension is active per Pi process: if the worktree also carries a project-local
+`.pi/extensions/`, the second load stays inert - one wake child, one busy writer, one checkpoint per event.
 
 The executable owners are `internal/adapter/harness/pi/` (card, launch, provider/model validation, telemetry,
 extension packaging), `internal/adapter/harness/pi/extension/` (the Pi extension + its deterministic lifecycle suite),

@@ -160,6 +160,31 @@ func TestParityCatchesNestedCollision(t *testing.T) {
 	}
 }
 
+// The Pi adapter doc must document the workspace-level leader parity (DESIGN item 7): the unbound install via
+// `cox workspace init`, the gitignored `.pi/extensions/`, that an unbound leader supervises every active epic, and the
+// four Go-owned leader hooks it drives. These strings are absent on the base sha, so this fails until the docs land.
+func TestPiAdapterDocumentsLeaderParity(t *testing.T) {
+	b, err := os.ReadFile("../../docs/adapters/pi.md")
+	if err != nil {
+		t.Fatalf("read pi.md: %v", err)
+	}
+	doc := string(b)
+	for _, want := range []string{
+		"cox workspace init",               // unbound leader install
+		".pi/extensions/",                  // the install location / gitignore
+		"every** active epic",              // unbound leader supervises every active epic
+		"cox hook prompt-drain",            // leader hook parity
+		"cox hook stop-rewake",             //
+		"cox hook precompact",              //
+		"cox hook session-start",           //
+		"cox workspace hooks --harness pi", // (re)install without --epic
+	} {
+		if !strings.Contains(doc, want) {
+			t.Errorf("docs/adapters/pi.md must document the Pi leader parity: missing %q", want)
+		}
+	}
+}
+
 // storyFrontmatterKeys is the frontmatter contract: every key the story template renders, plus `harness`, the alias the
 // story-meta reader (cmd/cox: readStoryMeta) accepts for `agent`. Adding a key to templates/story.md's frontmatter fails
 // this test until docs/reference/story-frontmatter.md documents it.
