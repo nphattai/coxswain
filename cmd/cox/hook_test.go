@@ -658,26 +658,35 @@ func TestLeaderSessionStartSilentWithoutCheckpoint(t *testing.T) {
 	}
 }
 
-// stubWatcher points launchWatcher at a shell script standing in for `cox watch --epic <dir>` and shortens the confirm
-// window. body runs with $3 = the epic dir.
-func stubWatcher(t *testing.T, body string) {
+// stubWatcher points launchWatcher at a shell script standing in for `cox watch --epic <dir>` with confirm window wait.
+// body runs with $3 = the epic dir. The stub records its pid ($$ survives exec) and cleanup kills it, so a stub that
+// outlives its test (launchWatcher never stops a confirmed or refused watcher) leaves no stray process behind.
+func stubWatcher(t *testing.T, wait time.Duration, body string) {
 	t.Helper()
-	bin := filepath.Join(t.TempDir(), "coxwatch")
-	mustWrite(t, bin, "#!/bin/sh\n"+body+"\n")
+	dir := t.TempDir()
+	bin, pidFile := filepath.Join(dir, "coxwatch"), filepath.Join(dir, "pid")
+	mustWrite(t, bin, "#!/bin/sh\necho $$ > '"+pidFile+"'\n"+body+"\n")
 	if err := os.Chmod(bin, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	prevExe, prevWait := watcherExe, watcherConfirmWait
 	watcherExe = func() (string, error) { return bin, nil }
-	watcherConfirmWait = 5 * time.Second
-	t.Cleanup(func() { watcherExe, watcherConfirmWait = prevExe, prevWait })
+	watcherConfirmWait = wait
+	t.Cleanup(func() {
+		watcherExe, watcherConfirmWait = prevExe, prevWait
+		if pid := readPid(pidFile); pid > 0 {
+			if p, err := os.FindProcess(pid); err == nil {
+				_ = p.Kill() // already exited (and reaped by launchWatcher) is fine
+			}
+		}
+	})
 }
 
 // Dogfood F-10: a restarted watcher that exits at once (a fresh epic with no .cox/run: "watch needs a live backend") is
 // NOT "restarted" - the guard takes the repair/exit-2 path. On beedd57 launchWatcher only checked cmd.Start(), reported
 // "restarted", exited 0, and the Pi extension re-armed into the same dead restart: 35k cox calls in 320s.
 func TestGuardRestartThatDiesAtOnceIsNotRestarted(t *testing.T) {
-	stubWatcher(t, "exit 1")
+	stubWatcher(t, 10*time.Second, "exit 1")
 	epic := t.TempDir()
 	var out bytes.Buffer
 	code := runStopRewake(rewakeCfg{epics: []string{epic}, guardEpics: []string{epic}, out: &out, sleep: noSleep})
@@ -693,11 +702,14 @@ func TestGuardRestartThatDiesAtOnceIsNotRestarted(t *testing.T) {
 // refused after the confirm window.
 func TestLaunchWatcherConfirmsFreshTick(t *testing.T) {
 	epic := t.TempDir()
-	stubWatcher(t, `mkdir -p "$3/.cox/watch" && date > "$3/.cox/watch/lasttick" && exec sleep 5`)
+	// The ticking stub confirms at its first tick, so a wide window costs nothing and keeps a slow -race runner green.
+	stubWatcher(t, 10*time.Second, `mkdir -p "$3/.cox/watch" && date > "$3/.cox/watch/lasttick" && exec sleep 30`)
 	if err := launchWatcher(epic); err != nil {
 		t.Fatalf("a watcher that ticks must be confirmed: %v", err)
 	}
-	stubWatcher(t, "exec sleep 5")
+	// The never-ticks stub outlives the 1s window 30x: a stub that exits near the deadline races "exited at once"
+	// against "did not tick" (the Ubuntu flake on PR #26 with sleep 5 against a 5s window).
+	stubWatcher(t, time.Second, "exec sleep 30")
 	epic2 := t.TempDir()
 	if err := launchWatcher(epic2); err == nil || !strings.Contains(err.Error(), "did not tick") {
 		t.Fatalf("a watcher that never ticks must be refused, got %v", err)
