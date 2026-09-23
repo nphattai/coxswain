@@ -68,8 +68,8 @@ func (h *Harness) Package(role harness.Role, dst string) error {
 // (verified: `--approve, -a  Trust project-local files for this run`): a dispatched worker cannot answer the
 // interactive trust dialog, so cox trusts the cox-created worktree at launch, which also loads the packaged extension
 // and AGENTS.md/skills. This is Pi's harness-specific trust mechanism (ADR 0002); cox never mutates user-level Pi
-// config. The packaged extension `-e` is added when extension packaging lands. A relaunch asks the worker to inject its
-// checkpoint first.
+// config. The packaged extension is loaded explicitly with `-e`; cox does NOT pass `--no-extensions`, so the user's
+// global Pi packages load too (B-47). A relaunch asks the worker to inject its checkpoint first.
 func (h *Harness) LaunchArgs(l harness.Launch) []string {
 	args := []string{"pi"}
 	if l.Model != "" {
@@ -79,11 +79,14 @@ func (h *Harness) LaunchArgs(l harness.Launch) []string {
 		args = append(args, "--thinking", l.Effort)
 	}
 	args = append(args, "--approve")
-	// Load the packaged Coxswain extension explicitly and disable ambient extension discovery, so worker correctness
-	// does not depend on project trust or discovery (DESIGN section 3). Empty Extension means the extension was not
-	// verified (effective-card downgrade): pi runs without it, in reduced mode.
+	// Load the packaged Coxswain extension explicitly with -e, but do NOT pass --no-extensions: a dispatched Pi worker
+	// must load the user's global Pi packages (compact-adviser, pi-web-access, ...) the way a Claude worker keeps its
+	// user-scope plugins, and --approve trusts the target repo's project resources (.pi/, .agents/skills) for this run
+	// (B-47, captain 2026-09-23). --no-extensions would drop settings `packages` (Pi 0.86.1 resource-loader.js:316).
+	// Accepted risk: a repo shipping its own Pi primary extensions runs them inside the worker. Empty Extension means the
+	// extension was not verified (effective-card downgrade): pi runs without -e, in reduced mode.
 	if l.Extension != "" {
-		args = append(args, "--no-extensions", "-e", l.Extension)
+		args = append(args, "-e", l.Extension)
 	}
 	for _, f := range l.Flags {
 		if f != "" {

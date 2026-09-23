@@ -68,16 +68,19 @@ func TestLaunchArgsWorker(t *testing.T) {
 	}
 }
 
-// When a verified extension path is supplied, Pi loads it explicitly with -e and disables ambient extension discovery,
-// so worker correctness does not depend on discovery/trust.
+// When a verified extension path is supplied, Pi loads it explicitly with `--approve -e <ext>` and must NOT pass
+// --no-extensions, so the user's global Pi packages load alongside the cox extension (B-47, item 1).
 func TestLaunchArgsWithExtension(t *testing.T) {
 	argv := New().LaunchArgs(harness.Launch{
 		Role: harness.RoleWorker, Model: "anthropic/claude-opus-4-8", Extension: "/wt/.pi/extensions/cox-pi.ts",
 		Brief: harness.Brief{StoryPath: "/e/stories/s.md"},
 	})
 	joined := strings.Join(argv, " ")
-	if !strings.Contains(joined, "--no-extensions -e /wt/.pi/extensions/cox-pi.ts") {
-		t.Fatalf("pi worker must load the extension with --no-extensions -e: %v", argv)
+	if !strings.Contains(joined, "--approve -e /wt/.pi/extensions/cox-pi.ts") {
+		t.Fatalf("pi worker must load the extension with --approve -e: %v", argv)
+	}
+	if contains(argv, "--no-extensions") {
+		t.Fatalf("pi worker must NOT pass --no-extensions (global packages must load): %v", argv)
 	}
 	// No extension supplied (downgrade): no -e, no --no-extensions.
 	bare := New().LaunchArgs(harness.Launch{Role: harness.RoleWorker, Model: "anthropic/x", Brief: harness.Brief{StoryPath: "/e/stories/s.md"}})
