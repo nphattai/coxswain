@@ -29,7 +29,7 @@
   },
   "harness": {
     "leader": { "options": ["claude", "codex", "pi"], "default": "claude" },
-    "worker": { "options": ["claude", "codex", "pi"], "default": "claude", "model": "claude-opus-4-8", "models": { "claude": "claude-opus-4-8", "codex": "gpt-5.6-sol" } },
+    "worker": { "options": ["claude", "codex", "pi"], "default": "claude", "model": "claude-opus-4-8", "models": { "claude": "claude-opus-4-8", "codex": "gpt-5.6-sol", "pi": "openai-codex/gpt-5.6-sol" } },
     "arena": {
       "adversary": { "rule": "not-leader", "default": "codex" },
       "reviewer": { "rule": "same-as-leader-new-session" }
@@ -42,7 +42,7 @@
         "codex": ["-a", "never", "-s", "workspace-write"]
       }
     },
-    "why": "captain 2026-09-15 (decision 8, P9): model-agnostic; the leader is not locked to claude. Bare 'opus' maps to claude-opus-4-8, never Opus 5 for workers (captain 2026-09-03). worker.models is the per-harness default: claude-opus-4-8 for claude, gpt-5.6-sol for codex - M10c, after a codex worker was handed the claude default and rejected the launch; worker.model is the legacy claude default, kept readable. launch: a dispatched worker cannot answer a local approval prompt, so it runs autonomously; the captain owns this risk (docs/adapters/{claude,codex}.md).",
+    "why": "captain 2026-09-15 (decision 8, P9): model-agnostic; the leader is not locked to claude. Bare 'opus' maps to claude-opus-4-8, never Opus 5 for workers (captain 2026-09-03). worker.models is the per-harness default: claude-opus-4-8 for claude, gpt-5.6-sol for codex - M10c, after a codex worker was handed the claude default and rejected the launch; pi is openai-codex/gpt-5.6-sol (captain 2026-09-23, B-47/B-48: pi supported fully as claude/codex; pi needs a provider/model, so it carries the provider prefix); worker.model is the legacy claude default, kept readable. launch: a dispatched worker cannot answer a local approval prompt, so it runs autonomously; the captain owns this risk (docs/adapters/{claude,codex}.md).",
     "review_when": "a new harness adapter ships a capability card and is added to the options."
   },
   "routing": {

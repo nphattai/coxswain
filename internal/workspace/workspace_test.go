@@ -154,9 +154,16 @@ func TestOrcaPlaneDefaultAndOverride(t *testing.T) {
 func TestWorkerModelPerHarness(t *testing.T) {
 	// Explicit model wins over any policy, for any harness.
 	p := &Policy{}
-	p.Harness.Worker.Models = map[string]string{"claude": "claude-opus-4-8", "codex": "gpt-5.6-sol"}
+	p.Harness.Worker.Models = map[string]string{"claude": "claude-opus-4-8", "codex": "gpt-5.6-sol", "pi": "openai-codex/gpt-5.6-sol"}
 	if got, ok := p.WorkerModel("claude", "pinned-x"); !ok || got != "pinned-x" {
 		t.Errorf("explicit model = %q,%v want pinned-x,true", got, ok)
+	}
+	// pi resolves its provider/model default from the map; an explicit model still wins (item 6, B-47).
+	if got, ok := p.WorkerModel("pi", ""); !ok || got != "openai-codex/gpt-5.6-sol" {
+		t.Errorf("pi default = %q,%v want openai-codex/gpt-5.6-sol,true", got, ok)
+	}
+	if got, ok := p.WorkerModel("pi", "anthropic/claude-opus-4-8"); !ok || got != "anthropic/claude-opus-4-8" {
+		t.Errorf("pi explicit = %q,%v want anthropic/claude-opus-4-8,true", got, ok)
 	}
 	// No explicit model: the per-harness default from the map.
 	if got, ok := p.WorkerModel("codex", ""); !ok || got != "gpt-5.6-sol" {
