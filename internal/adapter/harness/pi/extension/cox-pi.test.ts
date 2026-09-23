@@ -5,12 +5,17 @@
 // start from the story" notice - as a followUp, queuing a second turn behind the launch prompt so the worker redid the
 // whole task and emitted a duplicate completion (two worker_done for one dispatch). A saved checkpoint (resume) must
 // still be injected.
-import { test } from "node:test";
+import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, chmodSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import makeExtension from "./cox-pi.ts";
+import { __resetProcessSingleton } from "./cox-supervisor.ts";
+
+// DESIGN item 2: the extension is a process-global singleton. `node --test` runs this file in one process, so every
+// makeExtension() call after the first would be inert; reset the claim before each test so each activates cleanly.
+beforeEach(__resetProcessSingleton);
 
 type Sent = { text: string; opts: unknown };
 
@@ -222,4 +227,174 @@ test("no interrupt -> the turn is not aborted", async () => {
     await handlers["agent_settled"]?.({}, {}); // retire the still-blocking interrupt-wait child
   });
   rmSync(epic, { recursive: true, force: true });
+});
+
+// --- Leader hook parity (DESIGN item 4) ---
+// FAIL_TO_PASS: the old leader wiring hand-rolled a single-epic `cox wake wait --epic <e>` loop and a static nudge. The
+// fixed wiring drives the Go-owned leader hooks - `cox hook prompt-drain | stop-rewake` (unbound, so the Go side
+// supervises every active epic), threads ORCA_TERMINAL_HANDLE so the block budget stays ON (leader ruling #1), retires
+// the idle child when a turn starts (leader ruling #2), and caps per-turn reopens.
+
+// leaderEnv sets a LEADER launch env (no story => leader), runs body, restores every key.
+async function leaderEnv(
+  vars: { epic?: string; bin: string; handle?: string },
+  body: () => Promise<void>,
+): Promise<void> {
+  const keys = ["COX_STORY", "COX_EPIC", "COX_ROLE", "COX_BIN", "ORCA_TERMINAL_HANDLE", "COX_BUSY_GEN"] as const;
+  const prev: Record<string, string | undefined> = {};
+  for (const k of keys) prev[k] = process.env[k];
+  const set = (k: (typeof keys)[number], v: string | undefined) => {
+    if (v === undefined) delete process.env[k];
+    else process.env[k] = v;
+  };
+  set("COX_STORY", undefined);
+  set("COX_EPIC", vars.epic);
+  set("COX_ROLE", "leader");
+  set("COX_BIN", vars.bin);
+  set("ORCA_TERMINAL_HANDLE", vars.handle);
+  set("COX_BUSY_GEN", undefined);
+  try {
+    await body();
+  } finally {
+    for (const k of keys) set(k, prev[k]);
+    cleanupMarker();
+  }
+}
+
+// leaderStub writes a fake `cox` that logs each invocation (argv + inherited ORCA_TERMINAL_HANDLE) and dispatches:
+//   - `hook stop-rewake`: "forever" always exits 2 (reopen), "once" exits 2 the first time then blocks, "block" blocks.
+//   - `hook prompt-drain`: prints drainOut and exits 0.
+//   - everything else (session-start, precompact, busy): exits 0 with no output.
+function leaderStub(
+  dir: string,
+  opts: { log: string; count?: string; rewake: "forever" | "once" | "block"; drainOut?: string },
+): string {
+  const drainOut = opts.drainOut ?? "WAKES: epicA / epicB";
+  let rewakeBody: string;
+  if (opts.rewake === "forever") rewakeBody = `echo 'REOPEN-NUDGE' 1>&2; exit 2`;
+  else if (opts.rewake === "once")
+    rewakeBody = `n=$(cat '${opts.count}' 2>/dev/null||echo 0); n=$((n+1)); echo $n>'${opts.count}'; if [ "$n" = 1 ]; then echo 'REOPEN-NUDGE' 1>&2; exit 2; fi; sleep 5; exit 3`;
+  else rewakeBody = `sleep 5; exit 3`;
+  const stub = join(dir, "coxleader.sh");
+  writeFileSync(
+    stub,
+    `#!/bin/sh\n` +
+      `echo "ARGS $* HANDLE=$ORCA_TERMINAL_HANDLE" >> '${opts.log}'\n` +
+      `if [ "$1" = hook ] && [ "$2" = stop-rewake ]; then ${rewakeBody}; fi\n` +
+      `if [ "$1" = hook ] && [ "$2" = prompt-drain ]; then printf '%s' '${drainOut}'; exit 0; fi\n` +
+      `exit 0\n`,
+  );
+  chmodSync(stub, 0o755);
+  return stub;
+}
+
+test("leader: stop-rewake exit 2 -> exactly one visible followUp; unbound (no --epic); handle threaded", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "coxpi-ldr-once-"));
+  const log = join(dir, "cox.log");
+  const bin = leaderStub(dir, { log, count: join(dir, "cnt"), rewake: "once" });
+  await leaderEnv({ epic: undefined, bin }, async () => {
+    const { pi, handlers, sent } = fakePi();
+    makeExtension(pi as never);
+    await handlers["session_start"]?.({}, { cwd: dir, ui: { notify: () => {} } }); // arms the stop-rewake child
+    await waitFor(() => sent.length >= 1, 2000);
+    await new Promise((r) => setTimeout(r, 200)); // the (now blocking) successor gets no chance to add more
+    assert.equal(sent.length, 1, "one wake -> exactly one followUp (AC 3: exit 2 surfaced, never swallowed)");
+    assert.match(sent[0].text, /REOPEN-NUDGE/, "the reopen text (stop-rewake stderr) is delivered");
+    assert.deepEqual(sent[0].opts, { deliverAs: "followUp" });
+    const logtext = readFileSync(log, "utf8");
+    assert.match(logtext, /ARGS hook stop-rewake --harness claude HANDLE=\S+/, "stop-rewake carries --harness claude + a handle");
+    assert.ok(!/stop-rewake[^\n]*--epic/.test(logtext), "an unbound leader's stop-rewake has no --epic (workspace mode)");
+    await handlers["session_shutdown"]?.({}, {}); // kill the blocking successor
+  });
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("leader: a stop-rewake stuck exiting 2 is capped at 3 followUps + one visible warning (leader ruling #1)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "coxpi-ldr-budget-"));
+  const log = join(dir, "cox.log");
+  const bin = leaderStub(dir, { log, rewake: "forever" });
+  const warns: { m: string; t: unknown }[] = [];
+  await leaderEnv({ epic: undefined, bin }, async () => {
+    const { pi, handlers, sent } = fakePi();
+    makeExtension(pi as never);
+    await handlers["session_start"]?.({}, { cwd: dir, ui: { notify: (m: string, t: unknown) => warns.push({ m, t }) } });
+    await waitFor(() => warns.length >= 1, 4000);
+    await new Promise((r) => setTimeout(r, 150));
+    assert.equal(sent.length, 3, "at most 3 reopen followUps per turn");
+    assert.equal(warns.length, 1, "one visible warning once the per-turn budget is spent");
+    assert.match(warns[0].m, /pausing wake supervision/);
+    await handlers["session_shutdown"]?.({}, {});
+  });
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("leader: before_agent_start runs prompt-drain (unbound) and injects its stdout as turn context", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "coxpi-ldr-drain-"));
+  const log = join(dir, "cox.log");
+  const bin = leaderStub(dir, { log, rewake: "block", drainOut: "WAKES: epicA / epicB" });
+  await leaderEnv({ epic: undefined, bin }, async () => {
+    const { pi, handlers } = fakePi();
+    makeExtension(pi as never);
+    const res = (await handlers["before_agent_start"]?.({ prompt: "hi" }, { cwd: dir, ui: { notify: () => {} } })) as
+      | { message?: { customType: string; content: string; display: boolean } }
+      | undefined;
+    assert.ok(res && res.message, "before_agent_start returns an injected message");
+    assert.equal(res!.message!.customType, "cox-wakes");
+    assert.match(res!.message!.content, /WAKES: epicA \/ epicB/);
+    assert.equal(res!.message!.display, true);
+    const logtext = readFileSync(log, "utf8");
+    assert.match(logtext, /hook prompt-drain HANDLE=\S+/, "prompt-drain runs unbound (no --epic) with a handle");
+    assert.ok(!/prompt-drain[^\n]*--epic/.test(logtext), "an unbound leader's prompt-drain has no --epic");
+  });
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("leader: a starting turn supersedes the pending idle child -> one delivery, never two (leader ruling #2)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "coxpi-ldr-supersede-"));
+  const log = join(dir, "cox.log");
+  const bin = leaderStub(dir, { log, rewake: "block", drainOut: "DRAINED-ONCE" });
+  await leaderEnv({ epic: undefined, bin }, async () => {
+    const { pi, handlers, sent } = fakePi();
+    makeExtension(pi as never);
+    await handlers["session_start"]?.({}, { cwd: dir, ui: { notify: () => {} } }); // arms a blocking stop-rewake child
+    const res = (await handlers["before_agent_start"]?.({ prompt: "hi" }, { cwd: dir, ui: { notify: () => {} } })) as
+      | { message?: { content: string } }
+      | undefined;
+    assert.match(res!.message!.content, /DRAINED-ONCE/, "before_agent_start drains once");
+    await new Promise((r) => setTimeout(r, 300));
+    assert.equal(sent.length, 0, "the superseded stop-rewake child must not also deliver a followUp");
+    await handlers["session_shutdown"]?.({}, {});
+  });
+  rmSync(dir, { recursive: true, force: true });
+});
+
+// --- Single cox extension per process (DESIGN item 2) ---
+// FAIL_TO_PASS: without the singleton guard a second activation in one process wires a second set of handlers (a second
+// wake child, a second busy writer, a duplicate checkpoint per event). The fix makes the second activation inert.
+test("a second cox extension activation in the same process is inert", async () => {
+  const first = fakePi();
+  makeExtension(first.pi as never); // claims the process
+  const second = fakePi();
+  makeExtension(second.pi as never); // must be a no-op
+  assert.ok(Object.keys(first.handlers).length > 0, "the first activation wires its lifecycle handlers");
+  assert.equal(Object.keys(second.handlers).length, 0, "the second activation registers no handlers");
+  assert.equal(second.sent.length, 0, "the second activation delivers nothing");
+});
+
+test("bound leader (COX_EPIC set): prompt-drain and stop-rewake narrow to the one epic", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "coxpi-ldr-bound-"));
+  const log = join(dir, "cox.log");
+  const bin = leaderStub(dir, { log, rewake: "block", drainOut: "X" });
+  await leaderEnv({ epic: "/bound/epic", bin }, async () => {
+    const { pi, handlers } = fakePi();
+    makeExtension(pi as never);
+    await handlers["before_agent_start"]?.({ prompt: "hi" }, { cwd: dir, ui: { notify: () => {} } });
+    await handlers["session_start"]?.({}, { cwd: dir, ui: { notify: () => {} } }); // arms stop-rewake (bound)
+    await new Promise((r) => setTimeout(r, 150));
+    const logtext = readFileSync(log, "utf8");
+    assert.match(logtext, /hook prompt-drain --epic \/bound\/epic/, "a bound leader's prompt-drain carries --epic");
+    assert.match(logtext, /hook stop-rewake --harness claude --epic \/bound\/epic/, "a bound leader's stop-rewake carries --epic");
+    await handlers["session_shutdown"]?.({}, {});
+  });
+  rmSync(dir, { recursive: true, force: true });
 });

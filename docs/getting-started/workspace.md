@@ -27,14 +27,15 @@ edited `AGENTS.md`.
 | `cox/workspace.json` | The registry: your repos, their production branches, and (optionally) projects, services, hosts. See [`workspace.json`](../reference/workspace-json.md). |
 | `cox/policy.json` | Behavioral defaults with a recorded reason each (waves, context budgets, harness options, delivery style). See [`policy.json`](../reference/policy-json.md). |
 | `cox/services/` | Where a project service adapter (`<alias>.sh`) goes when an epic runs a backend. |
-| `.gitignore` | Ignores the machine-bound paths: `cox/workspace.json`, `cox/.cache/`, every `**/.cox/` and `**/.cox.closed/`, and one `**/epics/*/<alias>` rule per repo (the worktree symlinks). |
+| `.gitignore` | Ignores the machine-bound paths: `cox/workspace.json`, `cox/.cache/`, every `**/.cox/` and `**/.cox.closed/`, `.pi/extensions/` (the per-machine Pi leader extension), and one `**/epics/*/<alias>` rule per repo (the worktree symlinks). |
 | `AGENTS.md` | The leader instruction skeleton (points at the leader skills and the every-turn inbox-drain rule) that Codex reads. |
 | `.agents/skills/` | Embedded copies of the `cox-*` leader skills, so Claude and Codex read the same set. |
 | `.claude/settings.json` | Claude leader hooks: the four groups (`UserPromptSubmit`, `Stop`, `PreCompact`, `SessionStart`) as `cox hook` commands, merged with any existing entries. |
 | `.codex/hooks.json` | The same hook groups for a Codex leader. |
+| `.pi/extensions/` | The Pi leader extension (installed when `pi` is a leader option): a per-machine, gitignored, hash-verifiable extension that drives the same four `cox hook` behaviours for a Pi leader. See the [Pi adapter](../adapters/pi.md). |
 
 Hooks belong to the **workspace**, not to an epic: one leader terminal per project drains and rewakes for every active
-epic under the workspace. Re-run just the hooks with `cox workspace hooks --harness claude|codex`.
+epic under the workspace. Re-run just the hooks with `cox workspace hooks --harness claude|codex|pi`.
 
 Verify the result any time:
 

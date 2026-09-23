@@ -3,7 +3,19 @@
 // These prove the invariants the pi card's wake=push / checkpoint=auto claims are gated on (DESIGN section 4).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { Supervisor, TurnEndLatch, type SupervisorEffects } from "./cox-supervisor.ts";
+import { Supervisor, TurnEndLatch, claimProcessSingleton, __resetProcessSingleton, type SupervisorEffects } from "./cox-supervisor.ts";
+
+// DESIGN item 2: the process-global singleton claim is true exactly once per process, so a second cox extension load in
+// one Pi process (launch `-e` plus a project-local `.pi/extensions/` copy) stays inert.
+test("claimProcessSingleton is true once per process, false thereafter", () => {
+  __resetProcessSingleton();
+  assert.equal(claimProcessSingleton(), true, "first activation claims the process");
+  assert.equal(claimProcessSingleton(), false, "second activation is denied");
+  assert.equal(claimProcessSingleton(), false, "and stays denied");
+  __resetProcessSingleton();
+  assert.equal(claimProcessSingleton(), true, "a reset (test-only) re-enables the claim");
+  __resetProcessSingleton();
+});
 
 // recorder builds SupervisorEffects that log calls in order, so tests can assert ordering (successor-before-delivery).
 function recorder(spawnOk = true) {

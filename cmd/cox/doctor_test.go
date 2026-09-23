@@ -9,11 +9,68 @@ import (
 	"time"
 
 	"github.com/nphattai/coxswain/internal/adapter/backend"
+	"github.com/nphattai/coxswain/internal/adapter/harness/pi"
 	"github.com/nphattai/coxswain/internal/adapter/harness/registry"
 	"github.com/nphattai/coxswain/internal/doctor"
 	"github.com/nphattai/coxswain/internal/state"
 	"github.com/nphattai/coxswain/internal/workspace"
 )
+
+// piLeaderExtensionCheck (DESIGN item 5): when the policy lists pi as a leader option, a missing or stale
+// <ws>/.pi/extensions/ is an ISSUE with the repair `cox workspace init`; a current install is clean; and when pi is not
+// a leader option (or there is no workspace) the check is skipped entirely.
+func TestPiLeaderExtensionCheck(t *testing.T) {
+	leaderPol := &workspace.Policy{}
+	leaderPol.Harness.Leader.Options = []string{"claude", "codex", "pi"}
+
+	// Missing: pi is a leader option but nothing is installed -> ISSUE + repair.
+	ws := t.TempDir()
+	c := piLeaderExtensionCheck(leaderPol, ws)
+	if c == nil || c.Status != doctor.StatusFail {
+		t.Fatalf("missing extension must be a fail issue, got %+v", c)
+	}
+	if c.Fix != "cox workspace init" {
+		t.Errorf("repair must be `cox workspace init`, got %q", c.Fix)
+	}
+	if !strings.Contains(c.Detail, "missing") {
+		t.Errorf("detail should say missing, got %q", c.Detail)
+	}
+
+	// Current: install it -> clean pass.
+	if _, err := pi.InstallExtension(ws, ""); err != nil {
+		t.Fatal(err)
+	}
+	if c := piLeaderExtensionCheck(leaderPol, ws); c == nil || c.Status != doctor.StatusPass {
+		t.Fatalf("a verified extension must pass, got %+v", c)
+	}
+
+	// Stale: corrupt an installed source so the hash diverges from this binary -> ISSUE + repair.
+	entry := filepath.Join(ws, pi.ExtensionRelDir, pi.ExtensionEntry)
+	if err := os.WriteFile(entry, []byte("// tampered\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c = piLeaderExtensionCheck(leaderPol, ws)
+	if c == nil || c.Status != doctor.StatusFail || c.Fix != "cox workspace init" {
+		t.Fatalf("a stale extension must be a fail issue with the repair, got %+v", c)
+	}
+	if !strings.Contains(c.Detail, "stale") {
+		t.Errorf("detail should say stale, got %q", c.Detail)
+	}
+
+	// Not a leader option -> no check (no pi noise for a claude/codex-only workspace).
+	nonPi := &workspace.Policy{}
+	nonPi.Harness.Leader.Options = []string{"claude", "codex"}
+	if c := piLeaderExtensionCheck(nonPi, ws); c != nil {
+		t.Errorf("pi not a leader option must skip the check, got %+v", c)
+	}
+	// Nil policy / empty workspace -> no check.
+	if c := piLeaderExtensionCheck(nil, ws); c != nil {
+		t.Errorf("nil policy must skip the check, got %+v", c)
+	}
+	if c := piLeaderExtensionCheck(leaderPol, ""); c != nil {
+		t.Errorf("empty workspace must skip the check, got %+v", c)
+	}
+}
 
 // A workspace discovered via --root/epic whose epic has a dead watcher and an active story yields a watcher issue, so
 // doctor's exit reflects it (PR#3 review finding 5). An alive watcher, or no open story, yields none.

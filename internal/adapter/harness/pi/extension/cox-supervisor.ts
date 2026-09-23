@@ -120,3 +120,24 @@ export class TurnEndLatch {
     return this.pending;
   }
 }
+
+// Process-global singleton (DESIGN item 2). A Pi process can load a cox extension TWICE: the launch `-e` path plus a
+// project-local `.pi/extensions/` copy, because the target repo is itself a cox workspace (the latent double-load from
+// item 1). Only the first activation may wire handlers and spawn children; the second must stay inert so there is one
+// wake child, one busy writer, and one checkpoint per event. The marker lives on globalThis (shared across the two
+// module instances in the process), keyed by a registered Symbol so a second module instance sees the same claim.
+const SINGLETON_KEY = Symbol.for("coxswain.pi.extension.claimed");
+
+// claimProcessSingleton returns true exactly once per process (the first cox extension activation) and false thereafter.
+export function claimProcessSingleton(): boolean {
+  const g = globalThis as unknown as Record<symbol, unknown>;
+  if (g[SINGLETON_KEY]) return false;
+  g[SINGLETON_KEY] = true;
+  return true;
+}
+
+// __resetProcessSingleton clears the claim. Tests only: `node --test` runs one file per process, and a suite that
+// activates the extension repeatedly resets the claim before each activation to stay isolated.
+export function __resetProcessSingleton(): void {
+  delete (globalThis as unknown as Record<symbol, unknown>)[SINGLETON_KEY];
+}

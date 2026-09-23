@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/nphattai/coxswain/internal/adapter/backend"
+	"github.com/nphattai/coxswain/internal/adapter/harness/pi"
 	"github.com/nphattai/coxswain/internal/adapter/harness/registry"
 	"github.com/nphattai/coxswain/internal/doctor"
 	"github.com/nphattai/coxswain/internal/quota"
@@ -81,6 +82,41 @@ func environmentChecks(pol *workspace.Policy) []doctor.Check {
 	return checks
 }
 
+// piLeaderExtensionCheck reports the workspace's Pi leader extension health when the policy lists pi as a leader option
+// (DESIGN item 5). Missing, or a hash that differs from this cox binary's embedded copy (stale), is an ISSUE whose repair
+// is `cox workspace init`; a verified install is a pass. It returns nil (no check) when pi is not a leader option or
+// there is no primary workspace, so a claude/codex-only workspace gets no pi noise. It lives in the cmd layer because
+// internal/doctor is deliberately free of the harness adapters.
+func piLeaderExtensionCheck(pol *workspace.Policy, wsRoot string) *doctor.Check {
+	if pol == nil || wsRoot == "" {
+		return nil
+	}
+	isLeaderOption := false
+	for _, h := range pol.Harness.Leader.Options {
+		if h == "pi" {
+			isLeaderOption = true
+			break
+		}
+	}
+	if !isLeaderOption {
+		return nil
+	}
+	extDir := filepath.Join(wsRoot, pi.ExtensionRelDir)
+	if _, ok := pi.VerifyExtension(wsRoot); ok {
+		return &doctor.Check{Name: "pi leader extension", Status: doctor.StatusPass, Detail: extDir}
+	}
+	detail := "stale (hash differs from this cox binary)"
+	if _, err := os.Stat(filepath.Join(extDir, pi.ExtensionEntry)); os.IsNotExist(err) {
+		detail = "missing"
+	}
+	return &doctor.Check{
+		Name:   "pi leader extension",
+		Status: doctor.StatusFail,
+		Detail: fmt.Sprintf("%s at %s", detail, extDir),
+		Fix:    "cox workspace init",
+	}
+}
+
 // quotaDoctor is the doctor view of the quota-axi adapter and any manual readings in effect: whether the binary is
 // found, its version, whether the automatic source is Keychain-granted (derived from a live claude reading when an epic
 // is given), and the active captain-declared readings.
@@ -138,6 +174,9 @@ func cmdDoctor(args []string) int {
 		pol, _ = workspace.LoadPolicy(primaryWs)
 	}
 	checks := environmentChecks(pol)
+	if c := piLeaderExtensionCheck(pol, primaryWs); c != nil {
+		checks = append(checks, *c)
+	}
 
 	out := doctorOutput{Report: rep, Harnesses: harnessCards(codexCoxHooksInstalled(".")), PolicyOptions: policyOptions(*epicDir), Quota: quotaReport(*epicDir), Workspaces: wsReports, Checks: checks}
 	var watcherIssues []string

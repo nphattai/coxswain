@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/nphattai/coxswain/internal/adapter/harness/pi"
 )
 
 // init with no --repo (and no workspace.json yet) refuses with a usage exit and writes nothing (AC 2).
@@ -44,6 +46,80 @@ func TestWorkspaceInitWritesWorkspaceAndHooks(t *testing.T) {
 	}
 	if after, _ := os.ReadFile(filepath.Join(root, "cox", "workspace.json")); string(after) != string(before) {
 		t.Error("re-run rewrote workspace.json")
+	}
+}
+
+// init with pi in the policy's leader options installs the unbound Pi leader extension (hash-verifiable, NO epic
+// marker), ignores .pi/extensions/ in .gitignore, preserves a pre-existing .gitignore line, and is idempotent
+// (DESIGN item 3). The template policy lists pi as a leader option.
+func TestWorkspaceInitInstallsUnboundPiExtension(t *testing.T) {
+	root := t.TempDir()
+	// A pre-existing user .gitignore line must survive (AC 1: existing lines are never rewritten).
+	mustWrite(t, filepath.Join(root, ".gitignore"), "my-custom-ignore/\n")
+	if code := cmdWorkspaceInit([]string{"--root", root, "--repo", "app=" + t.TempDir()}); code != 0 {
+		t.Fatalf("init exit %d", code)
+	}
+	extDir := filepath.Join(root, pi.ExtensionRelDir)
+	if _, ok := pi.VerifyExtension(root); !ok {
+		t.Fatalf("init did not install a verifiable pi extension under %s", extDir)
+	}
+	if _, err := os.Stat(filepath.Join(extDir, "cox-pi.epic")); !os.IsNotExist(err) {
+		t.Error("init must install the pi leader extension WITHOUT an epic marker (unbound)")
+	}
+	gi, _ := os.ReadFile(filepath.Join(root, ".gitignore"))
+	if !strings.Contains(string(gi), ".pi/extensions/") {
+		t.Errorf(".gitignore missing .pi/extensions/:\n%s", gi)
+	}
+	if !strings.Contains(string(gi), "my-custom-ignore/") {
+		t.Errorf("init rewrote/dropped a pre-existing .gitignore line:\n%s", gi)
+	}
+	// Idempotent: a second run keeps it verifiable, still unbound, and leaves .gitignore byte-identical.
+	giBefore := string(gi)
+	if code := cmdWorkspaceInit([]string{"--root", root}); code != 0 {
+		t.Fatalf("re-run init exit %d", code)
+	}
+	if _, ok := pi.VerifyExtension(root); !ok {
+		t.Error("re-run left the pi extension unverifiable")
+	}
+	if _, err := os.Stat(filepath.Join(extDir, "cox-pi.epic")); !os.IsNotExist(err) {
+		t.Error("re-run must not add an epic marker")
+	}
+	if giAfter, _ := os.ReadFile(filepath.Join(root, ".gitignore")); string(giAfter) != giBefore {
+		t.Error("re-run rewrote .gitignore")
+	}
+}
+
+// init over an existing cox/policy.json whose harness options lag the template prints one notice naming the missing
+// harness and leaves the file byte-identical (DESIGN item 6: never rewrites the policy).
+func TestWorkspaceInitStalePolicyNotice(t *testing.T) {
+	root := t.TempDir()
+	if code := cmdWorkspaceInit([]string{"--root", root, "--repo", "app=" + t.TempDir()}); code != 0 {
+		t.Fatalf("init exit %d", code)
+	}
+	polPath := filepath.Join(root, "cox", "policy.json")
+	orig, _ := os.ReadFile(polPath)
+	// Synthesize a pre-pi leader options list (still valid JSON).
+	stale := strings.Replace(string(orig),
+		`"leader": { "options": ["claude", "codex", "pi"]`,
+		`"leader": { "options": ["claude", "codex"]`, 1)
+	if stale == string(orig) {
+		t.Fatalf("could not synthesize a stale leader options list; template shape changed:\n%s", orig)
+	}
+	if err := os.WriteFile(polPath, []byte(stale), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := os.ReadFile(polPath)
+
+	out := captureStdout(t, func() {
+		if code := cmdWorkspaceInit([]string{"--root", root}); code != 0 {
+			t.Fatalf("re-run init exit %d", code)
+		}
+	})
+	if !strings.Contains(out, `harness.leader.options is missing "pi"`) {
+		t.Errorf("init over a stale policy must print the missing-pi notice, got:\n%s", out)
+	}
+	if after, _ := os.ReadFile(polPath); string(after) != string(before) {
+		t.Error("init must leave cox/policy.json byte-identical (never rewrite it)")
 	}
 }
 
