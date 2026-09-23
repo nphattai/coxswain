@@ -89,6 +89,40 @@ func TestWorkspaceInitInstallsUnboundPiExtension(t *testing.T) {
 	}
 }
 
+// init over an existing cox/policy.json whose harness options lag the template prints one notice naming the missing
+// harness and leaves the file byte-identical (DESIGN item 6: never rewrites the policy).
+func TestWorkspaceInitStalePolicyNotice(t *testing.T) {
+	root := t.TempDir()
+	if code := cmdWorkspaceInit([]string{"--root", root, "--repo", "app=" + t.TempDir()}); code != 0 {
+		t.Fatalf("init exit %d", code)
+	}
+	polPath := filepath.Join(root, "cox", "policy.json")
+	orig, _ := os.ReadFile(polPath)
+	// Synthesize a pre-pi leader options list (still valid JSON).
+	stale := strings.Replace(string(orig),
+		`"leader": { "options": ["claude", "codex", "pi"]`,
+		`"leader": { "options": ["claude", "codex"]`, 1)
+	if stale == string(orig) {
+		t.Fatalf("could not synthesize a stale leader options list; template shape changed:\n%s", orig)
+	}
+	if err := os.WriteFile(polPath, []byte(stale), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := os.ReadFile(polPath)
+
+	out := captureStdout(t, func() {
+		if code := cmdWorkspaceInit([]string{"--root", root}); code != 0 {
+			t.Fatalf("re-run init exit %d", code)
+		}
+	})
+	if !strings.Contains(out, `harness.leader.options is missing "pi"`) {
+		t.Errorf("init over a stale policy must print the missing-pi notice, got:\n%s", out)
+	}
+	if after, _ := os.ReadFile(polPath); string(after) != string(before) {
+		t.Error("init must leave cox/policy.json byte-identical (never rewrite it)")
+	}
+}
+
 // add-repo persists a repo into workspace.json (AC 2 shares the same code path as epic new --repo alias=ref).
 func TestWorkspaceAddRepoCmd(t *testing.T) {
 	root := t.TempDir()

@@ -60,6 +60,45 @@ func Init(wsRoot string, ws *Workspace) (created []string, err error) {
 	return created, nil
 }
 
+// TemplatePolicy parses the embedded default policy template (templates/policy.json). It is the reference set of harness
+// options `cox workspace init` compares an on-disk policy against for the stale-options notice (DESIGN item 6). It does
+// not validate: it is read only for its harness option lists.
+func TemplatePolicy() (*Policy, error) {
+	b, err := templates.File("policy.json")
+	if err != nil {
+		return nil, err
+	}
+	var p Policy
+	if err := json.Unmarshal(b, &p); err != nil {
+		return nil, fmt.Errorf("parse template policy: %w", err)
+	}
+	return &p, nil
+}
+
+// StaleOptionNotices returns one notice per harness the template lists in harness.leader.options or
+// harness.worker.options that the on-disk policy's matching list lacks (DESIGN item 6). It reports MISSING options only
+// (template ⟹ on-disk), never on-disk extras, so an old workspace policy that predates a newly-added harness (e.g. pi)
+// gets a heads-up naming it. It is pure and never writes: `cox workspace init` prints the notices and leaves
+// cox/policy.json byte-identical, so the captain adds the option by hand.
+func StaleOptionNotices(onDisk, tmpl *Policy) []string {
+	var notices []string
+	missing := func(role string, have, want []string) {
+		set := make(map[string]bool, len(have))
+		for _, h := range have {
+			set[h] = true
+		}
+		for _, h := range want {
+			if !set[h] {
+				notices = append(notices, fmt.Sprintf(
+					"cox/policy.json harness.%s.options is missing %q (the template lists it); add it by hand to enable %s", role, h, h))
+			}
+		}
+	}
+	missing("leader", onDisk.Harness.Leader.Options, tmpl.Harness.Leader.Options)
+	missing("worker", onDisk.Harness.Worker.Options, tmpl.Harness.Worker.Options)
+	return notices
+}
+
 // ScaffoldReport lists what a Scaffold run wrote (Created) and what it found already in place (Present), so the CLI can
 // tell a first-time user everything it made and tell a re-run that nothing was missing.
 type ScaffoldReport struct {

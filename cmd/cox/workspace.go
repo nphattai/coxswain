@@ -94,6 +94,14 @@ func cmdWorkspaceInit(args []string) int {
 	if err != nil {
 		return fail("%v", err)
 	}
+	// Stale-policy notice (DESIGN item 6): an existing cox/policy.json whose harness options lag the template (e.g. a
+	// pre-pi workspace) gets one notice per missing harness. init never rewrites the file, so the captain enables it by
+	// hand. On a fresh init the policy was just scaffolded from the template, so there is nothing to report.
+	if tmpl, terr := workspace.TemplatePolicy(); terr == nil {
+		for _, n := range workspace.StaleOptionNotices(pol, tmpl) {
+			fmt.Println("notice:", n)
+		}
+	}
 	for _, h := range pol.Harness.Leader.Options {
 		// Pi has no claude/codex-style hook file: it installs the project-local, hash-verifiable extension into
 		// <ws>/.pi/extensions/ WITHOUT an epic marker, so the unbound leader supervises every active epic of the
