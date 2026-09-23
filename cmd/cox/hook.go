@@ -43,14 +43,18 @@ func cmdHook(args []string) int {
 	epicDir := fs.String("epic", os.Getenv("COX_EPIC"), "epic directory (optional; narrows to one epic instead of every active epic in the workspace)")
 	story := fs.String("story", os.Getenv("COX_STORY"), "story id (optional; the workspace path uses the leader checkpoint)")
 	worktree := fs.String("worktree", ".", "worktree path")
-	harnessName := fs.String("harness", "claude", "invoking harness: claude | codex (controls the block/continue signal)")
+	harnessName := fs.String("harness", "claude", "invoking harness: claude | codex | pi (controls the block/continue signal; pi re-arms its own idle waiter, so stop-rewake never ticks)")
+	// prompt-drain only: the turn was opened by a stop-rewake reopen, not a user prompt. Pi runs prompt-drain on every
+	// turn, including the ones a reopen opens, so resetting the block budget there would reset it on every reopen and a
+	// dead watcher would reopen forever (dogfood finding 8 / AC5). Claude never sets it: UserPromptSubmit is a user turn.
+	reopenTurn := fs.Bool("reopen", false, "prompt-drain: this turn was opened by a stop-rewake reopen; keep the block budget")
 	if err := fs.Parse(args[1:]); err != nil {
 		return 2
 	}
 
 	switch name {
 	case "prompt-drain":
-		return hookPromptDrain(*epicDir, *harnessName)
+		return hookPromptDrain(*epicDir, *harnessName, *reopenTurn)
 	case "stop-rewake":
 		return hookStopRewake(*epicDir, *harnessName)
 	case "precompact":
@@ -224,13 +228,16 @@ var orcaDoorbellRe = regexp.MustCompile(`^You have [0-9]+ orchestration messages
 // and the submitted prompt is Orca's empty doorbell, it exits 2 to block the prompt (a UserPromptSubmit exit 2 erases
 // the prompt and starts no turn; stderr is shown to the user) so the stale bell does not cost the leader a turn.
 // Outside a workspace it prints one line and exits 0.
-func hookPromptDrain(epicDir, harnessName string) int {
+func hookPromptDrain(epicDir, harnessName string, reopenTurn bool) int {
 	epics, in := leaderEpics(epicDir)
 	if !in {
 		return outsideWorkspace("prompt-drain")
 	}
-	// A real turn is starting, so the turn-boundary guard's per-turn block budget resets here (item 1).
-	resetRewakeBlocks(os.Getenv("ORCA_TERMINAL_HANDLE"))
+	// A user turn is starting, so the turn-boundary guard's block budget resets here (item 1). A turn a reopen opened
+	// (Pi) keeps it: the budget bounds a reopen episode, not one harness turn (finding 8).
+	if !reopenTurn {
+		resetRewakeBlocks(os.Getenv("ORCA_TERMINAL_HANDLE"))
+	}
 	return runPromptDrainAll(filterLeaderEpics(epics), harnessName, os.Stdin, os.Stdout, os.Stderr)
 }
 
@@ -326,7 +333,13 @@ func runPromptDrain(epicDir string, out io.Writer) int {
 	if err != nil || len(wakes) == 0 {
 		return 0
 	}
-	fmt.Fprintf(out, "Watcher wakes for %s since your last turn:\n", filepath.Base(epicDir))
+	// Name the epic dir, not just the slug: the leader acks with `--epic <dir>`, and a slug alone made a Pi leader guess
+	// the workspace root, so its ack landed nowhere and the wakes came back (dogfood F-8).
+	abs, err := filepath.Abs(epicDir)
+	if err != nil {
+		abs = epicDir
+	}
+	fmt.Fprintf(out, "Watcher wakes for %s (--epic %s) since your last turn:\n", filepath.Base(epicDir), abs)
 	printWakesTo(out, wakes)
 	return len(wakes)
 }
@@ -379,14 +392,36 @@ func warnDuplicateLeaders(epics []string, out io.Writer) int {
 	return warned
 }
 
-// hookPrompt reads the UserPromptSubmit hook stdin JSON and returns its `prompt` field, or "" when stdin is empty or not
-// the hook envelope (so a manual `cox hook prompt-drain` with no stdin is harmless).
+// hookStdinWait bounds the wait for the hook envelope on stdin. A harness writes the envelope at spawn, so it is there
+// at once; a caller that leaves stdin an open pipe it never writes or closes (the Pi extension's execFile, dogfood F-4)
+// must not hang the hook. Past the bound the hook proceeds with no prompt, which costs only the stale-doorbell
+// suppression (that needs the envelope anyway). A var so a test can shorten it.
+var hookStdinWait = time.Second
+
+// hookPrompt reads the UserPromptSubmit hook stdin JSON and returns its `prompt` field, or "" when stdin is empty, a
+// terminal, not the hook envelope, or silent past hookStdinWait (so a manual `cox hook prompt-drain` is harmless and an
+// open, never-closed stdin pipe never blocks the hook).
 func hookPrompt(in io.Reader) string {
 	if in == nil {
 		return ""
 	}
-	b, err := io.ReadAll(io.LimitReader(in, 1<<20))
-	if err != nil || len(b) == 0 {
+	if f, ok := in.(*os.File); ok {
+		if fi, err := f.Stat(); err == nil && fi.Mode()&os.ModeCharDevice != 0 {
+			return "" // an interactive terminal: no envelope will ever arrive
+		}
+	}
+	got := make(chan []byte, 1)
+	go func() {
+		b, _ := io.ReadAll(io.LimitReader(in, 1<<20))
+		got <- b
+	}()
+	var b []byte
+	select {
+	case b = <-got:
+	case <-time.After(hookStdinWait):
+		return "" // ponytail: the reader goroutine is abandoned; the hook process exits right after
+	}
+	if len(b) == 0 {
 		return ""
 	}
 	var p struct {
@@ -501,7 +536,11 @@ func runStopRewake(cfg rewakeCfg) int {
 	}
 	// MAX_WAIT reached with no rewake. A Stop hook cannot outlive its timeout, so while any led story is still
 	// dispatched (working or input_required) start a minimal turn (exit 2) whose Stop re-arms a fresh waiter; with
-	// nothing open, stay silent (exit 0) so there is no idle churn between epics.
+	// nothing open, stay silent (exit 0) so there is no idle churn between epics. Pi's extension re-arms its own waiter
+	// on exit 0, so a tick would only cost it a model turn: exit 0.
+	if cfg.harness == "pi" {
+		return 0
+	}
 	open := 0
 	for _, ep := range cfg.epics {
 		if o, err := watch.OpenStories(ep); err == nil {
@@ -564,17 +603,49 @@ func (cfg rewakeCfg) launchWatcher(epicDir string) error {
 	return launchWatcher(epicDir)
 }
 
+// watcherConfirmWait bounds how long a restart waits for the new watcher's first fresh lasttick. A watcher ticks right
+// after it starts (one pass: Orca probes), so a healthy restart confirms within a few seconds; a watcher that exits at
+// once (no backend, a broken binary) is caught when it is reaped. A var so a test can shorten it.
+var watcherConfirmWait = 10 * time.Second
+
+// watcherExe is the binary a restart runs (`<self> watch --epic <dir>`). A var so a test can point it at a stub.
+var watcherExe = os.Executable
+
+// launchWatcher starts `cox watch --epic <dir>` detached and reports success only once the new watcher is CONFIRMED:
+// its lasttick is written after the launch while it is still running. A watcher that exits at once - a fresh epic with
+// no .cox/run, "watch needs a live backend" - or never ticks within watcherConfirmWait is an error, so the guard takes
+// the repair/exit-2 path instead of reporting "restarted" and re-arming into the same dead restart (dogfood F-10).
 func launchWatcher(epicDir string) error {
 	if pid := readPid(watchPidPath(epicDir)); pid > 0 && processAlive(pid) {
 		return fmt.Errorf("watcher pid %d is alive but not ticking; run cox watch --epic %s --replace", pid, epicDir)
 	}
-	self, err := os.Executable()
+	self, err := watcherExe()
 	if err != nil {
 		self = "cox"
 	}
+	started := time.Now()
 	cmd := exec.Command(self, "watch", "--epic", epicDir)
 	cmd.Stdout, cmd.Stderr = nil, nil
-	return cmd.Start()
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	exited := make(chan error, 1)
+	go func() { exited <- cmd.Wait() }()
+	tick := filepath.Join(epicDir, controlDir, "watch", "lasttick")
+	deadline := time.After(watcherConfirmWait)
+	for {
+		select {
+		case err := <-exited:
+			return fmt.Errorf("restarted watcher exited at once (%v); run cox watch --epic %s --replace to see why", err, epicDir)
+		case <-deadline:
+			return fmt.Errorf("restarted watcher did not tick within %s; run cox watch --epic %s --replace", watcherConfirmWait, epicDir)
+		case <-time.After(100 * time.Millisecond):
+			// ponytail: mtime granularity is 1s on some filesystems, so "after the launch" compares whole seconds.
+			if info, err := os.Stat(tick); err == nil && !info.ModTime().Before(started.Truncate(time.Second)) {
+				return nil // confirmed: the new watcher completed a pass after the launch and is still running
+			}
+		}
+	}
 }
 
 // watcherHealthy reports whether the epic's watcher is alive AND fresh: its watch.pid names a live process and
@@ -779,6 +850,13 @@ func hookSessionStart(epicDir, story, worktree string) int {
 	}
 	if story == leaderStory && notLeaderTerminal(epicDir) {
 		return 0 // the leader's own checkpoint hook, running in a non-leader terminal
+	}
+	if story == leaderStory {
+		if _, err := os.Stat(checkpoint.Path(epicDir, story)); os.IsNotExist(err) {
+			// A leader with no saved checkpoint has nothing to recover and no story to "start from": print nothing, so
+			// a harness that turns session-start output into a message never gives a fresh leader an extra turn (F-6).
+			return 0
+		}
 	}
 	head := gitHead(worktree)
 	inj, err := checkpoint.Inject(epicDir, story, currentAttempt(epicDir, story), head)

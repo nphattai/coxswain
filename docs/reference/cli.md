@@ -9,7 +9,7 @@ and implementation file under `cmd/cox/` own its exact flags, validation, and ex
 
 | Task | Command family | Owner |
 |---|---|---|
-| Set up a workspace (`init`), write leader hooks (`hooks --harness claude\|codex`), add a repo (`add-repo`) | `cox workspace` | `cmd/cox/workspace.go`, `internal/workspace/` |
+| Set up a workspace (`init`), write leader hooks (`hooks --harness claude\|codex\|pi`), add a repo (`add-repo`) | `cox workspace` | `cmd/cox/workspace.go`, `internal/workspace/` |
 | Check the workspace, PATH, Orca, harness binaries, hooks, and epic health | `cox doctor` | `cmd/cox/doctor.go`, `internal/doctor/` |
 | Migrate a v1 epic | `cox migrate` | `cmd/cox/migrate.go`, `internal/migrate/` |
 

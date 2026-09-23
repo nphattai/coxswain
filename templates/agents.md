@@ -9,8 +9,8 @@ This is a Coxswain operations workspace. It holds the epic design, reports, and 
 Run `cox wake drain --epic <epic-dir>` at the start of every turn, handle each wake, then
 `cox wake ack-through <gen> --epic <epic-dir>` through the highest generation you handled. The leader hooks installed in
 this workspace drain and re-wake for every active epic automatically; a plain `status` wake is progress, never
-completion. When idle under a pull harness (Codex), make your last tool call
-`cox wake wait --max 25m --epic <epic-dir>`.
+completion. Claude Code and Pi are push harnesses: when idle, just end the turn and never run `cox wake wait`. Only
+under a pull harness (Codex) make your last tool call `cox wake wait --max 25m --epic <epic-dir>`.
 
 ## Steer, never type into a worker
 

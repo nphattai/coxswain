@@ -15,12 +15,16 @@ export const coxArgs = {
   // promptDrain attaches the workspace's (or one bound epic's) unread watcher wakes as turn context. Unbound (no
   // --epic) drains every active epic with a per-epic header; the extension injects the stdout into the turn. It also
   // resets the turn-boundary block budget keyed on ORCA_TERMINAL_HANDLE (threaded via the child env).
-  promptDrain: (epic: string): string[] => withEpic(["hook", "prompt-drain"], epic),
+  // reopen marks a turn a stop-rewake reopen opened (not a user prompt): Pi runs prompt-drain on every turn, and the
+  // Go block budget must bound a reopen episode, so such a turn keeps it (dogfood finding 8).
+  promptDrain: (epic: string, reopen = false): string[] =>
+    withEpic(reopen ? ["hook", "prompt-drain", "--reopen"] : ["hook", "prompt-drain"], epic),
 
-  // stopRewake blocks while the leader is idle, then reopens the turn: `--harness claude` reopens via exit 2 with the
-  // reopen/repair text on stderr (the extension reads the exit code itself). No --max: the Go side owns batch/tick
-  // timing. Unbound (no --epic) waits on every active epic and runs the turn-boundary watcher guard (item 1).
-  stopRewake: (epic: string): string[] => withEpic(["hook", "stop-rewake", "--harness", "claude"], epic),
+  // stopRewake blocks while the leader is idle, then reopens the turn: `--harness pi` reopens via exit 2 with the
+  // reopen/repair text on stderr (the extension reads the exit code itself) and, at MAX_WAIT, exits 0 instead of a tick
+  // turn (the extension re-arms its own waiter). No --max: the Go side owns batch timing. Unbound (no --epic) waits on
+  // every active epic and runs the turn-boundary watcher guard (item 1).
+  stopRewake: (epic: string): string[] => withEpic(["hook", "stop-rewake", "--harness", "pi"], epic),
 
   // precompact PERSISTS the checkpoint before Pi summarizes context: `cox hook precompact` writes
   // <epic>/handoffs/<story>.md, whereas `cox checkpoint facts` only prints the facts to stdout (which the extension

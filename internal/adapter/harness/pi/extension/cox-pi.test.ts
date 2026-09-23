@@ -83,13 +83,14 @@ test("fresh worker (no checkpoint) gets NO session-start followUp", async () => 
   }
 });
 
-test("resuming worker (checkpoint present) DOES get the injected checkpoint as a followUp", async () => {
+test("resuming worker (checkpoint present) gets the checkpoint in its next turn's context, exactly once", async () => {
   const epic = mkdtempSync(join(tmpdir(), "coxpi-resume-"));
   mkdirSync(join(epic, "handoffs"), { recursive: true });
   writeFileSync(join(epic, "handoffs", "w1.md"), "checkpoint body\n");
-  // Stub cox: print the injected text regardless of args, so the wiring's followUp delivery is observable.
+  // Stub cox: print the injected text regardless of args, so the wiring's delivery is observable.
   const stub = join(epic, "coxstub.sh");
-  writeFileSync(stub, "#!/bin/sh\necho INJECTED-CHECKPOINT-TEXT\n");
+  const answered = join(epic, "answered");
+  writeFileSync(stub, `#!/bin/sh\necho INJECTED-CHECKPOINT-TEXT\ntouch '${answered}'\n`);
   chmodSync(stub, 0o755);
   const prev = { story: process.env.COX_STORY, epic: process.env.COX_EPIC, role: process.env.COX_ROLE, bin: process.env.COX_BIN };
   process.env.COX_STORY = "w1";
@@ -99,11 +100,16 @@ test("resuming worker (checkpoint present) DOES get the injected checkpoint as a
   try {
     const { pi, handlers, sent } = fakePi();
     makeExtension(pi as never);
-    await handlers["session_start"]?.({}, { cwd: epic, ui: { notify: () => {} } });
-    await waitFor(() => sent.length > 0);
-    assert.equal(sent.length, 1, "a resuming worker must receive exactly one injected followUp");
-    assert.match(sent[0].text, /INJECTED-CHECKPOINT-TEXT/);
-    assert.deepEqual(sent[0].opts, { deliverAs: "followUp" });
+    const ctx = { cwd: epic, ui: { notify: () => {} } };
+    await handlers["session_start"]?.({}, ctx);
+    await waitFor(() => existsSync(answered), 3000);
+    await new Promise((r) => setTimeout(r, 200)); // the session-start child's output reached the extension
+    // A launch/resume prompt is about to start: the checkpoint rides its context (never a separate, rejectable prompt).
+    const res = (await handlers["before_agent_start"]?.({ prompt: "resume" }, ctx)) as { message?: { content: string } } | undefined;
+    assert.match(res?.message?.content ?? "", /INJECTED-CHECKPOINT-TEXT/);
+    assert.equal(sent.length, 0, "no sendUserMessage: nothing that Pi could reject");
+    const again = (await handlers["before_agent_start"]?.({ prompt: "next" }, ctx)) as { message?: unknown } | undefined;
+    assert.equal(again, undefined, "handed over once (inflight until confirmed, not re-injected)");
   } finally {
     cleanupMarker();
     rmSync(epic, { recursive: true, force: true });
@@ -161,7 +167,11 @@ test("agent_start -> busy, agent_settled -> idle (worker, gen present)", async (
     makeExtension(pi as never);
     await handlers["agent_start"]?.({}, {});
     await waitFor(() => existsSync(log) && readFileSync(log, "utf8").includes("agent_start"), 1500);
-    await handlers["agent_settled"]?.({}, {});
+    // A race loser's settle (another run still holds the agent: ctx.signal set) is not the turn's end: no idle write.
+    await handlers["agent_settled"]?.({}, { isIdle: () => true, signal: new AbortController().signal });
+    await new Promise((r) => setTimeout(r, 300));
+    assert.ok(!readFileSync(log, "utf8").includes("agent_settled"), "a race loser's settle must not report idle");
+    await handlers["agent_settled"]?.({}, { isIdle: () => true, signal: undefined }); // the quiet settle
     await waitFor(() => readFileSync(log, "utf8").includes("agent_settled"), 1500);
     const lines = readFileSync(log, "utf8");
     assert.match(lines, /busy apply w1 busy --gen g123 --source pi-ext --event agent_start --epic/, "agent_start must apply busy with the env gen");
@@ -178,10 +188,12 @@ test("no COX_BUSY_GEN -> no busy write (never a guess)", async () => {
     const { pi, handlers } = fakePi();
     makeExtension(pi as never);
     await handlers["agent_start"]?.({}, {});
-    await handlers["agent_settled"]?.({}, {});
-    // Wait past the exec latency the gen-present case needed; with no gen the stub must never run at all.
+    await handlers["agent_settled"]?.({}, { isIdle: () => true, signal: undefined });
+    // Wait past the exec latency the gen-present case needed. The stub logs every cox call (the turn's interrupt-wait
+    // child may run too); with no gen there must be no busy write among them.
     await new Promise((r) => setTimeout(r, 400));
-    assert.equal(existsSync(log), false, "a session with no armed gen must write no busy record");
+    const calls = existsSync(log) ? readFileSync(log, "utf8") : "";
+    assert.ok(!calls.includes("busy apply"), `a session with no armed gen must write no busy record: ${calls}`);
   });
   rmSync(epic, { recursive: true, force: true });
 });
@@ -288,7 +300,7 @@ function leaderStub(
   return stub;
 }
 
-test("leader: stop-rewake exit 2 -> exactly one visible followUp; unbound (no --epic); handle threaded", async () => {
+test("leader: stop-rewake runs unbound (no --epic) with --harness pi and a handle; its reopen is held, not sent blind", async () => {
   const dir = mkdtempSync(join(tmpdir(), "coxpi-ldr-once-"));
   const log = join(dir, "cox.log");
   const bin = leaderStub(dir, { log, count: join(dir, "cnt"), rewake: "once" });
@@ -296,33 +308,45 @@ test("leader: stop-rewake exit 2 -> exactly one visible followUp; unbound (no --
     const { pi, handlers, sent } = fakePi();
     makeExtension(pi as never);
     await handlers["session_start"]?.({}, { cwd: dir, ui: { notify: () => {} } }); // arms the stop-rewake child
-    await waitFor(() => sent.length >= 1, 2000);
-    await new Promise((r) => setTimeout(r, 200)); // the (now blocking) successor gets no chance to add more
-    assert.equal(sent.length, 1, "one wake -> exactly one followUp (AC 3: exit 2 surfaced, never swallowed)");
-    assert.match(sent[0].text, /REOPEN-NUDGE/, "the reopen text (stop-rewake stderr) is delivered");
-    assert.deepEqual(sent[0].opts, { deliverAs: "followUp" });
+    await waitFor(() => existsSync(join(dir, "cnt")), 2000);
+    await new Promise((r) => setTimeout(r, 300));
+    // This fake ctx cannot report Pi's state (no isIdle/signal), so the Outbox never sends blind (F-9).
+    assert.equal(sent.length, 0);
     const logtext = readFileSync(log, "utf8");
-    assert.match(logtext, /ARGS hook stop-rewake --harness claude HANDLE=\S+/, "stop-rewake carries --harness claude + a handle");
+    assert.match(logtext, /ARGS hook stop-rewake --harness pi HANDLE=\S+/, "stop-rewake carries --harness pi + a handle");
     assert.ok(!/stop-rewake[^\n]*--epic/.test(logtext), "an unbound leader's stop-rewake has no --epic (workspace mode)");
-    await handlers["session_shutdown"]?.({}, {}); // kill the blocking successor
+    assert.equal((logtext.match(/stop-rewake/g) ?? []).length, 1, "a reopen spawns no successor child (F-5)");
+    await handlers["session_shutdown"]?.({}, {});
   });
   rmSync(dir, { recursive: true, force: true });
 });
 
-test("leader: a stop-rewake stuck exiting 2 is capped at 3 followUps + one visible warning (leader ruling #1)", async () => {
+test("leader: the reopen budget counts REAL turns - a prompt that never streams does not reset it (F-5)", async () => {
   const dir = mkdtempSync(join(tmpdir(), "coxpi-ldr-budget-"));
   const log = join(dir, "cox.log");
   const bin = leaderStub(dir, { log, rewake: "forever" });
-  const warns: { m: string; t: unknown }[] = [];
+  const warns: string[] = [];
+  // A quiet ctx (idle, no agent run): every settle re-arms the idle waiter, which exits 2 again at once.
+  const ctx = { cwd: dir, ui: { notify: (m: string) => warns.push(m) }, isIdle: () => true, signal: undefined };
   await leaderEnv({ epic: undefined, bin }, async () => {
-    const { pi, handlers, sent } = fakePi();
+    const { pi, handlers } = fakePi();
     makeExtension(pi as never);
-    await handlers["session_start"]?.({}, { cwd: dir, ui: { notify: (m: string, t: unknown) => warns.push({ m, t }) } });
-    await waitFor(() => warns.length >= 1, 4000);
-    await new Promise((r) => setTimeout(r, 150));
-    assert.equal(sent.length, 3, "at most 3 reopen followUps per turn");
-    assert.equal(warns.length, 1, "one visible warning once the per-turn budget is spent");
-    assert.match(warns[0].m, /pausing wake supervision/);
+    await handlers["session_start"]?.({}, ctx);
+    await waitFor(() => existsSync(log), 2000);
+    await new Promise((r) => setTimeout(r, 400));
+    assert.equal((readFileSync(log, "utf8").match(/stop-rewake/g) ?? []).length, 1, "no successor spawn before a settle");
+    for (let i = 0; i < 5 && warns.length === 0; i++) {
+      await waitFor(() => existsSync(log) && (readFileSync(log, "utf8").match(/stop-rewake/g) ?? []).length > i, 2000);
+      await new Promise((r) => setTimeout(r, 100)); // the child's exit-2 callback has run
+      // A prompt enters, drains, and settles WITHOUT agent_start (rejected / never streamed).
+      await handlers["before_agent_start"]?.({ prompt: "x" }, ctx);
+      await handlers["agent_settled"]?.({}, ctx);
+    }
+    await waitFor(() => warns.length > 0, 2000);
+    assert.match(warns[0], /pausing reopen turns/, "the reopen budget trips instead of spinning");
+    const spawns = (readFileSync(log, "utf8").match(/stop-rewake/g) ?? []).length;
+    assert.ok(spawns <= 5, `bounded: ${spawns} stop-rewake spawns`);
+    await handlers["agent_start"]?.({}, ctx); // a real turn resets it
     await handlers["session_shutdown"]?.({}, {});
   });
   rmSync(dir, { recursive: true, force: true });
@@ -381,6 +405,20 @@ test("a second cox extension activation in the same process is inert", async () 
   assert.equal(second.sent.length, 0, "the second activation delivers nothing");
 });
 
+// Found during cox-pi-parity-fixes: Pi's /reload shuts the runner down (reason "reload") and instantiates the
+// extensions again in the same process. The reloaded cox extension must activate, not stay inert on the old claim.
+test("after a /reload shutdown the reloaded cox extension activates", async () => {
+  const first = fakePi();
+  makeExtension(first.pi as never);
+  await first.handlers["session_shutdown"]?.({ reason: "reload" }, {});
+  const reloaded = fakePi();
+  makeExtension(reloaded.pi as never);
+  assert.ok(Object.keys(reloaded.handlers).length > 0, "the reloaded instance wires its handlers");
+  const third = fakePi();
+  makeExtension(third.pi as never);
+  assert.equal(Object.keys(third.handlers).length, 0, "and still only one instance per process");
+});
+
 test("bound leader (COX_EPIC set): prompt-drain and stop-rewake narrow to the one epic", async () => {
   const dir = mkdtempSync(join(tmpdir(), "coxpi-ldr-bound-"));
   const log = join(dir, "cox.log");
@@ -393,8 +431,52 @@ test("bound leader (COX_EPIC set): prompt-drain and stop-rewake narrow to the on
     await new Promise((r) => setTimeout(r, 150));
     const logtext = readFileSync(log, "utf8");
     assert.match(logtext, /hook prompt-drain --epic \/bound\/epic/, "a bound leader's prompt-drain carries --epic");
-    assert.match(logtext, /hook stop-rewake --harness claude --epic \/bound\/epic/, "a bound leader's stop-rewake carries --epic");
+    assert.match(logtext, /hook stop-rewake --harness pi --epic \/bound\/epic/, "a bound leader's stop-rewake carries --epic");
     await handlers["session_shutdown"]?.({}, {});
+  });
+  rmSync(dir, { recursive: true, force: true });
+});
+
+// FAIL_TO_PASS (dogfood F-4): every `cox` child runs with stdin CLOSED. The old wiring used execFile, which leaves stdin
+// an open pipe; `cox hook prompt-drain` read it for the harness envelope and the leader's first turn hung forever. This
+// stub reads stdin to EOF before answering, so an open stdin hangs before_agent_start past the deadline.
+test("leader: prompt-drain (and every cox child) gets a closed stdin - before_agent_start never hangs", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "coxpi-stdin-"));
+  const stub = join(dir, "cox");
+  writeFileSync(stub, `#!/bin/sh\ncat >/dev/null\nif [ "$2" = prompt-drain ]; then printf 'STDIN-OK'; fi\nif [ "$2" = stop-rewake ]; then exec sleep 30; fi\nexit 0\n`);
+  chmodSync(stub, 0o755);
+  await leaderEnv({ epic: undefined, bin: stub }, async () => {
+    const { pi, handlers } = fakePi();
+    makeExtension(pi as never);
+    const res = (await Promise.race([
+      handlers["before_agent_start"]?.({ prompt: "hi" }, { cwd: dir, ui: { notify: () => {} } }),
+      new Promise((r) => setTimeout(() => r("HUNG"), 5000)),
+    ])) as { message?: { content: string } } | string;
+    assert.notEqual(res, "HUNG", "prompt-drain blocked on an open stdin");
+    assert.match((res as { message: { content: string } }).message.content, /STDIN-OK/);
+    await handlers["session_shutdown"]?.({}, {});
+  });
+  rmSync(dir, { recursive: true, force: true });
+});
+
+// A settle that arrives after session_shutdown (a run still in flight while the session goes away) re-arms no idle
+// waiter: before the guard, it started a new generation that kept reopening into a closed session.
+test("leader: nothing re-arms after session_shutdown", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "coxpi-shutdown-"));
+  const log = join(dir, "cox.log");
+  const bin = leaderStub(dir, { log, rewake: "block" });
+  const quiet = { cwd: dir, ui: { notify: () => {} }, isIdle: () => true, signal: undefined };
+  await leaderEnv({ epic: undefined, bin }, async () => {
+    const { pi, handlers } = fakePi();
+    makeExtension(pi as never);
+    await handlers["session_start"]?.({}, quiet);
+    await waitFor(() => existsSync(log) && readFileSync(log, "utf8").includes("stop-rewake"), 2000);
+    await handlers["before_agent_start"]?.({ prompt: "x" }, quiet); // a turn starts: the waiter is retired
+    await handlers["agent_start"]?.({}, quiet);
+    await handlers["session_shutdown"]?.({}, {});
+    await handlers["agent_settled"]?.({}, quiet); // the in-flight run settles after the shutdown
+    await new Promise((r) => setTimeout(r, 400));
+    assert.equal((readFileSync(log, "utf8").match(/stop-rewake/g) ?? []).length, 1, "no waiter re-armed after shutdown");
   });
   rmSync(dir, { recursive: true, force: true });
 });
