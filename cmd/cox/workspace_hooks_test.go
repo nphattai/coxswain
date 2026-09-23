@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/nphattai/coxswain/internal/adapter/harness/pi"
 )
 
 // cox workspace hooks --harness pi installs the project-local extension and never installs claude/codex hooks. The
@@ -17,7 +19,7 @@ func TestWorkspaceHooksPiInstallsExtensionAndResolves(t *testing.T) {
 		t.Fatalf("pi install exit %d", code)
 	}
 	// The pi extension is installed project-local; no claude/codex hook files are created.
-	if _, err := os.Stat(filepath.Join(root, ".pi", "extensions", "cox-pi.ts")); err != nil {
+	if _, err := os.Stat(filepath.Join(root, pi.ExtensionRelDir, pi.ExtensionEntry)); err != nil {
 		t.Errorf("pi extension not installed: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(root, ".claude", "settings.json")); !os.IsNotExist(err) {
@@ -61,8 +63,8 @@ func TestWorkspaceHooksPiUnboundInstall(t *testing.T) {
 	if code := cmdWorkspaceHooks([]string{"--root", root, "--harness", "pi"}); code != 0 {
 		t.Fatalf("unbound pi install exit %d", code)
 	}
-	extDir := filepath.Join(root, ".pi", "extensions")
-	if _, err := os.Stat(filepath.Join(extDir, "cox-pi.ts")); err != nil {
+	extDir := filepath.Join(root, pi.ExtensionRelDir)
+	if _, err := os.Stat(filepath.Join(extDir, pi.ExtensionEntry)); err != nil {
 		t.Errorf("pi extension not installed: %v", err)
 	}
 	// Unbound: NO epic marker (the marker is what binds a leader to one epic).

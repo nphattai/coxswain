@@ -59,7 +59,7 @@ func TestWorkspaceInitInstallsUnboundPiExtension(t *testing.T) {
 	if code := cmdWorkspaceInit([]string{"--root", root, "--repo", "app=" + t.TempDir()}); code != 0 {
 		t.Fatalf("init exit %d", code)
 	}
-	extDir := filepath.Join(root, ".pi", "extensions")
+	extDir := filepath.Join(root, pi.ExtensionRelDir)
 	if _, ok := pi.VerifyExtension(root); !ok {
 		t.Fatalf("init did not install a verifiable pi extension under %s", extDir)
 	}
