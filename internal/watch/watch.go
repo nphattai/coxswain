@@ -961,7 +961,8 @@ func LoadSessions(epicDir string) map[string]backend.Session {
 		return out
 	}
 	for _, e := range entries {
-		if !strings.HasSuffix(e.Name(), ".json") || strings.HasSuffix(e.Name(), ".busy.json") {
+		story, ok := state.SessionStory(e.Name())
+		if !ok {
 			continue // skip the sibling harness-owned busy-state records that live in the same dir
 		}
 		b, err := os.ReadFile(filepath.Join(dir, e.Name()))
@@ -972,7 +973,6 @@ func LoadSessions(epicDir string) map[string]backend.Session {
 		if err := json.Unmarshal(b, &s); err != nil {
 			continue
 		}
-		story := strings.TrimSuffix(e.Name(), ".json")
 		s.Story = story // stamp the story so the backend can consult the busy record even for a session persisted before this field existed
 		out[story] = s
 	}
