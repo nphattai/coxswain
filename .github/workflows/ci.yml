@@ -21,6 +21,22 @@ jobs:
       - name: bash -n over v1 scripts
         run: for f in bin/*.sh; do bash -n "$f"; done
 
+  # Pi extension (internal/adapter/harness/pi/extension): the lifecycle suites against a faithful fake of the Pi 0.86.1
+  # session, the extension as `cox workspace init` installs it against the real built cox (dogfood F-4 passed every
+  # fake-cox test and hung a real Pi leader), and a type-check against the pinned Pi package.
+  pi-extension:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install -g typescript@5 @earendil-works/pi-coding-agent@0.86.1
+      - run: bash tests/pi-extension/run.sh
+
   # Onboarding E2E (DESIGN §7): the setup journey from an empty folder to a dispatched story and back via attach, run
   # hermetically with a fake orca and a fake harness (no network, no real Orca). Guards the one-command setup contract.
   onboarding-e2e:
