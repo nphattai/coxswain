@@ -5,12 +5,17 @@
 // start from the story" notice - as a followUp, queuing a second turn behind the launch prompt so the worker redid the
 // whole task and emitted a duplicate completion (two worker_done for one dispatch). A saved checkpoint (resume) must
 // still be injected.
-import { test } from "node:test";
+import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, chmodSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import makeExtension from "./cox-pi.ts";
+import { __resetProcessSingleton } from "./cox-supervisor.ts";
+
+// DESIGN item 2: the extension is a process-global singleton. `node --test` runs this file in one process, so every
+// makeExtension() call after the first would be inert; reset the claim before each test so each activates cleanly.
+beforeEach(__resetProcessSingleton);
 
 type Sent = { text: string; opts: unknown };
 
@@ -361,6 +366,19 @@ test("leader: a starting turn supersedes the pending idle child -> one delivery,
     await handlers["session_shutdown"]?.({}, {});
   });
   rmSync(dir, { recursive: true, force: true });
+});
+
+// --- Single cox extension per process (DESIGN item 2) ---
+// FAIL_TO_PASS: without the singleton guard a second activation in one process wires a second set of handlers (a second
+// wake child, a second busy writer, a duplicate checkpoint per event). The fix makes the second activation inert.
+test("a second cox extension activation in the same process is inert", async () => {
+  const first = fakePi();
+  makeExtension(first.pi as never); // claims the process
+  const second = fakePi();
+  makeExtension(second.pi as never); // must be a no-op
+  assert.ok(Object.keys(first.handlers).length > 0, "the first activation wires its lifecycle handlers");
+  assert.equal(Object.keys(second.handlers).length, 0, "the second activation registers no handlers");
+  assert.equal(second.sent.length, 0, "the second activation delivers nothing");
 });
 
 test("bound leader (COX_EPIC set): prompt-drain and stop-rewake narrow to the one epic", async () => {

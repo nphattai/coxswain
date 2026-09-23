@@ -14,7 +14,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { spawn, execFile, type ChildProcess } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { Supervisor, TurnEndLatch } from "./cox-supervisor.ts";
+import { Supervisor, TurnEndLatch, claimProcessSingleton } from "./cox-supervisor.ts";
 import { coxArgs, resolveEpic } from "./cox-commands.ts";
 
 const EPIC_MARKER = "cox-pi.epic"; // written next to the extension by `cox workspace hooks --harness pi --epic <dir>`
@@ -47,6 +47,9 @@ function markActivated(): void {
 }
 
 export default function (pi: ExtensionAPI): void {
+  // DESIGN item 2: if a cox extension already activated in this Pi process, this second load stays inert - it wires no
+  // handlers and spawns no child, so there is one wake child, one busy writer, and one checkpoint per event.
+  if (!claimProcessSingleton()) return;
   const story = process.env.COX_STORY ?? "";
   const cox = process.env.COX_BIN || "cox";
   const identity = story || "_leader";
