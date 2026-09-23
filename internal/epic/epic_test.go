@@ -19,6 +19,7 @@ type gitBackend struct {
 	wtBase   string
 	removed  []string
 	calls    []string
+	stopped  []string // session IDs Stop was called with
 	stopOK   bool
 	stopErr  error
 	live     backend.Liveness
@@ -44,8 +45,9 @@ func (g *gitBackend) Spawn(backend.Worktree, backend.HarnessSpec, backend.Brief)
 }
 func (g *gitBackend) Send(backend.Session, string) (bool, error) { return true, nil }
 func (g *gitBackend) Interrupt(backend.Session) error            { return nil }
-func (g *gitBackend) Stop(backend.Session) (bool, error) {
+func (g *gitBackend) Stop(s backend.Session) (bool, error) {
 	g.calls = append(g.calls, "Stop")
+	g.stopped = append(g.stopped, s.ID)
 	return g.stopOK, g.stopErr
 }
 func (g *gitBackend) Probe(backend.Session) (backend.Liveness, error) {
