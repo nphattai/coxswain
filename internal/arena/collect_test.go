@@ -17,7 +17,8 @@ func TestCollect(t *testing.T) {
 	advWt := t.TempDir()
 	mustDir(t, filepath.Join(advWt, "reports", "arena"))
 	writeFile(t, filepath.Join(advWt, "reports", "arena", "round-1-adversary.md"), "adv report")
-	writeFile(t, filepath.Join(epic, ".cox", "wt", "arena-adversary"), advWt)
+	// adversary's record is the JSON form dispatch writes (F-13); reviewer's below is the legacy plain path.
+	writeFile(t, filepath.Join(epic, ".cox", "wt", "arena-adversary"), `{"path":"`+advWt+`","attempt":1}`)
 
 	// reviewer: report already in the epic dir -> not clobbered even though the worktree has a different one.
 	revWt := t.TempDir()

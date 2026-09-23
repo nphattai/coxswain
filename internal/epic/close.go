@@ -214,7 +214,11 @@ func (o *CloseOptions) removeWorktrees() error {
 	if o.Runtime == nil {
 		return nil
 	}
-	for _, wt := range o.worktrees() {
+	wts, err := o.worktrees()
+	if err != nil {
+		return err
+	}
+	for _, wt := range wts {
 		if !o.Force {
 			if ok, reason := o.landed(wt.Path); !ok {
 				fmt.Fprintf(o.out(), "  keep %s (%s): pass --force to remove\n", wt.Path, reason)
@@ -248,7 +252,8 @@ func (o *CloseOptions) recordIncomplete(step, reason string) {
 	fmt.Fprintf(o.out(), "FAILED at %s: %s (wrote .cox/close.incomplete.json, NOT archived)\n", step, reason)
 }
 
-// sessions loads .cox/sessions/*.json.
+// sessions loads the worker sessions under .cox/sessions (state.SessionStory: <story>.json, never the harness busy
+// record <story>.busy.json beside it, which archives with .cox).
 func (o *CloseOptions) sessions() map[string]backend.Session {
 	out := map[string]backend.Session{}
 	dir := filepath.Join(o.EpicDir, ".cox", "sessions")
@@ -257,7 +262,8 @@ func (o *CloseOptions) sessions() map[string]backend.Session {
 		return out
 	}
 	for _, e := range entries {
-		if !strings.HasSuffix(e.Name(), ".json") {
+		story, ok := state.SessionStory(e.Name())
+		if !ok {
 			continue
 		}
 		b, err := os.ReadFile(filepath.Join(dir, e.Name()))
@@ -266,7 +272,7 @@ func (o *CloseOptions) sessions() map[string]backend.Session {
 		}
 		var s backend.Session
 		if json.Unmarshal(b, &s) == nil {
-			out[strings.TrimSuffix(e.Name(), ".json")] = s
+			out[story] = s
 		}
 	}
 	return out
@@ -297,19 +303,24 @@ type worktreeRef struct {
 }
 
 // worktrees gathers every worktree to remove: the per-story worktrees under .cox/wt/* and the epic alias symlinks named
-// in the repos file. Paths are de-duplicated.
-func (o *CloseOptions) worktrees() []worktreeRef {
+// in the repos file. Paths are de-duplicated. A story record is read through the one shared reader (JSON or legacy plain
+// path); an unreadable or malformed record is an error, never skipped, so close cannot archive over a worktree it could
+// not identify (fail-closed).
+func (o *CloseOptions) worktrees() ([]worktreeRef, error) {
 	seen := map[string]bool{}
 	var out []worktreeRef
 	// Story worktrees.
 	wtDir := filepath.Join(o.EpicDir, ".cox", "wt")
 	if entries, err := os.ReadDir(wtDir); err == nil {
 		for _, e := range entries {
-			b, err := os.ReadFile(filepath.Join(wtDir, e.Name()))
-			if err != nil {
+			if e.IsDir() {
 				continue
 			}
-			p := strings.TrimSpace(string(b))
+			rec, err := state.ReadWorktreeRecord(o.EpicDir, e.Name())
+			if err != nil {
+				return nil, err
+			}
+			p := rec.Path
 			if p != "" && !seen[p] {
 				seen[p] = true
 				out = append(out, worktreeRef{Path: p})
@@ -334,7 +345,7 @@ func (o *CloseOptions) worktrees() []worktreeRef {
 			}
 		}
 	}
-	return out
+	return out, nil
 }
 
 // landed reports whether a worktree's work is safely landed, so its checkout can be removed without losing anything,

@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/nphattai/coxswain/internal/arena/roles"
+	"github.com/nphattai/coxswain/internal/state"
 )
 
 // Collect brings each arena role's round-N report home from its worktree into the epic reports dir. A role runs on an
@@ -23,7 +23,7 @@ func Collect(epicDir string, round int) ([]string, error) {
 		if _, err := os.Stat(dst); err == nil {
 			continue // the role wrote it straight to the epic dir
 		}
-		wt := worktreeOf(epicDir, "arena-"+string(role))
+		wt := state.ReadWorktree(epicDir, "arena-"+string(role)) // JSON or legacy record; "" when none
 		if wt == "" {
 			continue
 		}
@@ -41,13 +41,4 @@ func Collect(epicDir string, round int) ([]string, error) {
 		copied = append(copied, dst)
 	}
 	return copied, nil
-}
-
-// worktreeOf reads the recorded worktree path for a story from <epic>/.cox/wt/<story>, or "" when there is none.
-func worktreeOf(epicDir, story string) string {
-	b, err := os.ReadFile(filepath.Join(epicDir, ".cox", "wt", story))
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(b))
 }

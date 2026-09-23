@@ -3,8 +3,10 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/nphattai/coxswain/internal/adapter/backend"
 	"github.com/nphattai/coxswain/internal/adapter/backend/fake"
 )
 
@@ -70,5 +72,54 @@ func TestCloseArenaWorktreesSkipsFailures(t *testing.T) {
 	// The record is kept so the failed removal can be retried.
 	if got := readWorktree(epic, "arena-adversary"); got != "/wt/a" {
 		t.Fatalf("failed remove should keep the record, got %q", got)
+	}
+}
+
+// pathRecorder is the fake backend with the worktree paths WorktreeRemove was handed.
+type pathRecorder struct {
+	*fake.Backend
+	removed []string
+}
+
+func (p *pathRecorder) WorktreeRemove(wt backend.Worktree) error {
+	p.removed = append(p.removed, wt.Path)
+	return p.Backend.WorktreeRemove(wt)
+}
+
+// arena close hands the backend the decoded path of the JSON worktree record dispatch writes, never the raw JSON text
+// (F-13), and still accepts a legacy plain-path record.
+func TestCloseArenaWorktreesDecodesRecord(t *testing.T) {
+	epic := t.TempDir()
+	if err := saveWorktree(epic, "arena-adversary", "/wt/arena-adversary", 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(epic, ".cox", "wt", "arena-reviewer"), []byte("/wt/arena-reviewer\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	b := &pathRecorder{Backend: fake.New()}
+	if _, err := closeArenaWorktrees(b, epic); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(b.removed, ","); got != "/wt/arena-adversary,/wt/arena-reviewer" {
+		t.Fatalf("WorktreeRemove paths = %q, want the decoded paths", got)
+	}
+}
+
+// A malformed arena worktree record is reported and kept, never deleted as if it were empty.
+func TestCloseArenaWorktreesKeepsMalformedRecord(t *testing.T) {
+	epic := t.TempDir()
+	rec := filepath.Join(epic, ".cox", "wt", "arena-domain")
+	if err := os.MkdirAll(filepath.Dir(rec), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(rec, []byte(`{"path":`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	closed, err := closeArenaWorktrees(fake.New(), epic)
+	if err != nil || closed != 0 {
+		t.Fatalf("closed=%d err=%v, want 0 and no error", closed, err)
+	}
+	if _, err := os.Stat(rec); err != nil {
+		t.Fatalf("malformed record must be kept: %v", err)
 	}
 }
