@@ -91,7 +91,12 @@ func closeArenaWorktrees(b backend.Backend, epicDir string) (int, error) {
 			continue
 		}
 		rec := filepath.Join(wtDir, e.Name())
-		path := readTrimmed(rec)
+		r, err := state.ReadWorktreeRecord(epicDir, e.Name())
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "cox: warning: %v (record kept)\n", err)
+			continue
+		}
+		path := r.Path
 		if path == "" {
 			_ = os.Remove(rec)
 			continue

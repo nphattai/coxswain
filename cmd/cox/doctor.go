@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/nphattai/coxswain/internal/adapter/backend"
+	"github.com/nphattai/coxswain/internal/adapter/harness/pi"
 	"github.com/nphattai/coxswain/internal/adapter/harness/registry"
 	"github.com/nphattai/coxswain/internal/doctor"
 	"github.com/nphattai/coxswain/internal/quota"
@@ -81,6 +82,53 @@ func environmentChecks(pol *workspace.Policy) []doctor.Check {
 	return checks
 }
 
+// piLeaderExtensionCheck reports the workspace's Pi leader extension health when the policy lists pi as a leader option
+// (DESIGN item 5). Missing, or a hash that differs from this cox binary's embedded copy (stale), is an ISSUE whose repair
+// is `cox workspace init`; a verified install is a pass. It returns nil (no check) when pi is not a leader option or
+// there is no primary workspace, so a claude/codex-only workspace gets no pi noise. It lives in the cmd layer because
+// internal/doctor is deliberately free of the harness adapters.
+func piLeaderExtensionCheck(pol *workspace.Policy, wsRoot string) *doctor.Check {
+	if pol == nil || wsRoot == "" {
+		return nil
+	}
+	isLeaderOption := false
+	for _, h := range pol.Harness.Leader.Options {
+		if h == "pi" {
+			isLeaderOption = true
+			break
+		}
+	}
+	if !isLeaderOption {
+		return nil
+	}
+	extDir := filepath.Join(wsRoot, pi.ExtensionRelDir)
+	if _, ok := pi.VerifyExtension(wsRoot); ok {
+		return &doctor.Check{Name: "pi leader extension", Status: doctor.StatusPass, Detail: extDir}
+	}
+	detail := "stale (hash differs from this cox binary)"
+	if _, err := os.Stat(filepath.Join(extDir, pi.ExtensionEntry)); os.IsNotExist(err) {
+		detail = "missing"
+	}
+	return &doctor.Check{
+		Name:   "pi leader extension",
+		Status: doctor.StatusFail,
+		Detail: fmt.Sprintf("%s at %s", detail, extDir),
+		Fix:    "cox workspace init",
+	}
+}
+
+// checkLine renders one check row: name, status, detail, and the repair when there is one.
+func checkLine(c doctor.Check) string {
+	line := fmt.Sprintf("%-22s %s", c.Name, c.Status)
+	if c.Detail != "" {
+		line += "  " + c.Detail
+	}
+	if c.Fix != "" {
+		line += "  (fix: " + c.Fix + ")"
+	}
+	return line
+}
+
 // quotaDoctor is the doctor view of the quota-axi adapter and any manual readings in effect: whether the binary is
 // found, its version, whether the automatic source is Keychain-granted (derived from a live claude reading when an epic
 // is given), and the active captain-declared readings.
@@ -123,7 +171,14 @@ func cmdDoctor(args []string) int {
 	wsDirs := doctor.FindWorkspaces(roots, explicit)
 	wsReports := make([]doctor.WorkspaceReport, 0, len(wsDirs))
 	for _, d := range wsDirs {
-		wsReports = append(wsReports, doctor.InspectWorkspace(d))
+		r := doctor.InspectWorkspace(d)
+		if r.Valid {
+			// Per workspace, not once for the cwd/--epic workspace: `--root <ws>` from outside <ws> must check <ws>'s own
+			// Pi leader extension (finding 3 / dogfood AC6).
+			wpol, _ := workspace.LoadPolicy(d)
+			r.PiLeader = piLeaderExtensionCheck(wpol, d)
+		}
+		wsReports = append(wsReports, r)
 	}
 
 	// The primary policy for the environment checks: the workspace of --epic/cwd, else the first workspace found.
@@ -230,6 +285,9 @@ func cmdDoctor(args []string) int {
 					fmt.Fprintf(os.Stderr, "ISSUE: workspace %s epic %s %s\n", w.Root, ep.Slug, iss)
 				}
 			}
+			if c := w.PiLeader; c != nil {
+				fmt.Println("    " + checkLine(*c))
+			}
 			for _, alias := range w.PolicyInRepo {
 				fmt.Fprintf(os.Stderr, "WARN: repo %q checkout carries cox/policy.json; nothing reads it and it drifts from the workspace policy - delete it\n", alias)
 			}
@@ -239,14 +297,7 @@ func cmdDoctor(args []string) int {
 		}
 		fmt.Println("checks:")
 		for _, c := range checks {
-			line := fmt.Sprintf("  %-22s %s", c.Name, c.Status)
-			if c.Detail != "" {
-				line += "  " + c.Detail
-			}
-			if c.Fix != "" {
-				line += "  (fix: " + c.Fix + ")"
-			}
-			fmt.Println(line)
+			fmt.Println("  " + checkLine(c))
 		}
 		fmt.Println("harness cards:")
 		for _, c := range out.Harnesses {
@@ -296,7 +347,7 @@ func cmdDoctor(args []string) int {
 	hasFail := len(rep.Issues) > 0 || len(watcherIssues) > 0 || len(wsWatcherIssues) > 0 || len(wsRepoIssues) > 0 || len(wsSignedIssues) > 0 || len(wsLeaderIssues) > 0 || len(wsDupLeaderIssues) > 0 || len(orphanIssues) > 0 || len(doorbellIssues) > 0
 	hasUnknown := false
 	for _, w := range wsReports {
-		if !w.Valid || w.PolicyError != "" {
+		if !w.Valid || w.PolicyError != "" || (w.PiLeader != nil && w.PiLeader.Status == doctor.StatusFail) {
 			hasFail = true
 		}
 	}

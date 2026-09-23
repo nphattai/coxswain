@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -545,3 +546,209 @@ func TestGuardHealthyWatcherProceeds(t *testing.T) {
 }
 
 var errWatchRefused = errors.New("watcher refused")
+
+// openStdin replaces os.Stdin with the read end of a pipe whose writer is held open and never written: the exact stdin a
+// Node `execFile` child gets (dogfood F-4). Restored and closed at cleanup.
+func openStdin(t *testing.T) {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	prev := os.Stdin
+	os.Stdin = r
+	t.Cleanup(func() {
+		os.Stdin = prev
+		_ = w.Close()
+		_ = r.Close()
+	})
+}
+
+// No `cox hook` subcommand may block on an open, never-closed stdin (finding 5 / F-4): the Pi extension's first leader
+// turn hung forever in prompt-drain's io.ReadAll(os.Stdin). Each hook must return well inside the deadline.
+func TestHooksReturnWithOpenStdinPipe(t *testing.T) {
+	ws := t.TempDir()
+	mustWrite(t, filepath.Join(ws, "cox", "workspace.json"), `{"repos":[{"alias":"a","path":"/x","production":"main"}]}`)
+	epic := filepath.Join(ws, "proj", "epics", "e1")
+	if err := os.MkdirAll(filepath.Join(epic, ".cox"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(epic, ".cox", "watch.pid"), strconv.Itoa(os.Getpid()))
+	seedWake(t, epic, wake.KindWorkerDone) // urgent: stop-rewake exits 2 at once instead of long-polling
+	wt := t.TempDir()
+	gitInitRepo(t, wt)
+	t.Setenv("ORCA_TERMINAL_HANDLE", "")
+	t.Setenv("COX_EPIC", "")
+	t.Setenv("COX_STORY", "")
+	t.Chdir(ws)
+	openStdin(t)
+	for _, args := range [][]string{
+		{"prompt-drain"},
+		{"prompt-drain", "--epic", epic},
+		{"stop-rewake", "--harness", "claude", "--epic", epic},
+		{"precompact", "--worktree", wt},
+		{"session-start", "--worktree", wt},
+		{"precompact", "--epic", epic, "--story", "w1", "--worktree", wt},
+		{"session-start", "--epic", epic, "--story", "w1", "--worktree", wt},
+	} {
+		done := make(chan int, 1)
+		go func() { done <- cmdHook(args) }()
+		select {
+		case <-done:
+		case <-time.After(15 * time.Second): // the bounded read is 1s; the old unbounded read never returns
+			t.Fatalf("cox hook %v blocked on an open, never-closed stdin", args)
+		}
+	}
+}
+
+// The prompt-drain header names the epic dir, so the leader acks the right epic (F-8: a slug-only header made a Pi
+// leader ack the workspace root and the wakes came back).
+func TestPromptDrainHeaderNamesEpicDir(t *testing.T) {
+	epic := t.TempDir()
+	seedWake(t, epic, wake.KindWorkerDone)
+	var out, errW bytes.Buffer
+	if code := runPromptDrainAll([]string{epic}, "claude", promptJSON("continue"), &out, &errW); code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	if !strings.Contains(out.String(), "--epic "+epic) {
+		t.Fatalf("header must carry `--epic %s`:\n%s", epic, out.String())
+	}
+}
+
+// A leader with no saved checkpoint gets NO session-start text (F-6: the "No checkpoint ... Start from the story" notice
+// became an extra Pi leader turn); with a checkpoint saved, it is injected.
+func TestLeaderSessionStartSilentWithoutCheckpoint(t *testing.T) {
+	ws := t.TempDir()
+	mustWrite(t, filepath.Join(ws, "cox", "workspace.json"), `{"repos":[{"alias":"a","path":"/x","production":"main"}]}`)
+	epic := filepath.Join(ws, "proj", "epics", "e1")
+	if err := os.MkdirAll(filepath.Join(epic, ".cox"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(epic, ".cox", "watch.pid"), strconv.Itoa(os.Getpid()))
+	wt := t.TempDir()
+	gitInitRepo(t, wt)
+	t.Setenv("ORCA_TERMINAL_HANDLE", "")
+	t.Setenv("COX_EPIC", "")
+	t.Setenv("COX_STORY", "")
+	t.Chdir(ws)
+	capture := func() string {
+		r, w, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		prev := os.Stdout
+		os.Stdout = w
+		code := cmdHook([]string{"session-start", "--worktree", wt})
+		os.Stdout = prev
+		_ = w.Close()
+		b, _ := io.ReadAll(r)
+		if code != 0 {
+			t.Fatalf("session-start exit %d", code)
+		}
+		return string(b)
+	}
+	if got := capture(); strings.TrimSpace(got) != "" {
+		t.Fatalf("fresh leader must get no session-start text, got %q", got)
+	}
+	if code := cmdHook([]string{"precompact", "--worktree", wt}); code != 0 {
+		t.Fatalf("precompact exit %d", code)
+	}
+	if got := capture(); !strings.Contains(got, "_leader") {
+		t.Fatalf("a saved leader checkpoint must be injected, got %q", got)
+	}
+}
+
+// stubWatcher points launchWatcher at a shell script standing in for `cox watch --epic <dir>` with confirm window wait.
+// body runs with $3 = the epic dir. The stub records its pid ($$ survives exec) and cleanup kills it, so a stub that
+// outlives its test (launchWatcher never stops a confirmed or refused watcher) leaves no stray process behind.
+func stubWatcher(t *testing.T, wait time.Duration, body string) {
+	t.Helper()
+	dir := t.TempDir()
+	bin, pidFile := filepath.Join(dir, "coxwatch"), filepath.Join(dir, "pid")
+	mustWrite(t, bin, "#!/bin/sh\necho $$ > '"+pidFile+"'\n"+body+"\n")
+	if err := os.Chmod(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	prevExe, prevWait := watcherExe, watcherConfirmWait
+	watcherExe = func() (string, error) { return bin, nil }
+	watcherConfirmWait = wait
+	t.Cleanup(func() {
+		watcherExe, watcherConfirmWait = prevExe, prevWait
+		if pid := readPid(pidFile); pid > 0 {
+			if p, err := os.FindProcess(pid); err == nil {
+				_ = p.Kill() // already exited (and reaped by launchWatcher) is fine
+			}
+		}
+	})
+}
+
+// Dogfood F-10: a restarted watcher that exits at once (a fresh epic with no .cox/run: "watch needs a live backend") is
+// NOT "restarted" - the guard takes the repair/exit-2 path. On beedd57 launchWatcher only checked cmd.Start(), reported
+// "restarted", exited 0, and the Pi extension re-armed into the same dead restart: 35k cox calls in 320s.
+func TestGuardRestartThatDiesAtOnceIsNotRestarted(t *testing.T) {
+	stubWatcher(t, 10*time.Second, "exit 1")
+	epic := t.TempDir()
+	var out bytes.Buffer
+	code := runStopRewake(rewakeCfg{epics: []string{epic}, guardEpics: []string{epic}, out: &out, sleep: noSleep})
+	if code != 2 {
+		t.Fatalf("a restart that dies at once must reopen with the repair line (exit 2), got %d: %q", code, out.String())
+	}
+	if strings.Contains(out.String(), "restarted it") || !strings.Contains(out.String(), "cox watch --epic "+epic+" --replace") {
+		t.Fatalf("expected the repair line and no restart claim, got %q", out.String())
+	}
+}
+
+// launchWatcher confirms a restart by a fresh lasttick from the still-running watcher; one that runs but never ticks is
+// refused after the confirm window.
+func TestLaunchWatcherConfirmsFreshTick(t *testing.T) {
+	epic := t.TempDir()
+	// The ticking stub confirms at its first tick, so a wide window costs nothing and keeps a slow -race runner green.
+	stubWatcher(t, 10*time.Second, `mkdir -p "$3/.cox/watch" && date > "$3/.cox/watch/lasttick" && exec sleep 30`)
+	if err := launchWatcher(epic); err != nil {
+		t.Fatalf("a watcher that ticks must be confirmed: %v", err)
+	}
+	// The never-ticks stub outlives the 1s window 30x: a stub that exits near the deadline races "exited at once"
+	// against "did not tick" (the Ubuntu flake on PR #26 with sleep 5 against a 5s window).
+	stubWatcher(t, time.Second, "exec sleep 30")
+	epic2 := t.TempDir()
+	if err := launchWatcher(epic2); err == nil || !strings.Contains(err.Error(), "did not tick") {
+		t.Fatalf("a watcher that never ticks must be refused, got %v", err)
+	}
+}
+
+// Finding 8 / AC5: a turn a stop-rewake reopen opened (Pi runs prompt-drain on it) keeps the block budget; only a user
+// turn resets it. On beedd57 every Pi reopen reset it, so a dead watcher reopened 49 model turns with no warning.
+func TestPromptDrainReopenKeepsBlockBudget(t *testing.T) {
+	ws := t.TempDir()
+	mustWrite(t, filepath.Join(ws, "cox", "workspace.json"), `{"repos":[{"alias":"a","path":"/x","production":"main"}]}`)
+	t.Chdir(ws)
+	t.Setenv("TMPDIR", t.TempDir())
+	t.Setenv("ORCA_TERMINAL_HANDLE", "pi-test")
+	blocks := rewakeBlocksPath("pi-test")
+	mustWrite(t, blocks, "2")
+	openStdin(t)
+	if code := cmdHook([]string{"prompt-drain", "--harness", "pi", "--reopen"}); code != 0 {
+		t.Fatalf("prompt-drain --reopen exit %d", code)
+	}
+	if b, err := os.ReadFile(blocks); err != nil || strings.TrimSpace(string(b)) != "2" {
+		t.Fatalf("a reopen-opened turn must keep the block budget, got %q %v", b, err)
+	}
+	if code := cmdHook([]string{"prompt-drain", "--harness", "pi"}); code != 0 {
+		t.Fatalf("prompt-drain exit %d", code)
+	}
+	if _, err := os.Stat(blocks); !os.IsNotExist(err) {
+		t.Fatalf("a user turn must reset the block budget, stat err=%v", err)
+	}
+}
+
+// Pi re-arms its own idle waiter on exit 0, so stop-rewake under --harness pi never ticks (a tick would cost a model
+// turn); claude keeps ticking.
+func TestStopRewakePiNeverTicks(t *testing.T) {
+	epic := t.TempDir()
+	seedEvent(t, epic, state.Submitted, state.Working)
+	var out bytes.Buffer
+	code := runStopRewake(rewakeCfg{epics: []string{epic}, harness: "pi", maxWait: 0, batchMax: time.Second, poll: time.Second, out: &out, sleep: noSleep})
+	if code != 0 || out.Len() != 0 {
+		t.Fatalf("pi: MAX_WAIT must exit 0 with no tick, got %d %q", code, out.String())
+	}
+}

@@ -22,25 +22,36 @@ var extensionFS embed.FS
 // with `-e`; the hash marker records the installed content hash so dispatch can verify the extension before claiming
 // the push/auto card.
 const (
-	ExtensionRelDir  = ".pi/extensions" // project-local dir, relative to the worktree/clone root
-	ExtensionEntry   = "cox-pi.ts"      // the -e entry file
+	// ExtensionRelDir is a project-local SUBDIR (relative to the worktree/clone root). Pi's extension discovery treats
+	// each top-level `.ts`/`.js` in `.pi/extensions/` as its own extension, but resolves a SUBDIRECTORY to a single
+	// extension via its `index.ts` (its helper modules are imported, never scanned). Installing under `coxswain/` so pi
+	// loads only the entry - a flat layout made pi try to load cox-supervisor.ts / cox-commands.ts as extensions and fail
+	// (dogfood, once `--no-extensions` was dropped for global-package parity).
+	ExtensionRelDir  = ".pi/extensions/coxswain"
+	ExtensionEntry   = "index.ts" // the entry pi auto-discovers for the subdir (and the -e path); content is cox-pi.ts
 	extensionSupport = "cox-supervisor.ts"
 	extensionCmds    = "cox-commands.ts"
 	extensionMarker  = ".cox-pi.hash"      // load/hash marker written by cox
-	extensionEpic    = "cox-pi.epic"       // epic binding the extension reads when COX_EPIC is absent (leader install)
+	extensionEpic    = "cox-pi.epic"       // epic binding the extension reads when COX_EPIC is absent (bound leader install)
 	extensionActive  = ".cox-pi.activated" // runtime handshake: the extension writes this on session_start when Pi loads it
 )
 
-// extensionSources returns the embedded {basename: content} the extension is made of, in a stable order.
+// extensionSources returns the embedded {installed-basename: content} the extension is made of, in a stable order. The
+// entry is installed as index.ts (from the embedded cox-pi.ts) so pi discovers the coxswain/ subdir as one extension.
 func extensionSources() map[string][]byte {
+	files := map[string]string{
+		ExtensionEntry:   "extension/cox-pi.ts",
+		extensionSupport: "extension/cox-supervisor.ts",
+		extensionCmds:    "extension/cox-commands.ts",
+	}
 	src := map[string][]byte{}
-	for _, name := range []string{ExtensionEntry, extensionSupport, extensionCmds} {
-		b, err := extensionFS.ReadFile("extension/" + name)
+	for installed, embedPath := range files {
+		b, err := extensionFS.ReadFile(embedPath)
 		if err != nil {
 			// Embedded content is compiled in; a read error here is a build defect, not a runtime condition.
-			panic(fmt.Sprintf("pi: embedded extension %q missing: %v", name, err))
+			panic(fmt.Sprintf("pi: embedded extension %q missing: %v", embedPath, err))
 		}
-		src[name] = b
+		src[installed] = b
 	}
 	return src
 }
@@ -67,10 +78,10 @@ func hashSources(src map[string][]byte) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// InstallExtension writes the embedded extension sources into <root>/.pi/extensions/, a hash marker, and (when epic is
-// non-empty) an epic-binding marker the extension reads when COX_EPIC is absent (a leader install). It returns the
-// absolute entry path to load with `-e`. It never touches user-level Pi config. Idempotent: a re-run rewrites the same
-// bytes and markers.
+// InstallExtension writes the embedded extension sources into <root>/.pi/extensions/coxswain/ (the entry as index.ts), a
+// hash marker, and (when epic is non-empty) an epic-binding marker the extension reads when COX_EPIC is absent (a bound
+// leader install). It returns the absolute entry path (index.ts) pi loads. It never touches user-level Pi config.
+// Idempotent: a re-run rewrites the same bytes and markers.
 func InstallExtension(root, epic string) (entryPath string, err error) {
 	dir := filepath.Join(root, ExtensionRelDir)
 	if err := os.MkdirAll(dir, 0o755); err != nil {

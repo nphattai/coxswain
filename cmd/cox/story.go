@@ -645,14 +645,14 @@ func storyControl(verb string, args []string) int {
 		curHarness := currentHarness(*epicDir, story)
 		rerouting := *harnessFlag != "" && *harnessFlag != curHarness
 		targetHarness := nonEmpty(*harnessFlag, curHarness)
-		// Resolve the model: a reroute takes the new harness's policy default (the old model belongs to the old harness,
-		// M10c); a same-harness resume keeps the frontmatter/explicit model as before.
-		var targetModel string
-		if rerouting {
-			targetModel = resolveWorkerModel(loadPolicyQuiet(*epicDir), targetHarness, *modelFlag)
-		} else {
-			targetModel = modelAlias(nonEmpty(*modelFlag, meta.Model))
+		// Resolve the model through the one launch resolver every path uses (finding 4 / F-2): --model, else the
+		// frontmatter model (same harness only - on a reroute the old model belongs to the old harness, M10c), else the
+		// policy default for the target harness. A pi story with no pinned model resumes on harness.worker.models.pi.
+		pinned := *modelFlag
+		if !rerouting {
+			pinned = nonEmpty(pinned, meta.Model)
 		}
+		targetModel := resolveWorkerModel(loadPolicyQuiet(*epicDir), targetHarness, pinned)
 		if !*forceModel {
 			if bad, msg := modelHarnessMismatch(targetHarness, targetModel); bad {
 				return fail("%s; pass --force-model to override", msg)

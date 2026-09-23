@@ -21,3 +21,4 @@ The decisions behind coxswain, as ADRs.
 - [0017 - Delivery mode and merge authority are explicit and enforced in code](0017-delivery-mode-and-merge-authority.md)
 - [0018 - Story kind ship|scout, with a report gate and promotion](0018-story-kinds.md)
 - [0019 - Routing: the rule match is a model's judgment, the gates and ranking are code](0019-routing-model-judgment-code-gates.md)
+- [0020 - Pi parity: global packages in workers, workspace-level leader](0020-pi-parity-global-packages-workers-workspace-leader.md)

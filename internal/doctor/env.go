@@ -73,6 +73,9 @@ type WorkspaceReport struct {
 	// workspace loads (structural JSON is valid), but a leader cannot cut a worktree from it, so doctor fails on these
 	// (cox-onboarding finding 7 / codex PR#3 r3): existence and git-checkout are a doctor concern, not a load-time one.
 	RepoIssues []string `json:"repo_issues,omitempty"`
+	// PiLeader is this workspace's Pi leader extension check (nil when pi is not a leader option). It is filled per
+	// workspace by the doctor command, so `cox doctor --root <ws>` checks <ws>'s own extension (finding 3).
+	PiLeader *Check `json:"pi_leader,omitempty"`
 }
 
 // Roots merges the default roots ($HOME/Work and $ORCA_WORKSPACES), $COX_ROOTS (path-list separated), and any explicit

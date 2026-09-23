@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/nphattai/coxswain/internal/adapter/backend"
 	"github.com/nphattai/coxswain/internal/adapter/harness"
@@ -25,55 +24,28 @@ func harnessFor(name string) harness.Harness {
 	return registry.Default()
 }
 
-func wtFilePath(epicDir, story string) string {
-	return filepath.Join(epicDir, controlDir, "wt", story)
-}
-
-// worktreeFile is the on-disk worktree record: the checkout path plus the attempt that wrote it (DESIGN wave-2 item 7),
-// so a late writer from a prior incarnation can be dropped. A legacy file is the bare path text, which readWorktree
-// still parses.
-type worktreeFile struct {
-	Path    string `json:"path"`
-	Attempt int    `json:"attempt"`
-}
+func wtFilePath(epicDir, story string) string { return state.WorktreePath(epicDir, story) }
 
 // readWorktree returns the story's recorded worktree path, or "" when unset. It accepts both the JSON worktree record
-// and the legacy plain-path text (a file written before this change), so an in-flight epic is never blocked.
+// and the legacy plain-path text through the one shared reader (state.ReadWorktreeRecord), so an in-flight epic is
+// never blocked.
 func readWorktree(epicDir, story string) string {
-	wt, _ := readWorktreeRecord(epicDir, story)
-	return wt
-}
-
-// readWorktreeRecord returns the worktree path and the attempt that wrote it (0 for a legacy plain-path file), and
-// whether a record was read at all.
-func readWorktreeRecord(epicDir, story string) (path string, attempt int) {
-	raw := readTrimmed(wtFilePath(epicDir, story))
-	if raw == "" {
-		return "", 0
-	}
-	if strings.HasPrefix(raw, "{") {
-		var f worktreeFile
-		if json.Unmarshal([]byte(raw), &f) == nil && f.Path != "" {
-			return f.Path, f.Attempt
-		}
-		return "", 0
-	}
-	return raw, 0
+	return state.ReadWorktree(epicDir, story)
 }
 
 // saveWorktree writes the story's worktree record by temp + rename, stamped with the attempt. A write whose attempt is
 // LOWER than the attempt already on disk is dropped with a stderr note, so a stale writer never clobbers the newer
 // worktree record (DESIGN wave-2 item 7).
 func saveWorktree(epicDir, story, path string, attempt int) error {
-	if _, cur := readWorktreeRecord(epicDir, story); cur > 0 && attempt < cur {
-		fmt.Fprintf(os.Stderr, "cox: note: dropped worktree write for %s (attempt %d < %d on disk)\n", story, attempt, cur)
+	if cur, _ := state.ReadWorktreeRecord(epicDir, story); cur.Attempt > 0 && attempt < cur.Attempt {
+		fmt.Fprintf(os.Stderr, "cox: note: dropped worktree write for %s (attempt %d < %d on disk)\n", story, attempt, cur.Attempt)
 		return nil
 	}
 	dir := filepath.Join(epicDir, controlDir, "wt")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	b, err := json.Marshal(worktreeFile{Path: path, Attempt: attempt})
+	b, err := json.Marshal(state.WorktreeRecord{Path: path, Attempt: attempt})
 	if err != nil {
 		return err
 	}

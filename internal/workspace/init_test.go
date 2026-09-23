@@ -31,7 +31,7 @@ func TestScaffoldWritesEverythingAndIsIdempotent(t *testing.T) {
 	}
 	// .gitignore carries the machine-bound rules including the per-alias symlink line.
 	gi, _ := os.ReadFile(filepath.Join(root, ".gitignore"))
-	for _, rule := range []string{"cox/workspace.json", "cox/.cache/", "**/.cox/", "**/.cox.closed/", "**/epics/*/app"} {
+	for _, rule := range []string{"cox/workspace.json", "cox/.cache/", "**/.cox/", "**/.cox.closed/", ".pi/extensions/", "**/epics/*/app"} {
 		if !strings.Contains(string(gi), rule) {
 			t.Errorf(".gitignore missing rule %q:\n%s", rule, gi)
 		}
@@ -56,6 +56,45 @@ func TestScaffoldWritesEverythingAndIsIdempotent(t *testing.T) {
 	}
 	if wsAfter, _ := os.ReadFile(filepath.Join(root, "cox", "workspace.json")); string(wsAfter) != string(wsBefore) {
 		t.Error("re-run rewrote workspace.json")
+	}
+}
+
+// The embedded template policy lists pi as a leader and worker option (the reference the stale-options notice compares
+// an on-disk policy against).
+func TestTemplatePolicyListsPi(t *testing.T) {
+	tmpl, err := TemplatePolicy()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !contains(tmpl.Harness.Leader.Options, "pi") {
+		t.Errorf("template harness.leader.options should list pi: %v", tmpl.Harness.Leader.Options)
+	}
+	if !contains(tmpl.Harness.Worker.Options, "pi") {
+		t.Errorf("template harness.worker.options should list pi: %v", tmpl.Harness.Worker.Options)
+	}
+}
+
+// StaleOptionNotices reports one notice per harness the template lists but the on-disk policy lacks (DESIGN item 6):
+// missing options only, none when current.
+func TestStaleOptionNotices(t *testing.T) {
+	var tmpl Policy
+	tmpl.Harness.Leader.Options = []string{"claude", "codex", "pi"}
+	tmpl.Harness.Worker.Options = []string{"claude", "codex", "pi"}
+	// On-disk policy predates pi in the leader list (still lists it for workers).
+	var onDisk Policy
+	onDisk.Harness.Leader.Options = []string{"claude", "codex"}
+	onDisk.Harness.Worker.Options = []string{"claude", "codex", "pi"}
+
+	notices := StaleOptionNotices(&onDisk, &tmpl)
+	if len(notices) != 1 {
+		t.Fatalf("want exactly one notice, got %d: %v", len(notices), notices)
+	}
+	if !strings.Contains(notices[0], `harness.leader.options is missing "pi"`) {
+		t.Errorf("notice should name the missing pi leader option: %q", notices[0])
+	}
+	// A current policy (template vs itself) produces no notices, and on-disk extras are never reported.
+	if n := StaleOptionNotices(&tmpl, &tmpl); len(n) != 0 {
+		t.Errorf("a current policy must produce no notices, got %v", n)
 	}
 }
 

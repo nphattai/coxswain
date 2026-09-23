@@ -16,6 +16,9 @@ func TestTemplateWorkerModel(t *testing.T) {
 	if got := TemplateWorkerModel("claude"); got != "claude-opus-4-8" {
 		t.Errorf("claude template model = %q, want claude-opus-4-8", got)
 	}
+	if got := TemplateWorkerModel("pi"); got != "openai-codex/gpt-5.6-sol" {
+		t.Errorf("pi template model = %q, want openai-codex/gpt-5.6-sol", got)
+	}
 	if got := TemplateWorkerModel("nope"); got != "" {
 		t.Errorf("unmapped harness must be empty, got %q", got)
 	}

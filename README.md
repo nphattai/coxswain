@@ -47,7 +47,7 @@ Full detail on the boundaries behind these guarantees lives in [docs/ARCHITECTUR
 
 ### Requirements
 
-- A terminal coding agent as the harness: **Claude Code** or **Codex**.
+- A terminal coding agent as the harness: **Claude Code**, **Codex**, or **Pi**.
 - **Orca**, the backend that owns worktrees and terminals.
 - **Git** and the **GitHub CLI**, authenticated through `gh auth login`.
 
@@ -69,7 +69,7 @@ Prefer a prebuilt binary? Download a `coxswain_<version>_<os>_<arch>.tar.gz` arc
 cox doctor
 ```
 
-The harness needs no plugin: `cox workspace init` (next step) writes the leader hooks and skills into your workspace for both Claude Code and Codex. The Claude plugin is an optional, skills-only alternative - see [Install](docs/getting-started/install.md).
+The harness needs no plugin: `cox workspace init` (next step) writes the leader hooks and skills into your workspace for Claude Code and Codex, and installs the workspace-level Pi leader extension under `.pi/extensions/` (per-machine, gitignored) when `pi` is a leader option. The Claude plugin is an optional, skills-only alternative - see [Install](docs/getting-started/install.md).
 
 ### Create a workspace
 

@@ -62,11 +62,14 @@ pull-wake fallback and optional project hooks.
 
 ### Pi (project-local extension)
 
-Install Pi's project-local push/checkpoint extension into the workspace with
-`cox workspace hooks --harness pi --root <clone> --epic <dir>`; it is written under `.pi/extensions/`, is
-hash-verifiable, and does not touch user-level Pi config. Worker dispatch loads it explicitly with `-e` and requires
-`--allow-unsandboxed` because Pi provides no host-filesystem confinement. The [Pi adapter](../adapters/pi.md) explains
-the capability card and its reduced-mode fallback.
+Pi's push/checkpoint extension is project-local and hash-verifiable, written under `.pi/extensions/`, and never touches
+user-level Pi config. When `pi` is a leader option, `cox workspace init` installs it once per workspace for an **unbound
+leader** that supervises every active epic (and adds `.pi/extensions/` to `.gitignore` - per-machine, never committed);
+re-run just the extension with `cox workspace hooks --harness pi` (add `--epic <dir>` to bind one epic instead). A driver
+upgrade needs `cox workspace init` again, and `cox doctor` flags a missing or stale extension with that repair. Worker
+dispatch loads the same extension explicitly with `-e` and requires `--allow-unsandboxed` because Pi provides no
+host-filesystem confinement. The [Pi adapter](../adapters/pi.md) explains the capability card, the leader hooks, and the
+reduced-mode fallback.
 
 ## 4. Verify
 

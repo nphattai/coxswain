@@ -3,7 +3,19 @@
 // These prove the invariants the pi card's wake=push / checkpoint=auto claims are gated on (DESIGN section 4).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { Supervisor, TurnEndLatch, type SupervisorEffects } from "./cox-supervisor.ts";
+import { Outbox, Supervisor, TurnEndLatch, claimProcessSingleton, __resetProcessSingleton, type SupervisorEffects } from "./cox-supervisor.ts";
+
+// DESIGN item 2: the process-global singleton claim is true exactly once per process, so a second cox extension load in
+// one Pi process (launch `-e` plus a project-local `.pi/extensions/` copy) stays inert.
+test("claimProcessSingleton is true once per process, false thereafter", () => {
+  __resetProcessSingleton();
+  assert.equal(claimProcessSingleton(), true, "first activation claims the process");
+  assert.equal(claimProcessSingleton(), false, "second activation is denied");
+  assert.equal(claimProcessSingleton(), false, "and stays denied");
+  __resetProcessSingleton();
+  assert.equal(claimProcessSingleton(), true, "a reset (test-only) re-enables the claim");
+  __resetProcessSingleton();
+});
 
 // recorder builds SupervisorEffects that log calls in order, so tests can assert ordering (successor-before-delivery).
 function recorder(spawnOk = true) {
@@ -28,17 +40,18 @@ test("session_start activates a fresh generation and starts one wait child", () 
   assert.deepEqual(log, ["spawn:1"]);
 });
 
-test("successor-before-delivery: a wake spawns the successor before delivering, exactly once", () => {
+// FAIL_TO_PASS (dogfood F-5): the old onWake spawned a successor wait child BEFORE delivering. With an unacked backlog
+// that successor exits 2 at once, against a turn that has not started yet - ~20 hook spawns/s. A wake now retires its
+// child and delivers exactly once; the caller re-arms when the opened turn settles.
+test("a wake delivers exactly once and spawns no successor (re-armed at settle, F-5)", () => {
   const { fx, log } = recorder();
   const s = new Supervisor(fx);
   s.sessionStart(); // spawn:1
   s.onWake(1, "wake-a");
-  // The successor child (spawn) must come before the delivery, and there is exactly one delivery.
-  assert.deepEqual(log, ["spawn:1", "spawn:1", "deliver:wake-a"]);
-  const spawnIdx = log.lastIndexOf("spawn:1");
-  const deliverIdx = log.indexOf("deliver:wake-a");
-  assert.ok(spawnIdx < deliverIdx, "successor spawn must precede delivery");
-  assert.equal(log.filter((l) => l.startsWith("deliver:")).length, 1, "exactly one delivery per wake");
+  assert.deepEqual(log, ["spawn:1", "deliver:wake-a"], "no successor spawn before or after the delivery");
+  assert.equal(s.liveGeneration(), null, "the exited child is not live; agent_settled re-arms");
+  s.onWake(1, "wake-b"); // a late duplicate callback of the same generation still delivers once, spawns nothing
+  assert.equal(log.filter((l) => l.startsWith("spawn:")).length, 1);
 });
 
 test("a wake for a stale generation is a no-op (one live generation)", () => {
@@ -81,16 +94,6 @@ test("bounded retry on unexpected close, then exhaustion is surfaced", () => {
   assert.equal(s.liveGeneration(), null, "no live child after exhaustion");
 });
 
-test("a successor that will not start does not deliver blind and surfaces the failure", () => {
-  const { fx, log } = recorder(false); // spawnWait always fails
-  const s = new Supervisor(fx);
-  s.sessionStart(); // could not establish a live child (spawn fails)
-  // A wake must not deliver while the successor is not live.
-  s.onWake(s.generation(), "blind");
-  assert.ok(!log.includes("deliver:blind"), "must not deliver when the successor is not live");
-  assert.ok(log.some((l) => l.startsWith("exhausted:")), "successor failure is surfaced");
-});
-
 test("a wait-child timeout restarts the child without delivering or counting a retry", () => {
   const { fx, log } = recorder();
   const s = new Supervisor(fx, 2);
@@ -122,4 +125,109 @@ test("agent_settled latch: one continuation per unhealthy cycle, no recursion", 
   latch.onSettled(true, deliver); // healthy -> clears the latch, no delivery
   assert.equal(delivered, 2);
   assert.ok(!latch.isPending());
+});
+
+// --- Outbox (dogfood F-9): only paths Pi accepts, confirmed delivery ---
+
+// piState is a controllable stand-in for Pi's session flags; outboxRec logs every send.
+function outboxRec() {
+  const st = { streaming: false, quiet: false };
+  const log: string[] = [];
+  const box = new Outbox({
+    prompt: (t) => log.push(`prompt:${t}`),
+    followUp: (t) => log.push(`followUp:${t}`),
+    streaming: () => st.streaming,
+    quiet: () => st.quiet,
+  });
+  return { st, log, box };
+}
+
+test("outbox: holds during startup and a starting prompt; injects context at before_agent_start", () => {
+  const { st, log, box } = outboxRec();
+  box.sessionStart();
+  st.quiet = true;
+  box.push("context", "CKPT");
+  assert.deepEqual(log, [], "startup: nothing is sent while the launch prompt may still enter");
+  box.input(undefined); // the launch prompt enters its preflight
+  st.quiet = true; // Pi still reports idle during preflight - the F-9 window
+  box.flush();
+  assert.deepEqual(log, [], "starting: never prompt into a preflight");
+  assert.deepEqual(box.beforeAgentStart(), ["CKPT"], "the held context rides the starting turn");
+  box.message("launch prompt"); // unrelated message
+  box.message("... CKPT ..."); // the injected context message
+  assert.deepEqual(box.pending(), [], "confirmed by message_start");
+});
+
+test("outbox: followUp only while streaming; prompt only when quiet", () => {
+  const { st, log, box } = outboxRec();
+  box.sessionStart();
+  box.startupGrace(); // no launch prompt
+  box.input(undefined);
+  box.beforeAgentStart();
+  st.streaming = true;
+  box.agentStart();
+  box.push("context", "N1");
+  assert.deepEqual(log, ["followUp:N1"]);
+  box.message("N1");
+  st.streaming = false;
+  st.quiet = true;
+  assert.equal(box.settled(), true);
+  box.push("context", "N2");
+  assert.deepEqual(log, ["followUp:N1", "prompt:N2"]);
+  assert.equal(box.phase(), "starting", "our own prompt is starting: the next push is held");
+  box.push("context", "N3");
+  assert.deepEqual(log, ["followUp:N1", "prompt:N2"]);
+});
+
+test("outbox: a rejected send is requeued at the quiet settle and delivered exactly once", () => {
+  const { st, log, box } = outboxRec();
+  box.sessionStart();
+  st.quiet = true;
+  box.startupGrace();
+  box.push("context", "X");
+  assert.deepEqual(log, ["prompt:X"]);
+  // A foreign run grabbed the agent during our preflight; our prompt lost and settles while the winner still runs.
+  st.quiet = false;
+  box.agentStart(); // the winner's run
+  assert.equal(box.settled(), false, "a race loser's settle is not quiet: nothing requeued or sent into the winner");
+  assert.deepEqual(log, ["prompt:X"]);
+  box.message("FOREIGN");
+  st.quiet = true;
+  assert.equal(box.settled(), true, "the winner's settle is quiet");
+  assert.deepEqual(log, ["prompt:X", "prompt:X"], "X requeued and delivered on the next accepted path");
+  box.message("X");
+  assert.deepEqual(box.pending(), []);
+  assert.equal(box.settled(), true);
+  assert.equal(log.length, 2, "exactly once more, never again after confirmation");
+});
+
+test("outbox: at most one reopen waits; a starting turn supersedes it", () => {
+  const { st, log, box } = outboxRec();
+  box.sessionStart();
+  box.push("reopen", "R1");
+  box.push("reopen", "R2");
+  assert.equal(box.pending().length, 1, "one pending reopen, latest text");
+  assert.equal(box.pending()[0].text, "R2");
+  box.input(undefined);
+  assert.deepEqual(box.beforeAgentStart(), [], "the turn's prompt-drain delivers the wakes: the reopen is dropped");
+  st.quiet = true;
+  box.settled();
+  assert.deepEqual(log, []);
+});
+
+test("outbox: a quiet settle with no run (a prompt Pi could not run) stalls idle prompts; the next real turn carries the item", () => {
+  const { st, log, box } = outboxRec();
+  box.sessionStart();
+  st.quiet = true;
+  box.startupGrace();
+  box.push("context", "Y");
+  assert.deepEqual(log, ["prompt:Y"]);
+  box.input(undefined);
+  box.beforeAgentStart(); // Y is inflight as the prompt text, not re-injected
+  assert.equal(box.settled(), true, "settled with no agent_start");
+  assert.deepEqual(log, ["prompt:Y"], "no re-prompt loop against a run that cannot start");
+  box.push("context", "Z");
+  assert.deepEqual(log, ["prompt:Y"], "still stalled");
+  box.input(undefined); // the user types
+  assert.deepEqual(box.beforeAgentStart(), ["Y", "Z"], "the next real turn carries every held item");
 });

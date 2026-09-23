@@ -509,3 +509,87 @@ func indexOf(s []string, v string) int {
 	}
 	return -1
 }
+
+// dispatchRecords rewrites the fixture's runtime records the way current dispatch writes them: the worktree record as
+// the JSON {"path","attempt"} form and a harness busy record beside the session (F-12, F-13).
+func dispatchRecords(t *testing.T, epicDir, wtPath string) {
+	t.Helper()
+	cox := filepath.Join(epicDir, ".cox")
+	rec, _ := json.Marshal(map[string]any{"path": wtPath, "attempt": 1})
+	if err := os.WriteFile(filepath.Join(cox, "wt", "s1"), rec, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	b := `{"schema":"busy.v1","state":"idle","gen":"g1","seq":3,"ts":1790000000,"source":"claude-hook","event":"Stop","harness":"claude","sources":["dispatch","claude-hook"]}`
+	if err := os.WriteFile(filepath.Join(cox, "sessions", "s1.busy.json"), []byte(b), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// An epic whose worker wrote a busy record and a JSON worktree record closes with every step ok: only the real session
+// is stopped, the busy record is archived with .cox (never stopped as a worker), and the worktree is removed.
+func TestCloseBusyRecordAndJSONWorktreeRecord(t *testing.T) {
+	epicDir, rt, wtPath := closeFixture(t, false)
+	dispatchRecords(t, epicDir, wtPath)
+	var out strings.Builder
+	alloc := &env.Allocator{EpicDir: epicDir, Ops: env.RealOps()}
+	if err := Close(CloseOptions{EpicDir: epicDir, Runtime: rt, Alloc: alloc, Yes: true, Force: true, Out: &out}); err != nil {
+		t.Fatalf("close: %v\n%s", err, out.String())
+	}
+	for _, step := range []string{"stop-workers", "stop-backend", "release-resources", "remove-worktrees"} {
+		if !strings.Contains(out.String(), "ok: "+step+"\n") {
+			t.Errorf("step %s not ok:\n%s", step, out.String())
+		}
+	}
+	if !strings.Contains(out.String(), "ok: archived .cox -> .cox.closed") {
+		t.Errorf("not archived:\n%s", out.String())
+	}
+	if strings.Join(rt.stopped, ",") != "sess1" {
+		t.Errorf("stopped sessions = %q, want only the real session sess1 (never the busy record)", rt.stopped)
+	}
+	if strings.Join(rt.removed, ",") != wtPath {
+		t.Errorf("removed = %q, want the decoded worktree path %q", rt.removed, wtPath)
+	}
+	if fileExists(wtPath) {
+		t.Errorf("worktree %s still on disk", wtPath)
+	}
+	if !fileExists(filepath.Join(epicDir, ".cox.closed", "sessions", "s1.busy.json")) {
+		t.Errorf("busy record not archived with .cox")
+	}
+}
+
+// The legacy plain-path worktree record (written by an older cox) still closes the same way.
+func TestCloseLegacyPlainPathWorktreeRecord(t *testing.T) {
+	epicDir, rt, wtPath := closeFixture(t, false) // closeFixture writes the legacy plain-path record
+	alloc := &env.Allocator{EpicDir: epicDir, Ops: env.RealOps()}
+	if err := Close(CloseOptions{EpicDir: epicDir, Runtime: rt, Alloc: alloc, Yes: true, Force: true, Out: &strings.Builder{}}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(rt.removed, ",") != wtPath || fileExists(wtPath) {
+		t.Errorf("legacy record: removed = %q, want %q gone", rt.removed, wtPath)
+	}
+}
+
+// Close is fail-closed: a malformed worktree record is never skipped (that would archive over a live worktree); it fails
+// remove-worktrees naming the file, writes close.incomplete.json and does not archive (q001 ruling).
+func TestCloseMalformedWorktreeRecordFails(t *testing.T) {
+	epicDir, rt, wtPath := closeFixture(t, false)
+	rec := filepath.Join(epicDir, ".cox", "wt", "s1")
+	if err := os.WriteFile(rec, []byte(`{"path":`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out strings.Builder
+	alloc := &env.Allocator{EpicDir: epicDir, Ops: env.RealOps()}
+	err := Close(CloseOptions{EpicDir: epicDir, Runtime: rt, Alloc: alloc, Yes: true, Force: true, Out: &out})
+	if err == nil {
+		t.Fatalf("close must fail on a malformed worktree record:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "FAILED at remove-worktrees") || !strings.Contains(err.Error(), rec) {
+		t.Errorf("want FAILED at remove-worktrees naming %s; err=%v\n%s", rec, err, out.String())
+	}
+	if fileExists(filepath.Join(epicDir, ".cox.closed")) || !fileExists(filepath.Join(epicDir, ".cox", "close.incomplete.json")) {
+		t.Errorf("a failed close must not archive and must write close.incomplete.json")
+	}
+	if len(rt.removed) != 0 || !fileExists(wtPath) {
+		t.Errorf("no worktree may be removed when a record is malformed, removed=%q", rt.removed)
+	}
+}
