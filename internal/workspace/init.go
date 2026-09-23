@@ -162,9 +162,10 @@ func AddRepo(wsRoot string, r Repo) error {
 }
 
 // gitignoreRules returns the machine-bound paths a workspace .gitignore must cover (DESIGN §2): the local registry, the
-// cache, every live and closed epic control tree, and one alias-symlink line per repo.
+// cache, every live and closed epic control tree, the per-machine Pi leader extension (installed by `cox workspace init`
+// / `cox workspace hooks --harness pi`, never committed - captain ruling 2026-09-23), and one alias-symlink line per repo.
 func gitignoreRules(ws *Workspace) []string {
-	rules := []string{"cox/workspace.json", "cox/.cache/", "**/.cox/", "**/.cox.closed/"}
+	rules := []string{"cox/workspace.json", "cox/.cache/", "**/.cox/", "**/.cox.closed/", ".pi/extensions/"}
 	for _, r := range ws.Repos {
 		// **/ (not */) so the rule also matches a nested project layout, e.g. apps/foo/epics/demo/<alias>.
 		rules = append(rules, "**/epics/*/"+r.Alias)

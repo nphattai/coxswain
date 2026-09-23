@@ -95,6 +95,17 @@ func cmdWorkspaceInit(args []string) int {
 		return fail("%v", err)
 	}
 	for _, h := range pol.Harness.Leader.Options {
+		// Pi has no claude/codex-style hook file: it installs the project-local, hash-verifiable extension into
+		// <ws>/.pi/extensions/ WITHOUT an epic marker, so the unbound leader supervises every active epic of the
+		// workspace (DESIGN item 3). The .pi/extensions/ gitignore line is added by Scaffold's gitignoreRules.
+		if h == "pi" {
+			entry, err := pi.InstallExtension(wsRoot, "")
+			if err != nil {
+				return fail("%v", err)
+			}
+			fmt.Printf("hooks: installed cox pi extension at %s (hash %s, unbound leader; load with -e)\n", entry, pi.ExtensionHash()[:12])
+			continue
+		}
 		path, changed, err := writeLeaderHooks(wsRoot, h)
 		if err != nil {
 			return fail("%v", err)

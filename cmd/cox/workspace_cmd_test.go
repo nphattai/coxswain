@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/nphattai/coxswain/internal/adapter/harness/pi"
 )
 
 // init with no --repo (and no workspace.json yet) refuses with a usage exit and writes nothing (AC 2).
@@ -44,6 +46,46 @@ func TestWorkspaceInitWritesWorkspaceAndHooks(t *testing.T) {
 	}
 	if after, _ := os.ReadFile(filepath.Join(root, "cox", "workspace.json")); string(after) != string(before) {
 		t.Error("re-run rewrote workspace.json")
+	}
+}
+
+// init with pi in the policy's leader options installs the unbound Pi leader extension (hash-verifiable, NO epic
+// marker), ignores .pi/extensions/ in .gitignore, preserves a pre-existing .gitignore line, and is idempotent
+// (DESIGN item 3). The template policy lists pi as a leader option.
+func TestWorkspaceInitInstallsUnboundPiExtension(t *testing.T) {
+	root := t.TempDir()
+	// A pre-existing user .gitignore line must survive (AC 1: existing lines are never rewritten).
+	mustWrite(t, filepath.Join(root, ".gitignore"), "my-custom-ignore/\n")
+	if code := cmdWorkspaceInit([]string{"--root", root, "--repo", "app=" + t.TempDir()}); code != 0 {
+		t.Fatalf("init exit %d", code)
+	}
+	extDir := filepath.Join(root, ".pi", "extensions")
+	if _, ok := pi.VerifyExtension(root); !ok {
+		t.Fatalf("init did not install a verifiable pi extension under %s", extDir)
+	}
+	if _, err := os.Stat(filepath.Join(extDir, "cox-pi.epic")); !os.IsNotExist(err) {
+		t.Error("init must install the pi leader extension WITHOUT an epic marker (unbound)")
+	}
+	gi, _ := os.ReadFile(filepath.Join(root, ".gitignore"))
+	if !strings.Contains(string(gi), ".pi/extensions/") {
+		t.Errorf(".gitignore missing .pi/extensions/:\n%s", gi)
+	}
+	if !strings.Contains(string(gi), "my-custom-ignore/") {
+		t.Errorf("init rewrote/dropped a pre-existing .gitignore line:\n%s", gi)
+	}
+	// Idempotent: a second run keeps it verifiable, still unbound, and leaves .gitignore byte-identical.
+	giBefore := string(gi)
+	if code := cmdWorkspaceInit([]string{"--root", root}); code != 0 {
+		t.Fatalf("re-run init exit %d", code)
+	}
+	if _, ok := pi.VerifyExtension(root); !ok {
+		t.Error("re-run left the pi extension unverifiable")
+	}
+	if _, err := os.Stat(filepath.Join(extDir, "cox-pi.epic")); !os.IsNotExist(err) {
+		t.Error("re-run must not add an epic marker")
+	}
+	if giAfter, _ := os.ReadFile(filepath.Join(root, ".gitignore")); string(giAfter) != giBefore {
+		t.Error("re-run rewrote .gitignore")
 	}
 }
 

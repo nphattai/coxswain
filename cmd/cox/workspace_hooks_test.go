@@ -54,6 +54,23 @@ func TestWorkspaceHooksPiInstallsExtensionAndResolves(t *testing.T) {
 	}
 }
 
+// cox workspace hooks --harness pi WITHOUT --epic installs the extension unbound (no epic marker), so the leader
+// supervises every active epic of the workspace (DESIGN item 3). With --epic it writes the marker (bound, above).
+func TestWorkspaceHooksPiUnboundInstall(t *testing.T) {
+	root := t.TempDir()
+	if code := cmdWorkspaceHooks([]string{"--root", root, "--harness", "pi"}); code != 0 {
+		t.Fatalf("unbound pi install exit %d", code)
+	}
+	extDir := filepath.Join(root, ".pi", "extensions")
+	if _, err := os.Stat(filepath.Join(extDir, "cox-pi.ts")); err != nil {
+		t.Errorf("pi extension not installed: %v", err)
+	}
+	// Unbound: NO epic marker (the marker is what binds a leader to one epic).
+	if _, err := os.Stat(filepath.Join(extDir, "cox-pi.epic")); !os.IsNotExist(err) {
+		t.Error("an unbound pi install (no --epic) must not write the epic marker")
+	}
+}
+
 // cox workspace hooks --harness claude creates .claude/settings.json when absent, writes the four hook groups as
 // `cox hook <name>` commands with no epic binding, and is idempotent.
 func TestWorkspaceHooksClaudeCreatesWhenAbsentAndIsIdempotent(t *testing.T) {
