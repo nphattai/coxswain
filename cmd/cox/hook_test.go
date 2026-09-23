@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -545,3 +546,114 @@ func TestGuardHealthyWatcherProceeds(t *testing.T) {
 }
 
 var errWatchRefused = errors.New("watcher refused")
+
+// openStdin replaces os.Stdin with the read end of a pipe whose writer is held open and never written: the exact stdin a
+// Node `execFile` child gets (dogfood F-4). Restored and closed at cleanup.
+func openStdin(t *testing.T) {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	prev := os.Stdin
+	os.Stdin = r
+	t.Cleanup(func() {
+		os.Stdin = prev
+		_ = w.Close()
+		_ = r.Close()
+	})
+}
+
+// No `cox hook` subcommand may block on an open, never-closed stdin (finding 5 / F-4): the Pi extension's first leader
+// turn hung forever in prompt-drain's io.ReadAll(os.Stdin). Each hook must return well inside the deadline.
+func TestHooksReturnWithOpenStdinPipe(t *testing.T) {
+	ws := t.TempDir()
+	mustWrite(t, filepath.Join(ws, "cox", "workspace.json"), `{"repos":[{"alias":"a","path":"/x","production":"main"}]}`)
+	epic := filepath.Join(ws, "proj", "epics", "e1")
+	if err := os.MkdirAll(filepath.Join(epic, ".cox"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(epic, ".cox", "watch.pid"), strconv.Itoa(os.Getpid()))
+	seedWake(t, epic, wake.KindWorkerDone) // urgent: stop-rewake exits 2 at once instead of long-polling
+	wt := t.TempDir()
+	gitInitRepo(t, wt)
+	t.Setenv("ORCA_TERMINAL_HANDLE", "")
+	t.Setenv("COX_EPIC", "")
+	t.Setenv("COX_STORY", "")
+	t.Chdir(ws)
+	openStdin(t)
+	for _, args := range [][]string{
+		{"prompt-drain"},
+		{"prompt-drain", "--epic", epic},
+		{"stop-rewake", "--harness", "claude", "--epic", epic},
+		{"precompact", "--worktree", wt},
+		{"session-start", "--worktree", wt},
+		{"precompact", "--epic", epic, "--story", "w1", "--worktree", wt},
+		{"session-start", "--epic", epic, "--story", "w1", "--worktree", wt},
+	} {
+		done := make(chan int, 1)
+		go func() { done <- cmdHook(args) }()
+		select {
+		case <-done:
+		case <-time.After(15 * time.Second): // the bounded read is 1s; the old unbounded read never returns
+			t.Fatalf("cox hook %v blocked on an open, never-closed stdin", args)
+		}
+	}
+}
+
+// The prompt-drain header names the epic dir, so the leader acks the right epic (F-8: a slug-only header made a Pi
+// leader ack the workspace root and the wakes came back).
+func TestPromptDrainHeaderNamesEpicDir(t *testing.T) {
+	epic := t.TempDir()
+	seedWake(t, epic, wake.KindWorkerDone)
+	var out, errW bytes.Buffer
+	if code := runPromptDrainAll([]string{epic}, "claude", promptJSON("continue"), &out, &errW); code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	if !strings.Contains(out.String(), "--epic "+epic) {
+		t.Fatalf("header must carry `--epic %s`:\n%s", epic, out.String())
+	}
+}
+
+// A leader with no saved checkpoint gets NO session-start text (F-6: the "No checkpoint ... Start from the story" notice
+// became an extra Pi leader turn); with a checkpoint saved, it is injected.
+func TestLeaderSessionStartSilentWithoutCheckpoint(t *testing.T) {
+	ws := t.TempDir()
+	mustWrite(t, filepath.Join(ws, "cox", "workspace.json"), `{"repos":[{"alias":"a","path":"/x","production":"main"}]}`)
+	epic := filepath.Join(ws, "proj", "epics", "e1")
+	if err := os.MkdirAll(filepath.Join(epic, ".cox"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(epic, ".cox", "watch.pid"), strconv.Itoa(os.Getpid()))
+	wt := t.TempDir()
+	gitInitRepo(t, wt)
+	t.Setenv("ORCA_TERMINAL_HANDLE", "")
+	t.Setenv("COX_EPIC", "")
+	t.Setenv("COX_STORY", "")
+	t.Chdir(ws)
+	capture := func() string {
+		r, w, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		prev := os.Stdout
+		os.Stdout = w
+		code := cmdHook([]string{"session-start", "--worktree", wt})
+		os.Stdout = prev
+		_ = w.Close()
+		b, _ := io.ReadAll(r)
+		if code != 0 {
+			t.Fatalf("session-start exit %d", code)
+		}
+		return string(b)
+	}
+	if got := capture(); strings.TrimSpace(got) != "" {
+		t.Fatalf("fresh leader must get no session-start text, got %q", got)
+	}
+	if code := cmdHook([]string{"precompact", "--worktree", wt}); code != 0 {
+		t.Fatalf("precompact exit %d", code)
+	}
+	if got := capture(); !strings.Contains(got, "_leader") {
+		t.Fatalf("a saved leader checkpoint must be injected, got %q", got)
+	}
+}

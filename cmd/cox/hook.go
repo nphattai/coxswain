@@ -326,7 +326,13 @@ func runPromptDrain(epicDir string, out io.Writer) int {
 	if err != nil || len(wakes) == 0 {
 		return 0
 	}
-	fmt.Fprintf(out, "Watcher wakes for %s since your last turn:\n", filepath.Base(epicDir))
+	// Name the epic dir, not just the slug: the leader acks with `--epic <dir>`, and a slug alone made a Pi leader guess
+	// the workspace root, so its ack landed nowhere and the wakes came back (dogfood F-8).
+	abs, err := filepath.Abs(epicDir)
+	if err != nil {
+		abs = epicDir
+	}
+	fmt.Fprintf(out, "Watcher wakes for %s (--epic %s) since your last turn:\n", filepath.Base(epicDir), abs)
 	printWakesTo(out, wakes)
 	return len(wakes)
 }
@@ -379,14 +385,36 @@ func warnDuplicateLeaders(epics []string, out io.Writer) int {
 	return warned
 }
 
-// hookPrompt reads the UserPromptSubmit hook stdin JSON and returns its `prompt` field, or "" when stdin is empty or not
-// the hook envelope (so a manual `cox hook prompt-drain` with no stdin is harmless).
+// hookStdinWait bounds the wait for the hook envelope on stdin. A harness writes the envelope at spawn, so it is there
+// at once; a caller that leaves stdin an open pipe it never writes or closes (the Pi extension's execFile, dogfood F-4)
+// must not hang the hook. Past the bound the hook proceeds with no prompt, which costs only the stale-doorbell
+// suppression (that needs the envelope anyway). A var so a test can shorten it.
+var hookStdinWait = time.Second
+
+// hookPrompt reads the UserPromptSubmit hook stdin JSON and returns its `prompt` field, or "" when stdin is empty, a
+// terminal, not the hook envelope, or silent past hookStdinWait (so a manual `cox hook prompt-drain` is harmless and an
+// open, never-closed stdin pipe never blocks the hook).
 func hookPrompt(in io.Reader) string {
 	if in == nil {
 		return ""
 	}
-	b, err := io.ReadAll(io.LimitReader(in, 1<<20))
-	if err != nil || len(b) == 0 {
+	if f, ok := in.(*os.File); ok {
+		if fi, err := f.Stat(); err == nil && fi.Mode()&os.ModeCharDevice != 0 {
+			return "" // an interactive terminal: no envelope will ever arrive
+		}
+	}
+	got := make(chan []byte, 1)
+	go func() {
+		b, _ := io.ReadAll(io.LimitReader(in, 1<<20))
+		got <- b
+	}()
+	var b []byte
+	select {
+	case b = <-got:
+	case <-time.After(hookStdinWait):
+		return "" // ponytail: the reader goroutine is abandoned; the hook process exits right after
+	}
+	if len(b) == 0 {
 		return ""
 	}
 	var p struct {
@@ -779,6 +807,13 @@ func hookSessionStart(epicDir, story, worktree string) int {
 	}
 	if story == leaderStory && notLeaderTerminal(epicDir) {
 		return 0 // the leader's own checkpoint hook, running in a non-leader terminal
+	}
+	if story == leaderStory {
+		if _, err := os.Stat(checkpoint.Path(epicDir, story)); os.IsNotExist(err) {
+			// A leader with no saved checkpoint has nothing to recover and no story to "start from": print nothing, so
+			// a harness that turns session-start output into a message never gives a fresh leader an extra turn (F-6).
+			return 0
+		}
 	}
 	head := gitHead(worktree)
 	inj, err := checkpoint.Inject(epicDir, story, currentAttempt(epicDir, story), head)
