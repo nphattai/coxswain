@@ -95,6 +95,13 @@ func TestResolveWorkerModelPerHarness(t *testing.T) {
 	if got := resolveWorkerModel(pol, "claude", ""); got != "claude-opus-4-8" {
 		t.Errorf("claude default = %q, want claude-opus-4-8", got)
 	}
+	// pi resolves its provider/model default from the template (item 6, B-47); a pinned model still wins.
+	if got := resolveWorkerModel(pol, "pi", ""); got != "openai-codex/gpt-5.6-sol" {
+		t.Errorf("pi default = %q, want openai-codex/gpt-5.6-sol", got)
+	}
+	if got := resolveWorkerModel(pol, "pi", "anthropic/claude-opus-4-8"); got != "anthropic/claude-opus-4-8" {
+		t.Errorf("pi pinned = %q, want anthropic/claude-opus-4-8", got)
+	}
 	if got := resolveWorkerModel(pol, "omp", ""); got != "" {
 		t.Errorf("unmapped harness = %q, want \"\" (no --model)", got)
 	}

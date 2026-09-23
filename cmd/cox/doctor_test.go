@@ -333,6 +333,10 @@ func TestResolveWorkerModelTemplateFallback(t *testing.T) {
 	if got := resolveWorkerModel(&workspace.Policy{}, "codex", ""); got != "gpt-5.6-sol" {
 		t.Errorf("codex fallback = %q, want gpt-5.6-sol", got)
 	}
+	// Same fallback for pi: an empty policy borrows the template default openai-codex/gpt-5.6-sol (item 6, B-47).
+	if got := resolveWorkerModel(&workspace.Policy{}, "pi", ""); got != "openai-codex/gpt-5.6-sol" {
+		t.Errorf("pi fallback = %q, want openai-codex/gpt-5.6-sol", got)
+	}
 	// An explicit model still wins.
 	if got := resolveWorkerModel(&workspace.Policy{}, "codex", "gpt-x"); got != "gpt-x" {
 		t.Errorf("explicit model = %q, want gpt-x", got)
