@@ -19,7 +19,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { spawn, execFile, type ChildProcess } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { Outbox, Supervisor, TurnEndLatch, claimProcessSingleton } from "./cox-supervisor.ts";
+import { Outbox, Supervisor, TurnEndLatch, claimProcessSingleton, releaseProcessSingleton } from "./cox-supervisor.ts";
 import { coxArgs, resolveEpic } from "./cox-commands.ts";
 
 const EPIC_MARKER = "cox-pi.epic"; // written next to the extension by `cox workspace hooks --harness pi --epic <dir>`
@@ -429,8 +429,10 @@ export default function (pi: ExtensionAPI): void {
 
   // session_shutdown / process exit: retire the active generation and kill its child, so no stale callback mutates a
   // later session and no orphan wait child survives.
-  pi.on("session_shutdown", async (_event, _ctx) => {
+  pi.on("session_shutdown", async (event, _ctx) => {
     live = false;
+    // A /reload re-instantiates the extensions: hand the claim to the reloaded instance.
+    if ((event as { reason?: string }).reason === "reload") releaseProcessSingleton();
     sup.sessionShutdown();
     killChild();
     killInterruptChild();

@@ -405,6 +405,20 @@ test("a second cox extension activation in the same process is inert", async () 
   assert.equal(second.sent.length, 0, "the second activation delivers nothing");
 });
 
+// Found during cox-pi-parity-fixes: Pi's /reload shuts the runner down (reason "reload") and instantiates the
+// extensions again in the same process. The reloaded cox extension must activate, not stay inert on the old claim.
+test("after a /reload shutdown the reloaded cox extension activates", async () => {
+  const first = fakePi();
+  makeExtension(first.pi as never);
+  await first.handlers["session_shutdown"]?.({ reason: "reload" }, {});
+  const reloaded = fakePi();
+  makeExtension(reloaded.pi as never);
+  assert.ok(Object.keys(reloaded.handlers).length > 0, "the reloaded instance wires its handlers");
+  const third = fakePi();
+  makeExtension(third.pi as never);
+  assert.equal(Object.keys(third.handlers).length, 0, "and still only one instance per process");
+});
+
 test("bound leader (COX_EPIC set): prompt-drain and stop-rewake narrow to the one epic", async () => {
   const dir = mkdtempSync(join(tmpdir(), "coxpi-ldr-bound-"));
   const log = join(dir, "cox.log");

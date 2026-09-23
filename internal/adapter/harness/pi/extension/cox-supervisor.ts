@@ -304,6 +304,13 @@ export function claimProcessSingleton(): boolean {
   return true;
 }
 
+// releaseProcessSingleton gives the claim up. Pi's /reload shuts the extension runner down (session_shutdown reason
+// "reload") and instantiates every extension again in the same process; without a release the reloaded cox extension
+// would find the old claim and stay inert, leaving the session with no wake, busy or checkpoint wiring.
+export function releaseProcessSingleton(): void {
+  delete (globalThis as unknown as Record<symbol, unknown>)[SINGLETON_KEY];
+}
+
 // __resetProcessSingleton clears the claim. Tests only: `node --test` runs one file per process, and a suite that
 // activates the extension repeatedly resets the claim before each activation to stay isolated.
 export function __resetProcessSingleton(): void {
