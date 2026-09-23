@@ -117,6 +117,18 @@ func piLeaderExtensionCheck(pol *workspace.Policy, wsRoot string) *doctor.Check 
 	}
 }
 
+// checkLine renders one check row: name, status, detail, and the repair when there is one.
+func checkLine(c doctor.Check) string {
+	line := fmt.Sprintf("%-22s %s", c.Name, c.Status)
+	if c.Detail != "" {
+		line += "  " + c.Detail
+	}
+	if c.Fix != "" {
+		line += "  (fix: " + c.Fix + ")"
+	}
+	return line
+}
+
 // quotaDoctor is the doctor view of the quota-axi adapter and any manual readings in effect: whether the binary is
 // found, its version, whether the automatic source is Keychain-granted (derived from a live claude reading when an epic
 // is given), and the active captain-declared readings.
@@ -159,7 +171,14 @@ func cmdDoctor(args []string) int {
 	wsDirs := doctor.FindWorkspaces(roots, explicit)
 	wsReports := make([]doctor.WorkspaceReport, 0, len(wsDirs))
 	for _, d := range wsDirs {
-		wsReports = append(wsReports, doctor.InspectWorkspace(d))
+		r := doctor.InspectWorkspace(d)
+		if r.Valid {
+			// Per workspace, not once for the cwd/--epic workspace: `--root <ws>` from outside <ws> must check <ws>'s own
+			// Pi leader extension (finding 3 / dogfood AC6).
+			wpol, _ := workspace.LoadPolicy(d)
+			r.PiLeader = piLeaderExtensionCheck(wpol, d)
+		}
+		wsReports = append(wsReports, r)
 	}
 
 	// The primary policy for the environment checks: the workspace of --epic/cwd, else the first workspace found.
@@ -174,9 +193,6 @@ func cmdDoctor(args []string) int {
 		pol, _ = workspace.LoadPolicy(primaryWs)
 	}
 	checks := environmentChecks(pol)
-	if c := piLeaderExtensionCheck(pol, primaryWs); c != nil {
-		checks = append(checks, *c)
-	}
 
 	out := doctorOutput{Report: rep, Harnesses: harnessCards(codexCoxHooksInstalled(".")), PolicyOptions: policyOptions(*epicDir), Quota: quotaReport(*epicDir), Workspaces: wsReports, Checks: checks}
 	var watcherIssues []string
@@ -269,6 +285,9 @@ func cmdDoctor(args []string) int {
 					fmt.Fprintf(os.Stderr, "ISSUE: workspace %s epic %s %s\n", w.Root, ep.Slug, iss)
 				}
 			}
+			if c := w.PiLeader; c != nil {
+				fmt.Println("    " + checkLine(*c))
+			}
 			for _, alias := range w.PolicyInRepo {
 				fmt.Fprintf(os.Stderr, "WARN: repo %q checkout carries cox/policy.json; nothing reads it and it drifts from the workspace policy - delete it\n", alias)
 			}
@@ -278,14 +297,7 @@ func cmdDoctor(args []string) int {
 		}
 		fmt.Println("checks:")
 		for _, c := range checks {
-			line := fmt.Sprintf("  %-22s %s", c.Name, c.Status)
-			if c.Detail != "" {
-				line += "  " + c.Detail
-			}
-			if c.Fix != "" {
-				line += "  (fix: " + c.Fix + ")"
-			}
-			fmt.Println(line)
+			fmt.Println("  " + checkLine(c))
 		}
 		fmt.Println("harness cards:")
 		for _, c := range out.Harnesses {
@@ -335,7 +347,7 @@ func cmdDoctor(args []string) int {
 	hasFail := len(rep.Issues) > 0 || len(watcherIssues) > 0 || len(wsWatcherIssues) > 0 || len(wsRepoIssues) > 0 || len(wsSignedIssues) > 0 || len(wsLeaderIssues) > 0 || len(wsDupLeaderIssues) > 0 || len(orphanIssues) > 0 || len(doorbellIssues) > 0
 	hasUnknown := false
 	for _, w := range wsReports {
-		if !w.Valid || w.PolicyError != "" {
+		if !w.Valid || w.PolicyError != "" || (w.PiLeader != nil && w.PiLeader.Status == doctor.StatusFail) {
 			hasFail = true
 		}
 	}

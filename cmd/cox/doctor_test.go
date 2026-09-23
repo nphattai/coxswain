@@ -1,6 +1,7 @@
 package main
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -440,5 +441,69 @@ func TestDoorbellFailIssues(t *testing.T) {
 	}
 	if got := doorbellFailIssues(reps); len(got) != 0 {
 		t.Fatalf("below the alarm threshold must raise no issue, got %v", got)
+	}
+}
+
+// Finding 3 / dogfood AC6: `cox doctor --root <B>` run from inside another workspace A checks B's OWN Pi leader
+// extension and prints it under B's header. On beedd57 the check ran once, for the cwd workspace only, so a tampered
+// extension in B was never reported.
+func TestDoctorRootChecksEachWorkspacePiExtension(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ORCA_WORKSPACES", "")
+	t.Setenv("COX_ROOTS", "")
+	t.Setenv("ORCA_RUN_ID", "")
+	tpl, err := os.ReadFile(filepath.Join("..", "..", "templates", "policy.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mkWs := func() string {
+		ws := t.TempDir()
+		mustWrite(t, filepath.Join(ws, "cox", "workspace.json"), `{"schema":"coxswain.workspace.v1"}`)
+		mustWrite(t, filepath.Join(ws, "cox", "policy.json"), string(tpl))
+		if _, err := pi.InstallExtension(ws, ""); err != nil {
+			t.Fatal(err)
+		}
+		return ws
+	}
+	a, b := mkWs(), mkWs()
+	if err := os.WriteFile(filepath.Join(b, pi.ExtensionRelDir, pi.ExtensionEntry), []byte("// tampered\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(a)
+
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	prev := os.Stdout
+	os.Stdout = w
+	code := cmdDoctor([]string{"--root", b})
+	os.Stdout = prev
+	_ = w.Close()
+	outB, _ := io.ReadAll(r)
+	out := string(outB)
+
+	section := func(ws string) string {
+		i := strings.Index(out, "workspace "+ws+" ")
+		if i < 0 {
+			t.Fatalf("no header for workspace %s:\n%s", ws, out)
+		}
+		rest := out[i+1:]
+		if j := strings.Index(rest, "\nworkspace "); j >= 0 {
+			rest = rest[:j]
+		}
+		if j := strings.Index(rest, "\nchecks:"); j >= 0 {
+			rest = rest[:j]
+		}
+		return rest
+	}
+	if s := section(b); !strings.Contains(s, "pi leader extension    fail  stale") || !strings.Contains(s, filepath.Join(b, pi.ExtensionRelDir)) {
+		t.Fatalf("workspace B (--root) must report its own stale extension under its header:\n%s", s)
+	}
+	if s := section(a); !strings.Contains(s, "pi leader extension    pass") {
+		t.Fatalf("workspace A must report its own current extension under its header:\n%s", s)
+	}
+	if code != 1 {
+		t.Fatalf("a stale extension in any workspace must fail doctor, exit %d", code)
 	}
 }
