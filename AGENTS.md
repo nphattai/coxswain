@@ -34,9 +34,10 @@ suppresses the empty doorbell before a turn starts.)
 
 Read your harness capability card (`docs/adapters/<name>.md`).
 
-- **Push harness (Claude Code):** hooks do the waking. `UserPromptSubmit` attaches unread wakes to your turn and `Stop`
-  reopens a turn when an urgent wake is queued. You do nothing special when idle.
-- **Pull harness (Codex, any new harness):** when you have nothing left to do, make your **last tool call**
+- **Push harness (Claude Code, Pi):** hooks do the waking. `UserPromptSubmit` (Pi: the cox extension's
+  `before_agent_start`) attaches unread wakes to your turn and `Stop` (Pi: `agent_settled`) reopens a turn when an urgent
+  wake is queued. You do nothing special when idle; never run `cox wake wait`.
+- **Pull harness (Codex, any new harness without a push card):** when you have nothing left to do, make your **last tool call**
   `cox wake wait --max 25m --epic <dir>`. It blocks until a wake arrives (prints it, exit 0) or the deadline passes
   (exit 3), so the next turn sees the wake without polling. The watcher also sends a doorbell to your terminal as a
   safety net.

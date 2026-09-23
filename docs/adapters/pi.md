@@ -31,7 +31,10 @@ This table is checked against `internal/adapter/harness/pi.Harness.Card()` by
 
 - Pi reads the harness-neutral job description from `AGENTS.md` and Agent Skills natively.
 - Model is explicit `provider/model`; Coxswain never invents a provider from the harness name. A bare, empty, or
-  provider-less model, or an unsupported `--thinking` level, fails before spawn with a bounded diagnostic.
+  provider-less model, or an unsupported `--thinking` level, fails before spawn with a bounded diagnostic. Every launch
+  path - dispatch, `cox story resume` (same harness or reroute), `cox control relaunch`, `cox baseline run` - resolves
+  the model through one resolver: `--model`, else the story frontmatter (same harness only), else the policy default
+  `harness.worker.models.pi`. A pi story with no pinned model therefore resumes on the policy model.
 - A dispatched worker cannot answer the interactive workspace-trust dialog, so launch marks the cox-created worktree
   trusted with `--approve` (Pi's per-run trust). Coxswain never mutates user-level Pi configuration.
 - Push wake and automatic checkpoint are delivered by the project-local, hash-verifiable extension under
@@ -70,7 +73,8 @@ The Pi leader is a workspace-level peer of a Claude/Codex leader. `cox workspace
 (per-machine, never committed - captain ruling 2026-09-23). `cox workspace hooks --harness pi` does the same without
 `--epic`; `--epic <dir>` binds one epic instead. A driver upgrade needs `cox workspace init` again; `cox doctor` reports
 an ISSUE with the repair `cox workspace init` when the installed extension is missing or its hash differs from the
-running binary's.
+running binary's. The check runs per workspace and prints under that workspace's header, so `cox doctor --root <ws>`
+from outside `<ws>` checks `<ws>`'s own extension.
 
 An unbound leader supervises **every** active epic of the workspace - the same set `cox hook` resolves - and picks up an
 epic opened or closed mid-session without a restart. The extension maps Pi lifecycle events onto the same Go-owned leader
@@ -78,16 +82,44 @@ hooks the Claude/Codex leader hooks run, so the Go side stays the single owner o
 
 | Pi event | cox hook | Behaviour |
 |---|---|---|
-| `before_agent_start` | `cox hook prompt-drain` | drain every active epic's unread wakes (a per-epic header names each) and inject them as turn context; the pending idle child is retired first so a wake is delivered once |
-| `agent_settled` | `cox hook stop-rewake` | wait for a wake while idle, then reopen the turn with one visible follow-up; run the turn-boundary watcher guard (restart a dead watcher, or surface the `cox watch --replace` repair line) |
+| `before_agent_start` | `cox hook prompt-drain [--reopen]` | drain every active epic's unread wakes (a per-epic header names each epic and its `--epic <dir>`) and inject them as turn context; the pending idle child is retired first so a wake is delivered once. `--reopen` marks a turn a stop-rewake reopen opened, which keeps the block budget |
+| `agent_settled` | `cox hook stop-rewake --harness pi` | wait for a wake while idle, then reopen with one visible turn; run the turn-boundary watcher guard (restart a dead watcher and confirm its fresh tick, or surface the `cox watch --replace` repair line). No tick turn at max-wait: exit 0 and the extension re-arms |
 | `session_before_compact` | `cox hook precompact` | persist the per-epic leader checkpoint before compaction |
-| `session_start` | `cox hook session-start` | inject the recovery checkpoint on start/resume |
+| `session_start` | `cox hook session-start` | inject the recovery checkpoint on start/resume; a leader with no checkpoint gets nothing |
 
-The reopen loop is bounded: the extension threads a stable per-session handle (`ORCA_TERMINAL_HANDLE`, else a stable Pi
-session id) so the cox-firstmate turn-boundary block budget (3 blocks per turn, then the turn ends with a warning)
-applies, and it caps per-turn reopens as a client-side backstop. A hook exit 2 is always surfaced as a visible block,
-never swallowed. Only one cox extension is active per Pi process: if the worktree also carries a project-local
-`.pi/extensions/`, the second load stays inert - one wake child, one busy writer, one checkpoint per event.
+The first turn context of every leader session also says Pi is a **push** harness: wakes arrive as turns by themselves,
+so the leader never runs `cox wake wait`.
+
+**Reopens are bounded per episode.** In Pi every reopen is a new turn, so a per-turn budget never trips. The extension
+counts a reopen *episode* - consecutive reopens with no user prompt in between and no new `[gen N]` - and after 3 shows
+one visible warning and opens no more reopen turns until a user prompt or a new wake gen. `prompt-drain --reopen` keeps
+the Go turn-boundary block budget across reopen-opened turns (the extension threads a stable per-session
+`ORCA_TERMINAL_HANDLE`, else `pi-<pid>`). A stop-rewake that returns within 5s (exit 0 at once - no active epic, the Go
+budget spent - or an exit 2 past the episode budget) is re-armed after a doubling backoff from 1s to 60s, never at once,
+and its stderr note is surfaced once. A watcher restart counts only once the new watcher has written a fresh `lasttick`
+(10s window); one that exits at once (for example a fresh epic with no `.cox/run`) takes the repair path. A hook exit 2
+is always surfaced, never swallowed. Only one cox extension is active per Pi process: if the worktree also carries a
+project-local `.pi/extensions/`, the second load stays inert - one wake child, one busy writer, one checkpoint per event.
+
+### Delivery into Pi
+
+Every text the extension sends - a reopen, a checkpoint, a supervision notice - goes through one outbox, for the leader
+and the worker alike, because Pi 0.86.1 accepts extension text only on three paths and rejects the rest (`Extension
+"<runtime>" error: Agent is already processing a prompt`, the text lost - dogfood F-9):
+
+1. **turn context** - returned from `before_agent_start`: always accepted, never a turn of its own. A checkpoint that
+   lands while the launch or resume prompt is starting rides that turn.
+2. **a follow-up while Pi streams** (`isStreaming`, after `agent_start`).
+3. **a new prompt only when Pi is quiet** - `ctx.isIdle()` and no `ctx.signal` (no Agent run). Pi's `prompt()` runs its
+   preflight, including `before_agent_start`, before `isStreaming` turns on, so the outbox never sends while a prompt is
+   starting (the `input` event), and holds for 1.5s after `session_start` (`COX_PI_STARTUP_GRACE_MS`) so it never races
+   the CLI launch prompt.
+
+Delivery is confirmed, not assumed: an item stays in flight until a `message_start` carries its text, and a quiet
+`agent_settled` requeues anything unconfirmed, so a rejected send is redelivered exactly once. A settle from a prompt
+that lost a start race (another run still holds the agent) is ignored - no idle report, no re-arm, no send. Every `cox`
+child runs with stdin closed; `cox hook prompt-drain` also bounds its envelope read at 1s, so an open stdin can never
+hang a turn (dogfood F-4).
 
 The executable owners are `internal/adapter/harness/pi/` (card, launch, provider/model validation, telemetry,
 extension packaging), `internal/adapter/harness/pi/extension/` (the Pi extension + its deterministic lifecycle suite),
