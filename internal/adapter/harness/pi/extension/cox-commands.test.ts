@@ -28,12 +28,12 @@ test("promptDrain: unbound omits --epic (workspace mode), bound narrows to one e
   assert.deepEqual(coxArgs.promptDrain("/e"), ["hook", "prompt-drain", "--epic", "/e"]);
 });
 
-test("stopRewake: --harness claude (exit-2 reopen), no --max (Go owns timing), unbound omits --epic", () => {
+test("stopRewake: --harness pi (exit-2 reopen, no tick turns), no --max (Go owns timing), unbound omits --epic", () => {
   const unbound = coxArgs.stopRewake("");
-  assert.deepEqual(unbound, ["hook", "stop-rewake", "--harness", "claude"]);
+  assert.deepEqual(unbound, ["hook", "stop-rewake", "--harness", "pi"]);
   assert.ok(!unbound.includes("--max"), "stop-rewake must not pass --max; the Go side owns batch/tick timing");
   assert.ok(!unbound.includes("--epic"), "an unbound leader waits on every active epic");
-  assert.deepEqual(coxArgs.stopRewake("/e"), ["hook", "stop-rewake", "--harness", "claude", "--epic", "/e"]);
+  assert.deepEqual(coxArgs.stopRewake("/e"), ["hook", "stop-rewake", "--harness", "pi", "--epic", "/e"]);
 });
 
 test("precompact/sessionStart unbound omit --epic and --story (workspace leader-checkpoint path)", () => {
@@ -49,4 +49,10 @@ test("resolveEpic prefers COX_EPIC, falls back to the installed marker, else emp
   assert.equal(resolveEpic(undefined, "/marker/epic\n"), "/marker/epic");
   assert.equal(resolveEpic("  ", "  "), "");
   assert.equal(resolveEpic(undefined, undefined), "");
+});
+
+test("promptDrain --reopen marks a reopen-opened turn (keeps the Go block budget, finding 8)", () => {
+  assert.deepEqual(coxArgs.promptDrain("", true), ["hook", "prompt-drain", "--reopen"]);
+  assert.deepEqual(coxArgs.promptDrain("/e", true), ["hook", "prompt-drain", "--reopen", "--epic", "/e"]);
+  assert.deepEqual(coxArgs.promptDrain("/e"), ["hook", "prompt-drain", "--epic", "/e"]);
 });

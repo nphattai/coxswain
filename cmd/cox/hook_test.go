@@ -657,3 +657,86 @@ func TestLeaderSessionStartSilentWithoutCheckpoint(t *testing.T) {
 		t.Fatalf("a saved leader checkpoint must be injected, got %q", got)
 	}
 }
+
+// stubWatcher points launchWatcher at a shell script standing in for `cox watch --epic <dir>` and shortens the confirm
+// window. body runs with $3 = the epic dir.
+func stubWatcher(t *testing.T, body string) {
+	t.Helper()
+	bin := filepath.Join(t.TempDir(), "coxwatch")
+	mustWrite(t, bin, "#!/bin/sh\n"+body+"\n")
+	if err := os.Chmod(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	prevExe, prevWait := watcherExe, watcherConfirmWait
+	watcherExe = func() (string, error) { return bin, nil }
+	watcherConfirmWait = 5 * time.Second
+	t.Cleanup(func() { watcherExe, watcherConfirmWait = prevExe, prevWait })
+}
+
+// Dogfood F-10: a restarted watcher that exits at once (a fresh epic with no .cox/run: "watch needs a live backend") is
+// NOT "restarted" - the guard takes the repair/exit-2 path. On beedd57 launchWatcher only checked cmd.Start(), reported
+// "restarted", exited 0, and the Pi extension re-armed into the same dead restart: 35k cox calls in 320s.
+func TestGuardRestartThatDiesAtOnceIsNotRestarted(t *testing.T) {
+	stubWatcher(t, "exit 1")
+	epic := t.TempDir()
+	var out bytes.Buffer
+	code := runStopRewake(rewakeCfg{epics: []string{epic}, guardEpics: []string{epic}, out: &out, sleep: noSleep})
+	if code != 2 {
+		t.Fatalf("a restart that dies at once must reopen with the repair line (exit 2), got %d: %q", code, out.String())
+	}
+	if strings.Contains(out.String(), "restarted it") || !strings.Contains(out.String(), "cox watch --epic "+epic+" --replace") {
+		t.Fatalf("expected the repair line and no restart claim, got %q", out.String())
+	}
+}
+
+// launchWatcher confirms a restart by a fresh lasttick from the still-running watcher; one that runs but never ticks is
+// refused after the confirm window.
+func TestLaunchWatcherConfirmsFreshTick(t *testing.T) {
+	epic := t.TempDir()
+	stubWatcher(t, `mkdir -p "$3/.cox/watch" && date > "$3/.cox/watch/lasttick" && exec sleep 5`)
+	if err := launchWatcher(epic); err != nil {
+		t.Fatalf("a watcher that ticks must be confirmed: %v", err)
+	}
+	stubWatcher(t, "exec sleep 5")
+	epic2 := t.TempDir()
+	if err := launchWatcher(epic2); err == nil || !strings.Contains(err.Error(), "did not tick") {
+		t.Fatalf("a watcher that never ticks must be refused, got %v", err)
+	}
+}
+
+// Finding 8 / AC5: a turn a stop-rewake reopen opened (Pi runs prompt-drain on it) keeps the block budget; only a user
+// turn resets it. On beedd57 every Pi reopen reset it, so a dead watcher reopened 49 model turns with no warning.
+func TestPromptDrainReopenKeepsBlockBudget(t *testing.T) {
+	ws := t.TempDir()
+	mustWrite(t, filepath.Join(ws, "cox", "workspace.json"), `{"repos":[{"alias":"a","path":"/x","production":"main"}]}`)
+	t.Chdir(ws)
+	t.Setenv("TMPDIR", t.TempDir())
+	t.Setenv("ORCA_TERMINAL_HANDLE", "pi-test")
+	blocks := rewakeBlocksPath("pi-test")
+	mustWrite(t, blocks, "2")
+	openStdin(t)
+	if code := cmdHook([]string{"prompt-drain", "--harness", "pi", "--reopen"}); code != 0 {
+		t.Fatalf("prompt-drain --reopen exit %d", code)
+	}
+	if b, err := os.ReadFile(blocks); err != nil || strings.TrimSpace(string(b)) != "2" {
+		t.Fatalf("a reopen-opened turn must keep the block budget, got %q %v", b, err)
+	}
+	if code := cmdHook([]string{"prompt-drain", "--harness", "pi"}); code != 0 {
+		t.Fatalf("prompt-drain exit %d", code)
+	}
+	if _, err := os.Stat(blocks); !os.IsNotExist(err) {
+		t.Fatalf("a user turn must reset the block budget, stat err=%v", err)
+	}
+}
+
+// Pi re-arms its own idle waiter on exit 0, so stop-rewake under --harness pi never ticks (a tick would cost a model
+// turn); claude keeps ticking.
+func TestStopRewakePiNeverTicks(t *testing.T) {
+	epic := t.TempDir()
+	seedEvent(t, epic, state.Submitted, state.Working)
+	var out bytes.Buffer
+	code := runStopRewake(rewakeCfg{epics: []string{epic}, harness: "pi", maxWait: 0, batchMax: time.Second, poll: time.Second, out: &out, sleep: noSleep})
+	if code != 0 || out.Len() != 0 {
+		t.Fatalf("pi: MAX_WAIT must exit 0 with no tick, got %d %q", code, out.String())
+	}
+}
