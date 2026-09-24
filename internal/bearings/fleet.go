@@ -172,9 +172,11 @@ func statusHistory(epicDir string) (map[string][]string, error) {
 	return out, nil
 }
 
-func printStatusTail(p *printer, epicDir string, lines []string, n int) {
-	p.line(fmt.Sprintf("status tail (last %d line(s), each capped at %d characters, wake-EVENT history, not current state; full log: %s, cox wake drain --full --epic %s for queued records):",
-		n, LineCap, filepath.Join(epicDir, wake.ControlDir, "wake.jsonl"), epicDir))
+// printStatusTail prints one story's bounded tail. The header discloses both bounds and where the full log lives,
+// workspace-relative so a digest with many stories does not repeat long absolute paths.
+func printStatusTail(p *printer, relEpic string, lines []string, n int) {
+	p.line(fmt.Sprintf("status tail (last %d line(s), each capped at %d characters, wake-EVENT history, not current state; full log: %s, or cox wake drain --full):",
+		n, LineCap, filepath.Join(relEpic, wake.ControlDir, "wake.jsonl")))
 	if len(lines) > n {
 		lines = lines[len(lines)-n:]
 	}
@@ -196,7 +198,11 @@ func printFleet(p *printer, o Opts, epics []string) {
 	}
 	for _, ep := range epics {
 		slug := filepath.Base(ep)
-		p.sub(fmt.Sprintf("Stories - epic %s (%s)", slug, ep))
+		rel, err := filepath.Rel(o.Workspace, ep)
+		if err != nil {
+			rel = ep
+		}
+		p.sub(fmt.Sprintf("Stories - epic %s (%s)", slug, rel))
 		sts, err := StoryStates(ep)
 		if err != nil {
 			p.line(fmt.Sprintf("unreadable story state: %v", err))
@@ -222,14 +228,16 @@ func printFleet(p *printer, o Opts, epics []string) {
 			case o.Endpoint == nil:
 				p.line("endpoint: unknown (no terminal probe)")
 			default:
-				if alive, handle := o.Endpoint(ep, st.Story); alive {
+				if alive, handle := o.Endpoint(ep, st.Story); handle == "" {
+					p.line("endpoint: unknown (no terminal recorded, or the backend probe could not tell)")
+				} else if alive {
 					p.line(fmt.Sprintf("endpoint: alive (backend=orca terminal=%s)", handle))
 				} else {
 					p.line(fmt.Sprintf("endpoint: dead (backend=orca terminal=%s)", handle))
 				}
 			}
 			if lines := hist[st.Story]; len(lines) > 0 {
-				printStatusTail(p, ep, lines, o.StatusTail)
+				printStatusTail(p, rel, lines, o.StatusTail)
 			} else {
 				p.line("status tail: (no status recorded yet)")
 			}
@@ -251,7 +259,7 @@ func printFleet(p *printer, o Opts, epics []string) {
 		for _, id := range orphans {
 			p.line("")
 			p.line("--- " + id + " ---")
-			printStatusTail(p, ep, hist[id], o.StatusTail)
+			printStatusTail(p, rel, hist[id], o.StatusTail)
 		}
 	}
 	empty := map[string]string{

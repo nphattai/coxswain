@@ -23,16 +23,16 @@ func agentsHash(ws string) string {
 // writeAgentsBaseline records the instructions a true start began with, keyed to the leader identity, only after the
 // digest completed. It describes the start, not the latest re-emit, so every later drifted compaction refreshes again.
 func writeAgentsBaseline(ws, id, hash string) error {
-	return writeAtomic(filepath.Join(ws, ControlDir, agentsBaselineFile), id+"\n"+hash+"\n")
+	return writeAtomic(filepath.Join(ws, RuntimeDir, agentsBaselineFile), id+"\n"+hash+"\n")
 }
 
 // agentsDrifted: a missing baseline, a baseline for another leader identity, or a changed hash is drift.
 func agentsDrifted(ws, id string) bool {
-	fi, err := os.Lstat(filepath.Join(ws, ControlDir, agentsBaselineFile))
+	fi, err := os.Lstat(filepath.Join(ws, RuntimeDir, agentsBaselineFile))
 	if err != nil || !fi.Mode().IsRegular() {
 		return true
 	}
-	b, err := os.ReadFile(filepath.Join(ws, ControlDir, agentsBaselineFile))
+	b, err := os.ReadFile(filepath.Join(ws, RuntimeDir, agentsBaselineFile))
 	if err != nil {
 		return true
 	}

@@ -43,6 +43,10 @@ Orca's orchestration plane stays out of scope (Orca's Spawn drops argv); the ref
 
 5. **Stale/missing extension is visible.** `cox doctor` reports an ISSUE, with the repair `cox workspace init`, when a
    workspace lists `pi` as a leader option but `.pi/extensions/` is missing or its hash differs from the running binary's.
+   *Superseded in part (epic cox-supervision-port, story w2-bearings, firstmate `fm-session-start` pi_diagnostic cases):
+   an installed hash is not proof the extension is loaded; the session-start digest reports `PI_LEADER_EXTENSION:
+   loaded` only from the running extension's marker `<ws>/.cox/pi-leader-extension-loaded` (current version, live pid,
+   turn-end guard present, not a handoff generation).*
 
 6. **Policy parity notice.** `cox workspace init` on an existing `cox/policy.json` whose `harness.{leader,worker}.options`
    lack a harness the template lists prints one notice naming it and leaves the file byte-identical.

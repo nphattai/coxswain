@@ -65,7 +65,8 @@ func (s *session) isReadOnly() bool {
 // TRUNCATED banner, still without an error (fm-session-start.sh "RUNTIME BOUND").
 func Compose(o Opts) (Digest, error) {
 	o = withDefaults(o)
-	s := &session{o: o, p: &printer{}, epics: ActiveEpics(o.Workspace)}
+	// Read-only until the lease is verified, so a digest the bound cuts inside the lease stage never claims ownership.
+	s := &session{o: o, p: &printer{}, epics: ActiveEpics(o.Workspace), readOnly: true}
 	done := make(chan struct{})
 	go func() { defer close(done); s.run() }()
 	timer := time.NewTimer(o.Timeout)
@@ -149,10 +150,10 @@ func (s *session) run() {
 	p.sub("LEADER LEASE")
 	lr := acquire(o.Workspace, o.LeaderID, o.Live)
 	p.line(lr.line)
+	s.mu.Lock()
+	s.readOnly = !lr.ok
+	s.mu.Unlock()
 	if !lr.ok {
-		s.mu.Lock()
-		s.readOnly = true
-		s.mu.Unlock()
 		cause := "LEADER LEASE OWNERSHIP WAS NOT VERIFIED"
 		p.lines(bar,
 			"●  READ-ONLY SESSION - "+cause,
@@ -166,11 +167,20 @@ func (s *session) run() {
 	}
 	readOnly := !lr.ok
 	printAgentsRefresh(p, o)
-	if !readOnly && !o.Reemit && (o.Forge != nil || o.StateRead != nil) {
+	detached := ""
+	switch {
+	case readOnly || o.Reemit:
+	case o.Forge != nil || o.StateRead != nil:
 		d := startDeferred(o, s.epics)
 		s.mu.Lock()
 		s.deferred = d
 		s.mu.Unlock()
+	case o.Detach != nil:
+		if err := o.Detach(); err != nil {
+			detached = "FORGE_CHECKS: the deferred forge worker could not start (" + err.Error() + "); rerun cox bearings deferred"
+		} else {
+			detached = "started"
+		}
 	}
 
 	// 2. doctor: detect-only diagnostics always run.
@@ -223,6 +233,13 @@ func (s *session) run() {
 		p.line("not repeated on a context re-emit - this session's startup ran them; a failed result arrived as a startup-forge wake.")
 	case s.deferred != nil:
 		s.deferred.harvestInto(p)
+	case detached == "started":
+		p.lines("IN PROGRESS - the deferred forge checks have not finished yet.",
+			"NOT yet confirmed: GitHub authentication and the inactive-story state reads.",
+			"They run in a detached cox bearings deferred worker. Only a FAILED or otherwise actionable result arrives",
+			"as a startup-forge or inactive-outcome wake; a clean success stays silent.")
+	case detached != "":
+		p.line(detached)
 	default:
 		p.line("not configured - no deferred forge checks run for this session.")
 	}

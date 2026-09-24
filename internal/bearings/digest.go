@@ -93,8 +93,8 @@ func DoctorSummary(ws string) (string, error) {
 // WakeDrain is cox wake drain's source of truth: the unacked wakes of an epic, in gen order. It never acks.
 func WakeDrain(epicDir string) ([]wake.Wake, error) { return wake.Drain(epicDir, true) }
 
-// pidAlive reports whether a process exists (a signal-0 probe; EPERM still means it exists).
-func pidAlive(pid int) bool {
+// PidAlive reports whether a process exists (a signal-0 probe; EPERM still means it exists).
+func PidAlive(pid int) bool {
 	if pid <= 0 {
 		return false
 	}
@@ -106,7 +106,7 @@ func pidAlive(pid int) bool {
 // marker's version is the current extension build, its pid is a live process, it is not a handoff-generation marker,
 // and the turn-end guard is present.
 func piExtensionLoaded(ws string) bool {
-	b, err := os.ReadFile(filepath.Join(ws, ControlDir, PiLoadedMarker))
+	b, err := os.ReadFile(filepath.Join(ws, RuntimeDir, PiLoadedMarker))
 	if err != nil {
 		return false
 	}
@@ -115,7 +115,7 @@ func piExtensionLoaded(ws string) bool {
 		return false
 	}
 	pid, err := strconv.Atoi(strings.TrimSpace(ls[1]))
-	if err != nil || !pidAlive(pid) {
+	if err != nil || !PidAlive(pid) {
 		return false
 	}
 	for _, l := range ls[2:] {
@@ -231,7 +231,7 @@ func watcherDown(epics []string) []string {
 	for _, ep := range epics {
 		b, _ := os.ReadFile(filepath.Join(ep, wake.ControlDir, "watch.pid"))
 		pid, _ := strconv.Atoi(strings.TrimSpace(string(b)))
-		if !pidAlive(pid) {
+		if !PidAlive(pid) {
 			out = append(out, ep)
 		}
 	}

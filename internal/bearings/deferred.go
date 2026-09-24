@@ -113,10 +113,27 @@ func (d *deferredRun) missed() {
 	}
 }
 
+// owner reports whether the leader that started this stage still holds the lease: a worker that outlived a takeover
+// publishes nothing, the new holder's own start runs the checks again.
+func (d *deferredRun) owner() bool {
+	return d.o.LeaderID == "" || LeaseHolder(d.o.Workspace) == d.o.LeaderID
+}
+
+// queued reports whether an identical wake for the story is already waiting unacked, so a rerun never duplicates it.
+func queued(epicDir, story, note string) bool {
+	ws, _ := WakeDrain(epicDir)
+	for _, w := range ws {
+		if w.Story == story && w.Note == note {
+			return true
+		}
+	}
+	return false
+}
+
 // publish appends the failed forge result once to every active epic's wake queue; a success stays silent.
 func (d *deferredRun) publish() {
 	d.mu.Lock()
-	if d.published || d.forgeErr == nil {
+	if d.published || d.forgeErr == nil || !d.owner() {
 		d.mu.Unlock()
 		return
 	}
@@ -124,7 +141,9 @@ func (d *deferredRun) publish() {
 	note := "startup-forge: " + d.forgeLine()
 	d.mu.Unlock()
 	for _, ep := range d.epics {
-		_, _ = wake.Append(ep, wake.Wake{Epic: filepath.Base(ep), Story: LeaderStory, Kind: wake.KindStatus, Note: note})
+		if !queued(ep, LeaderStory, note) {
+			_, _ = wake.Append(ep, wake.Wake{Epic: filepath.Base(ep), Story: LeaderStory, Kind: wake.KindStatus, Note: note})
+		}
 	}
 }
 
@@ -153,7 +172,10 @@ func (d *deferredRun) runReads() {
 				continue
 			}
 			d.readLines = append(d.readLines, fmt.Sprintf("%s/%s inactive-outcome: %s", filepath.Base(ep), st.Story, line))
-			_, _ = wake.Append(ep, wake.Wake{Epic: filepath.Base(ep), Story: st.Story, Kind: wake.KindStatus, Note: "inactive-outcome: " + line})
+			note := "inactive-outcome: " + line
+			if d.owner() && !queued(ep, st.Story, note) {
+				_, _ = wake.Append(ep, wake.Wake{Epic: filepath.Base(ep), Story: st.Story, Kind: wake.KindStatus, Note: note})
+			}
 		}
 	}
 }
@@ -191,4 +213,14 @@ func Deferred(ws string, wait time.Duration) (string, error) {
 		return "(silent - no problems found)", nil
 	}
 	return strings.Join(out, "\n"), nil
+}
+
+// RunDeferred is the detached deferred worker (cox bearings deferred): it runs the forge probe and the inactive-story
+// reads of o's workspace, publishes a failed forge result as a startup-forge wake (there is no digest left to print
+// it), and returns the report once the stage finished or wait elapsed.
+func RunDeferred(o Opts, wait time.Duration) (string, error) {
+	o = withDefaults(o)
+	d := startDeferred(o, ActiveEpics(o.Workspace))
+	d.missed()
+	return Deferred(o.Workspace, wait)
 }

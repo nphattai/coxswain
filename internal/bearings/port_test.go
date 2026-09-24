@@ -1,13 +1,10 @@
-//go:build port
-
-// Port tests for the proposed internal/bearings package: firstmate's session-start digest and memory-curation
-// contracts, translated case by case from firstmate@1e0e773 (epic cox-supervision-port, story
-// cox-supervision-port-session). Cox has no session-start command yet, so every case runs against the local Bearings
-// interface below through a notImplemented adapter and fails naming the gap; wave 2 swaps the adapter for the real
-// package and removes the port tag from each case it turns green. Firstmate names map to cox names as follows: home ->
-// workspace, fleet lock -> leader lease, bootstrap -> cox doctor, state/*.status -> story status wakes, data/backlog.md
-// -> BACKLOG.md, data/captain.md, data/captain-shared.md, data/learnings.md -> cox/notes/{captain,captain-shared,learnings}.md
-// (captain ruling 2026-09-24: three files, firstmate's 7,500 budget).
+// Port tests for internal/bearings: firstmate's session-start digest and memory-curation contracts, translated case by
+// case from firstmate@1e0e773 (epic cox-supervision-port, wave 1 story cox-supervision-port-session) and turned green
+// by wave 2 (story cox-supervision-port-w2-bearings), so the file runs untagged under go test ./... . Every case runs
+// against the Bearings interface below through the realBearings adapter. Firstmate names map to cox names as follows:
+// home -> workspace, fleet lock -> leader lease, bootstrap -> cox doctor, state/*.status -> story status wakes,
+// data/backlog.md -> BACKLOG.md, data/captain.md, data/captain-shared.md, data/learnings.md ->
+// cox/notes/{captain,captain-shared,learnings}.md (captain ruling 2026-09-24: three files, firstmate's 7,500 budget).
 package bearings_test
 
 import (
@@ -108,8 +105,8 @@ type notImplementedErr struct{ what string }
 
 func (e notImplementedErr) Error() string { return "not implemented: " + e.what }
 
-// realBearings forwards to internal/bearings. A method whose mechanism is not built yet returns notImplementedErr, so
-// its cases keep failing with the named gap (DESIGN translation contract rule 3).
+// realBearings forwards to internal/bearings. notImplementedErr stays as the gap vocabulary: a method that ever regresses
+// to it fails its cases naming the mechanism (DESIGN translation contract rule 3).
 type realBearings struct{}
 
 func (realBearings) Digest(o Opts) (Digest, error) { return bearings.Compose(o) }

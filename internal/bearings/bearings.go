@@ -23,6 +23,9 @@ type Opts struct {
 	Endpoint    func(epic, story string) (alive bool, handle string)
 	StateRead   func(epic, story string) (string, error) // the slow current-state read for a working story (deferred)
 	StageCmd    map[string][]string                      // test seam: an extra subprocess a named stage runs
+	// Detach launches the deferred stage in a detached worker process (the CLI) instead of in-process Forge/StateRead;
+	// its result arrives as wakes. It is called only on a locked, non-re-emit start.
+	Detach func() error
 }
 
 // Digest is the printed session-start digest.

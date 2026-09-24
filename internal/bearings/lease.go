@@ -9,9 +9,9 @@ import (
 	"syscall"
 )
 
-// ControlDir is the workspace-level runtime directory holding the leader lease and the digest's own records (never
-// committed; the epic-level .cox/ is a different directory).
-const ControlDir = ".cox"
+// RuntimeDir is the workspace-level runtime directory holding the leader lease and the digest's own records (never
+// committed). It is not workspace.ControlDir (cox/, the tracked registry and the notes) nor an epic's .cox/.
+const RuntimeDir = ".cox"
 
 const (
 	leaseFile     = "leader-lease"
@@ -47,7 +47,7 @@ func acquire(ws, id string, live func(string) bool) leaseResult {
 	fail := func(err error) leaseResult {
 		return leaseResult{line: fmt.Sprintf("error: cannot write leader lease (%v); operate read-only until resolved", err)}
 	}
-	dir := filepath.Join(ws, ControlDir)
+	dir := filepath.Join(ws, RuntimeDir)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fail(err)
 	}
@@ -61,9 +61,10 @@ func acquire(ws, id string, live func(string) bool) leaseResult {
 	}
 	defer syscall.Flock(int(lf.Fd()), syscall.LOCK_UN)
 
-	holder := leaseHolder(ws)
+	holder := LeaseHolder(ws)
 	if holder != "" && holder != id && (live == nil || live(holder)) {
-		return leaseResult{liveHeld: true, line: fmt.Sprintf("error: another live leader holds the lease (%s); operate read-only until resolved", holder)}
+		return leaseResult{liveHeld: true, line: fmt.Sprintf("error: another live leader holds the lease (%s); operate read-only until resolved (once that leader is gone, remove %s)",
+			holder, filepath.Join(dir, leaseFile))}
 	}
 	if holder != id {
 		if err := writeAtomic(filepath.Join(dir, leaseFile), id+"\n"); err != nil {
@@ -73,9 +74,9 @@ func acquire(ws, id string, live func(string) bool) leaseResult {
 	return leaseResult{ok: true, line: "lease acquired: " + id}
 }
 
-// leaseHolder is the identity recorded in the lease, "" when none.
-func leaseHolder(ws string) string {
-	b, err := os.ReadFile(filepath.Join(ws, ControlDir, leaseFile))
+// LeaseHolder is the identity recorded in the workspace's leader lease, "" when none.
+func LeaseHolder(ws string) string {
+	b, err := os.ReadFile(filepath.Join(ws, RuntimeDir, leaseFile))
 	if err != nil {
 		return ""
 	}
