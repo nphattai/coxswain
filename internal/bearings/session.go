@@ -4,19 +4,28 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 )
 
 // Stages is the digest's ordered stage list; the STARTUP TRUNCATED banner names every stage at and after the one that
 // did not finish (fm-session-start.sh SESSION_START_STAGES, mapped to cox names).
 var Stages = []string{"lease", "doctor", "wake-queue", "supervision-instructions", "read-once", "fleet-state", "forge-checks", "notes", "next-step"}
 
-// session is one running digest.
+// session is one running digest. The digest runs in its own goroutine under the runtime bound, so every field the
+// bound's path reads is guarded by mu.
 type session struct {
-	o        Opts
-	p        *printer
-	epics    []string
+	o     Opts
+	p     *printer
+	epics []string
+	procs stageProcs
+	final string // the complete digest, set before run returns when it finished inside the bound
+
+	mu       sync.Mutex
 	readOnly bool
-	stage    func(string)
+	current  string
+	frozen   bool // the runtime bound fired; current is final
+	deferred *deferredRun
 }
 
 func withDefaults(o Opts) Opts {
@@ -26,20 +35,84 @@ func withDefaults(o Opts) Opts {
 	if o.QueuedLimit <= 0 {
 		o.QueuedLimit = DefaultQueuedLimit
 	}
+	if o.Timeout <= 0 {
+		o.Timeout = DefaultTimeout
+	}
 	if abs, err := filepath.Abs(o.Workspace); err == nil {
 		o.Workspace = abs
 	}
 	return o
 }
 
+// stage records the stage being entered (the truncation banner's breadcrumb) and runs its test-seam subprocess.
+func (s *session) stage(name string) {
+	s.mu.Lock()
+	if !s.frozen {
+		s.current = name
+	}
+	s.mu.Unlock()
+	s.procs.run(s.o.StageCmd[name])
+}
+
+func (s *session) isReadOnly() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.readOnly
+}
+
 // Compose prints the one ordered session-start digest. It is a reporting command, never a gate: a refused lease is a
-// loud read-only banner inline, and the error is non-nil only when the workspace itself cannot be read.
+// loud read-only banner inline, and a digest that hits its runtime bound returns what it printed plus a STARTUP
+// TRUNCATED banner, still without an error (fm-session-start.sh "RUNTIME BOUND").
 func Compose(o Opts) (Digest, error) {
 	o = withDefaults(o)
-	s := &session{o: o, p: &printer{}, epics: ActiveEpics(o.Workspace), stage: func(string) {}}
-	s.run()
-	text := s.p.seal()
-	return Digest{Text: withEstimate(text), ReadOnly: s.readOnly}, nil
+	s := &session{o: o, p: &printer{}, epics: ActiveEpics(o.Workspace)}
+	done := make(chan struct{})
+	go func() { defer close(done); s.run() }()
+	timer := time.NewTimer(o.Timeout)
+	defer timer.Stop()
+	select {
+	case <-done:
+	case <-timer.C:
+		if text, first := s.p.seal(); first {
+			// Read the breadcrumb before reaping: once its subprocess dies the sealed goroutine runs on through later
+			// stages, which must not rename the stage that hit the bound.
+			s.mu.Lock()
+			d, stage, ro := s.deferred, s.current, s.readOnly
+			s.frozen = true
+			s.mu.Unlock()
+			s.procs.reap()
+			if d != nil {
+				d.missed()
+			}
+			return Digest{Text: withEstimate(text + truncationBanner(o.Timeout, stage)), ReadOnly: ro, Truncated: true}, nil
+		}
+		<-done // the digest completed at the bound itself
+	}
+	return Digest{Text: withEstimate(s.final), ReadOnly: s.isReadOnly()}, nil
+}
+
+// truncationBanner is fm-session-start.sh's STARTUP TRUNCATED banner: the stage that did not finish and every stage
+// that therefore never printed.
+func truncationBanner(bound time.Duration, stage string) string {
+	pending := "(unknown - the digest may be incomplete anywhere)"
+	for i, st := range Stages {
+		if st == stage {
+			pending = strings.Join(Stages[i:], " ")
+		}
+	}
+	if stage == "" {
+		stage = "unknown"
+	}
+	return strings.Join([]string{"", bar,
+		fmt.Sprintf("●  STARTUP TRUNCATED - SESSION START HIT ITS RUNTIME BOUND (%s)", bound),
+		fmt.Sprintf("●  It stopped during the %q stage, so everything above is COMPLETE", stage),
+		"●  only up to that point.",
+		"●  RECONCILE these stages before acting on anything they would have shown:",
+		"●    " + pending,
+		"●  Rerun cox bearings now to finish taking the helm. If it truncates",
+		"●  again, raise --timeout and report the slow stage - a stage that",
+		"●  cannot finish inside the bound is a fleet problem, not a reporting detail.",
+		bar, ""}, "\n")
 }
 
 // withEstimate appends the digest's own token estimate as its last line, so the startup ceiling is checked on every
@@ -55,6 +128,11 @@ func withEstimate(text string) string {
 
 func (s *session) run() {
 	o, p := s.o, s.p
+	trueStart := !o.Reemit && (o.Source == "" || o.Source == "startup")
+	startHash := ""
+	if trueStart {
+		startHash = agentsHash(o.Workspace)
+	}
 	if o.Reemit {
 		p.section("SESSION START (CONTEXT RE-EMIT) - " + o.Workspace)
 		p.lines("This session already took the helm at its own startup and has only lost its",
@@ -72,7 +150,9 @@ func (s *session) run() {
 	lr := acquire(o.Workspace, o.LeaderID, o.Live)
 	p.line(lr.line)
 	if !lr.ok {
+		s.mu.Lock()
 		s.readOnly = true
+		s.mu.Unlock()
 		cause := "LEADER LEASE OWNERSHIP WAS NOT VERIFIED"
 		p.lines(bar,
 			"●  READ-ONLY SESSION - "+cause,
@@ -83,6 +163,14 @@ func (s *session) run() {
 			"●  Operate read-only until this resolves - do not dispatch, steer, merge, or",
 			"●  otherwise mutate fleet state from this session.",
 			bar)
+	}
+	readOnly := !lr.ok
+	printAgentsRefresh(p, o)
+	if !readOnly && !o.Reemit && (o.Forge != nil || o.StateRead != nil) {
+		d := startDeferred(o, s.epics)
+		s.mu.Lock()
+		s.deferred = d
+		s.mu.Unlock()
 	}
 
 	// 2. doctor: detect-only diagnostics always run.
@@ -97,7 +185,7 @@ func (s *session) run() {
 	// 3. wake queue: presented only with verified lease ownership; never acked here.
 	s.stage("wake-queue")
 	p.sub("WAKE QUEUE")
-	if s.readOnly {
+	if readOnly {
 		n := 0
 		for _, ep := range s.epics {
 			ws, _ := WakeDrain(ep)
@@ -110,7 +198,7 @@ func (s *session) run() {
 
 	// 4. supervision operating instructions.
 	s.stage("supervision-instructions")
-	printSupervision(p, o.Workspace, o.Harness, s.readOnly)
+	printSupervision(p, o.Workspace, o.Harness, readOnly)
 
 	// 5. read-once contract, ahead of the digests it governs.
 	s.stage("read-once")
@@ -127,10 +215,14 @@ func (s *session) run() {
 	s.stage("forge-checks")
 	p.section("FORGE CHECKS")
 	switch {
-	case s.readOnly:
+	case readOnly:
 		p.lines("skipped (read-only session) - GitHub authentication and the inactive-story state reads were not run.",
 			"They need the leader lease, and this session must not dispatch, steer, or merge, so it",
 			"has no action they would gate. The session holding the lease runs them.")
+	case o.Reemit:
+		p.line("not repeated on a context re-emit - this session's startup ran them; a failed result arrived as a startup-forge wake.")
+	case s.deferred != nil:
+		s.deferred.harvestInto(p)
 	default:
 		p.line("not configured - no deferred forge checks run for this session.")
 	}
@@ -141,7 +233,16 @@ func (s *session) run() {
 
 	// 9. closing reminder.
 	s.stage("next-step")
-	printNextStep(p, o.Harness, s.readOnly, s.epics)
+	printNextStep(p, o.Harness, readOnly, s.epics)
+
+	text, first := p.seal()
+	if !first {
+		return // the runtime bound fired first: no completion, so no AGENTS baseline
+	}
+	s.final = text
+	if trueStart && !readOnly && startHash != "" {
+		_ = writeAgentsBaseline(o.Workspace, o.LeaderID, startHash)
+	}
 }
 
 // printWakeQueue prints cox wake drain's records for every active epic, the drain annotation, and the generation-bound

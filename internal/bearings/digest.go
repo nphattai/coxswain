@@ -46,12 +46,16 @@ func (p *printer) line(s string)      { p.raw(s + "\n") }
 func (p *printer) section(t string)   { p.raw("\n" + rule + "\n" + t + "\n" + rule + "\n") }
 func (p *printer) sub(label string)   { p.raw("\n" + label + "\n" + subrule + "\n") }
 func (p *printer) lines(ls ...string) { p.raw(strings.Join(ls, "\n") + "\n") }
-func (p *printer) seal() (text string) {
+
+// seal freezes the digest and returns it; first is false when it was already sealed (by completion or by the bound).
+func (p *printer) seal() (text string, first bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	first = !p.sealed
 	p.sealed = true
-	return p.b.String()
+	return p.b.String(), first
 }
+
 func (p *printer) text() string { p.mu.Lock(); defer p.mu.Unlock(); return p.b.String() }
 
 // DoctorSummary is the detect-only doctor diagnostics for one workspace (internal/doctor.InspectWorkspace): the

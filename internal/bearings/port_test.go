@@ -126,11 +126,11 @@ func (realBearings) StoryStates(epicDir string) ([]StoryState, error) {
 func (realBearings) BacklogOpenRows(ws string) (int, error)      { return bearings.BacklogOpenRows(ws) }
 func (realBearings) Notes(ws string, budget int) (string, error) { return bearings.Notes(ws, budget) }
 func (realBearings) Budget(ws string) (BudgetReport, error)      { return bearings.Budget(ws) }
-func (realBearings) Deferred(string, time.Duration) (string, error) {
-	return "", notImplementedErr{"Deferred"}
+func (realBearings) Deferred(ws string, wait time.Duration) (string, error) {
+	return bearings.Deferred(ws, wait)
 }
-func (realBearings) RunBounded(time.Duration, ...string) (int, error) {
-	return 0, notImplementedErr{"RunBounded"}
+func (realBearings) RunBounded(timeout time.Duration, argv ...string) (int, error) {
+	return bearings.RunBounded(timeout, argv...)
 }
 func (realBearings) Classify(file, line string, now time.Time, horizon bool) (Entry, error) {
 	return bearings.Classify(file, line, now, horizon)
