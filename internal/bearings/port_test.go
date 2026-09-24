@@ -140,11 +140,11 @@ func (realBearings) Deferred(string, time.Duration) (string, error) {
 func (realBearings) RunBounded(time.Duration, ...string) (int, error) {
 	return 0, notImplementedErr{"RunBounded"}
 }
-func (realBearings) Classify(string, string, time.Time, bool) (Entry, error) {
-	return Entry{}, notImplementedErr{"Classify"}
+func (realBearings) Classify(file, line string, now time.Time, horizon bool) (Entry, error) {
+	return bearings.Classify(file, line, now, horizon)
 }
-func (realBearings) Curate(string, time.Time, []string) (Receipt, error) {
-	return Receipt{}, notImplementedErr{"Curate"}
+func (realBearings) Curate(ws string, now time.Time, reinforced []string) (Receipt, error) {
+	return bearings.Curate(ws, now, reinforced)
 }
 
 var impl Bearings = realBearings{}
