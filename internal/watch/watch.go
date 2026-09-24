@@ -336,6 +336,12 @@ func (w *Watcher) evictReason() string {
 	if _, err := os.Stat(filepath.Join(w.EpicDir, state.ControlDir+".closed")); err == nil {
 		return "epic closed (" + state.ControlDir + ".closed present)"
 	}
+	// Lock takeover (firstmate fm-watch.sh loop top): once watch.pid names another process a second watcher owns the
+	// epic, so this one stands down and leaves the new holder's pidfile untouched. A missing pidfile (a one-shot or a
+	// test loop that never claimed) is not a takeover.
+	if pid, _ := ReadPid(w.EpicDir); pid > 0 && pid != os.Getpid() {
+		return fmt.Sprintf("watch.pid taken over by pid %d", pid)
+	}
 	if p, err := watcherExecutable(); err != nil {
 		return "own binary path unresolved: " + err.Error()
 	} else if _, err := os.Stat(p); err != nil {
@@ -370,11 +376,7 @@ func (w *Watcher) markTick() {
 	if _, err := os.Stat(filepath.Join(w.EpicDir, state.ControlDir)); err != nil {
 		return
 	}
-	dir := w.watchDir()
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return
-	}
-	_ = os.WriteFile(filepath.Join(dir, "lasttick"), []byte(w.now().UTC().Format(time.RFC3339)), 0o644)
+	_ = writeAtomic(filepath.Join(w.watchDir(), "lasttick"), []byte(w.now().UTC().Format(time.RFC3339)))
 }
 
 // mailPass reads the mailbox without consuming, appends a wake for each new actionable message, tracks heartbeats for
@@ -382,8 +384,9 @@ func (w *Watcher) markTick() {
 func (w *Watcher) mailPass(dispatchStory map[string]string) (int, bool, error) {
 	msgs, deliveryID, err := w.Backend.Mail().Check()
 	if err != nil {
-		return 0, false, fmt.Errorf("mailbox check: %w", err)
+		return w.reportUnreadable(err)
 	}
+	_ = os.Remove(filepath.Join(w.watchDir(), "mail-unreadable"))
 	seen, err := w.loadSeen()
 	if err != nil {
 		return 0, false, err
@@ -441,6 +444,27 @@ func (w *Watcher) mailPass(dispatchStory map[string]string) (int, bool, error) {
 		}
 	}
 	return appended, urgent, nil
+}
+
+// reportUnreadable reports a failed status-source read (the mailbox) once per failure state instead of aborting the
+// watch pass: the signature is the error text, so an unchanged failure stays quiet and a changed one reports again.
+// The mailbox is never consumed on a failed read, so its content surfaces once it is readable (firstmate
+// fm-watch-triage.test.sh:2021, :2067: an unreadable log is reported once per distinct file state).
+func (w *Watcher) reportUnreadable(cause error) (int, bool, error) {
+	sig := cause.Error()
+	path := filepath.Join(w.watchDir(), "mail-unreadable")
+	if b, err := os.ReadFile(path); err == nil && string(b) == sig {
+		return 0, false, nil
+	}
+	if _, err := wake.Append(w.EpicDir, wake.Wake{
+		Epic: filepath.Base(w.EpicDir), Story: "_watch", Kind: wake.KindUnknownProbe,
+		Note:     "status source unreadable: " + truncate(sig, 180),
+		Evidence: map[string]any{"error": sig},
+	}); err != nil {
+		return 0, false, err
+	}
+	_ = writeAtomic(path, []byte(sig))
+	return 1, false, nil
 }
 
 // inboxLadder rings unhandled steers older than InboxGrace and escalates to a stuck wake after InboxRingMax rings; a
