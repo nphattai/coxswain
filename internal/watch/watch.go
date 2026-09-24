@@ -13,12 +13,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/nphattai/coxswain/internal/adapter/backend"
-	"github.com/nphattai/coxswain/internal/protocol/busy"
+	"github.com/nphattai/coxswain/internal/adapter/forge"
 	"github.com/nphattai/coxswain/internal/protocol/checkpoint"
 	"github.com/nphattai/coxswain/internal/protocol/inbox"
 	"github.com/nphattai/coxswain/internal/reconcile"
@@ -26,15 +27,15 @@ import (
 	"github.com/nphattai/coxswain/internal/wake"
 )
 
-// Defaults for the watcher windows (ported from v1 watch.sh: STALE_MIN 20m, RUNAWAY_MIN 30m, INBOX_GRACE 90s,
-// INBOX_RING_MAX 3).
+// Defaults for the watcher windows. StaleMin is firstmate's FM_STALE_ESCALATE_SECS (240s, the wedge threshold); the
+// inbox ladder keeps v1 watch.sh's RUNAWAY_MIN 30m, INBOX_GRACE 90s and INBOX_RING_MAX 3.
 const (
-	DefaultStaleMin     = 20 * time.Minute
+	DefaultStaleMin     = 240 * time.Second
 	DefaultRunawayMin   = 30 * time.Minute
 	DefaultInboxGrace   = 90 * time.Second
 	DefaultInboxRingMax = 3
-	// DefaultIdleNoDoneWait is how long a working story's last message must be silent before an empty composer with an
-	// unanswered steer is treated as "finished but never sent worker_done".
+	// DefaultIdleNoDoneWait is kept for callers of the removed steer-gated idle pass; turn-end triage (triage.go) now
+	// surfaces a stopped worker with no report at once, with or without a steer.
 	DefaultIdleNoDoneWait = 5 * time.Minute
 	// DefaultReconcileEvery is how many ticks between reconcile passes (policy override, phase-07). At the 5s poll that
 	// is one pass every ~50s; a story stuck in pending_external by a crash is finished within a window, not left forever.
@@ -54,10 +55,10 @@ const (
 	// DoorbellFailAlarm is the consecutive-doorbell-failure count at which the watcher raises one _leader stuck wake and
 	// begins alarming an out-of-band channel: the leader terminal has been unreachable for three straight nudges (item 3).
 	DoorbellFailAlarm = 3
-	// DefaultBusyTurnMax is how long a story's busy record may say busy - with no fresh busy event and no fresh checkpoint -
-	// before the watcher raises one routine status wake for the leader (DESIGN wave-2 item 6d). It is a nudge, never an
-	// interrupt: a legitimately long turn is not a runaway, so the leader is only told to look, not to abort.
-	DefaultBusyTurnMax = 60 * time.Minute
+	// DefaultBusyTurnMax is firstmate's BUSY_TURN_MAX_SECS (3600s): how long a busy record may say busy with no completed
+	// turn and no native progress before the busy crew is handed to the wedge timer (busyTurnBoundCheck). Never an
+	// interrupt: the leader is told to look.
+	DefaultBusyTurnMax = 3600 * time.Second
 )
 
 // Watcher runs one epic's watch loop. Sessions maps a story to its worker session (for re-ring and interrupt); Tick
@@ -85,9 +86,26 @@ type Watcher struct {
 	// AlarmRun runs the out-of-band alarm channel with the summary. nil => runAlarmChannel (the real osascript/command
 	// dispatcher); a test injects a recorder so no real notification fires and channel selection can be asserted (item 3).
 	AlarmRun func(channel, summary string) error
-	Now      func() time.Time
+	// Forge reads the story PR's CI checks: a check running at the live head is firstmate's active run-step, positive
+	// evidence a quiet crew is still working (captain ruling 2026-09-24). nil => unknown, which never absorbs.
+	Forge forge.Forge
+	// PauseResurface is the declared-wait recheck cadence; 0 => DefaultPauseResurface (FM_PAUSE_RESURFACE_SECS).
+	PauseResurface time.Duration
+	// CaptainRE overrides the captain-relevance regex a quiet worker's last status line is read with (FM_CAPTAIN_RE);
+	// nil => the default verbs and tokens.
+	CaptainRE *regexp.Regexp
+	Now       func() time.Time
 
-	tickCount int // ticks since start, for pacing the reconcile pass
+	tickCount     int       // ticks since start, for pacing the reconcile pass
+	prevTick      time.Time // when the previous Tick ran (zero before the first)
+	appendedCount int       // wakes the stale loop appended this tick
+
+	// Per-tick triage scratch (reset by Tick): the no-verb signal batch, the stories that surfaced, the probe cache and
+	// the declaration the current stale alarm binds its throttle to.
+	signals  map[string]*signal
+	surfaced map[string]bool
+	probes   map[string]probeResult
+	waitDecl string
 }
 
 func (w *Watcher) now() time.Time {
@@ -119,8 +137,13 @@ func orDur(v, def time.Duration) time.Duration {
 // appended (0 when nothing was actionable). It never blocks; Run wraps it in a poll loop.
 func (w *Watcher) Tick() (int, error) {
 	w.tickCount++
+	w.signals, w.surfaced, w.probes, w.appendedCount = nil, nil, nil, 0
 	w.Sessions = LoadSessions(w.EpicDir) // pick up any story dispatched since the last tick (item 1)
 	dispatchStory, err := w.dispatchStoryMap()
+	if err != nil {
+		return 0, err
+	}
+	open, err := openStorySet(w.EpicDir)
 	if err != nil {
 		return 0, err
 	}
@@ -134,31 +157,27 @@ func (w *Watcher) Tick() (int, error) {
 	}
 	appended += n
 
+	w.reportPass(open)
+	w.turnEndPass(open)
+	n, err = w.signalTriage(open)
+	if err != nil {
+		return appended, err
+	}
+	appended += n
+
 	n, _, err = w.inboxLadder()
 	if err != nil {
 		return appended, err
 	}
 	appended += n
 
-	n, err = w.stalePass()
-	if err != nil {
-		return appended, err
-	}
-	appended += n
-
-	n, _, err = w.idleNoDonePass()
+	n, err = w.stalePass(open)
 	if err != nil {
 		return appended, err
 	}
 	appended += n
 
 	n, _, err = w.blockedPass()
-	if err != nil {
-		return appended, err
-	}
-	appended += n
-
-	n, _, err = w.busyTurnMaxPass()
 	if err != nil {
 		return appended, err
 	}
@@ -177,7 +196,21 @@ func (w *Watcher) Tick() (int, error) {
 	appended += n
 
 	w.nudgeLeader()
+	w.prevTick = w.now()
 	return appended, nil
+}
+
+// openStorySet is the stories the watcher supervises: working, or held on input (a captain call).
+func openStorySet(epicDir string) (map[string]bool, error) {
+	ids, err := OpenStories(epicDir)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]bool{}
+	for _, id := range ids {
+		out[id] = true
+	}
+	return out, nil
 }
 
 // nudgeLeader rings the leader terminal when an unacked urgent wake backlog is standing, so a leader that missed the
@@ -405,17 +438,17 @@ func (w *Watcher) mailPass(dispatchStory map[string]string) (int, bool, error) {
 		if story == "" {
 			story = disp // fall back to the dispatch id as the story key; a wake needs a non-empty story
 		}
-		// Track the arrival of any message so idle_no_done can tell a worker that went quiet from one still messaging.
-		w.touchWatchFile("lastmsg", disp)
 		kind := wake.Classify(m)
 		if kind == wake.KindHeartbeat {
+			// A worker heartbeat is the pane-churn analog (a status line is a signal, never pane activity).
+			w.markActivity(story, "m"+m.ID)
 			w.touchHeartbeat(disp, phase)
 			w.markSeen(m.ID)
 			continue
 		}
+		w.recordStatus(story, statusFromMail(m))
 		if kind == wake.KindWorkerDone {
-			w.forgetHeartbeat(disp)            // a finished worker must not be reported STALE forever (v1)
-			w.touchWatchFile("lastdone", disp) // idle_no_done clears once a worker_done arrives
+			w.forgetHeartbeat(disp) // a finished worker must not be reported STALE forever (v1)
 		}
 		note := wakeNote(kind, m.Subject, m.Body)
 		wk := wake.Wake{
@@ -426,15 +459,25 @@ func (w *Watcher) mailPass(dispatchStory map[string]string) (int, bool, error) {
 		if full := wakeFull(kind, m.Subject, m.Body); full != note {
 			wk.Full = full // keep the untruncated text for `cox wake drain --full`
 		}
-		gen, err := wake.Append(w.EpicDir, wk)
-		if err != nil {
+		if !wake.IsUrgent(kind) {
+			// A no-verb signal: triaged with the rest of this tick's batch (absorbed only if provably working).
+			line, id := statusFromMail(m), m.ID
+			w.addSignal(story, func(s *signal) {
+				s.statuses = append(s.statuses, wk)
+				s.lines = append(s.lines, line)
+				s.msgIDs = append(s.msgIDs, id)
+			})
+			continue
+		}
+		if _, err := wake.Append(w.EpicDir, wk); err != nil {
 			return appended, urgent, err
 		}
-		_ = gen
 		appended++
-		if wake.IsUrgent(kind) {
-			urgent = true
+		urgent = true
+		if w.surfaced == nil {
+			w.surfaced = map[string]bool{}
 		}
+		w.surfaced[story] = true
 		w.markSeen(m.ID)
 	}
 	// Only now, after every wake is durably written, ack the delivery (if the backend gave one).
@@ -581,114 +624,6 @@ func (w *Watcher) inboxLadder() (int, bool, error) {
 	return appended, urgent, nil
 }
 
-// stalePass probes any tracked worker whose heartbeat is older than StaleMin. A failed or Unknown probe raises an
-// unknown_probe wake and keeps the heartbeat (F08: never conclude gone); a Settled probe forgets it; an Alive worker
-// is just quiet. The heartbeat mtime is bumped after a probe so a stale worker is probed at most once per window.
-func (w *Watcher) stalePass() (int, error) {
-	hbDir := filepath.Join(w.EpicDir, state.ControlDir, "watch", "hb")
-	entries, err := os.ReadDir(hbDir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return 0, nil
-		}
-		return 0, fmt.Errorf("read heartbeat dir: %w", err)
-	}
-	now := w.now()
-	appended := 0
-	for _, e := range entries {
-		disp := e.Name()
-		info, err := e.Info()
-		if err != nil {
-			continue
-		}
-		if now.Sub(info.ModTime()) < w.staleMin() {
-			continue
-		}
-		sess, ok := w.Sessions[dispatchStoryReverse(w.Sessions, disp)]
-		if !ok {
-			// No session to probe with; keep the heartbeat, do not conclude gone.
-			w.bumpHeartbeat(disp)
-			continue
-		}
-		live, probeErr := w.Backend.Probe(sess)
-		if probeErr != nil || live == backend.Unknown {
-			note := "liveness probe failed"
-			ev := map[string]any{"dispatch": disp}
-			if probeErr != nil {
-				note = probeErr.Error()
-				ev["error"] = probeErr.Error()
-			}
-			if _, err := wake.Append(w.EpicDir, wake.Wake{
-				Epic: filepath.Base(w.EpicDir), Story: storyForDisp(w.Sessions, disp), Kind: wake.KindUnknownProbe,
-				Note: note, Evidence: ev,
-			}); err != nil {
-				return appended, err
-			}
-			appended++
-		}
-		w.bumpHeartbeat(disp) // one probe per window; never delete the heartbeat (F08)
-	}
-	return appended, nil
-}
-
-// idleNoDonePass raises one urgent idle_no_done wake per unanswered steer when a working story looks finished but never
-// sent a worker_done: its composer is empty, its last mailbox message is older than IdleNoDoneWait, and its newest steer
-// is more recent than any worker_done. This catches a re-run that ended with only a status (F8), which would otherwise
-// leave the story idle with the leader waiting. It fires at most once per steer (keyed by the steer's timestamp).
-func (w *Watcher) idleNoDonePass() (int, bool, error) {
-	events, _, err := state.Load(w.EpicDir)
-	if err != nil {
-		return 0, false, err
-	}
-	snap := state.Fold(events)
-	now := w.now()
-	appended := 0
-	urgent := false
-	for _, s := range snap.SortedStories() {
-		if s.State != state.Working {
-			continue
-		}
-		sess, ok := w.Sessions[s.ID]
-		if !ok {
-			continue
-		}
-		disp := sess.ID
-		lastMsg := w.watchFileMtime("lastmsg", disp)
-		if lastMsg.IsZero() || now.Sub(lastMsg) < w.idleNoDoneWait() {
-			continue // never messaged, or still messaging recently
-		}
-		steerTS := newestSteer(w.EpicDir, s.ID)
-		if steerTS.IsZero() {
-			continue // no steer awaiting completion
-		}
-		// A worker_done clears idle_no_done regardless of how it arrived: on the terminal plane it is a wake appended by
-		// `cox story report done` (no mail), so read the newest worker_done wake for the story, not just the mail-driven
-		// lastdone watch file (F8c, ADR 0012 item 10). Take whichever source is later.
-		lastDone := laterTime(w.watchFileMtime("lastdone", disp), newestWorkerDoneWake(w.EpicDir, s.ID))
-		if !lastDone.IsZero() && !lastDone.Before(steerTS) {
-			continue // a worker_done already arrived at or after the steer
-		}
-		if w.firedIdleNoDone(s.ID) == steerTS.Unix() {
-			continue // already raised for this steer
-		}
-		if w.composerState(s.ID, sess) != backend.ComposerEmpty {
-			continue // still mid-turn, typing, or the backend cannot tell
-		}
-		if _, err := wake.Append(w.EpicDir, wake.Wake{
-			Epic: filepath.Base(w.EpicDir), Story: s.ID, Kind: wake.KindIdleNoDone,
-			Note: fmt.Sprintf("%s idle (composer empty, last message %dm ago) with an unanswered steer and no worker_done since it - it may have ended with a status instead of worker_done",
-				s.ID, int(now.Sub(lastMsg).Minutes())),
-			Evidence: map[string]any{"dispatch": disp},
-		}); err != nil {
-			return appended, urgent, err
-		}
-		appended++
-		urgent = true
-		w.recordIdleNoDone(s.ID, steerTS)
-	}
-	return appended, urgent, nil
-}
-
 // composerState resolves a worker's composer verdict harness-first (DESIGN wave-3 item 3): the harness-owned busy record
 // wins (idle -> empty, busy -> busy), so a Pi worker whose TUI the backend classifier does not recognize is still seen
 // idle/busy; only when the harness reports no state does it fall back to the backend's own Composer. Same order the
@@ -765,56 +700,6 @@ func (w *Watcher) blockedPass() (int, bool, error) {
 	return appended, urgent, nil
 }
 
-// busyTurnMaxPass raises one routine status wake for a working story whose harness-owned busy record has said busy for
-// longer than BusyTurnMax with no fresh signal: the record's own timestamp (the last busy event) and the last checkpoint
-// are both older than the window (DESIGN wave-2 item 6d). It is a nudge, never an interrupt: a long-but-legitimate turn
-// must not be aborted like a runaway, so the leader is only told to look. Only a trusted busy record qualifies
-// (busy.Read applies the source trust table), and the wake fires at most once per BusyTurnMax window per story
-// (watch/busy-max/<story>), so a genuinely long turn does not spam the queue.
-func (w *Watcher) busyTurnMaxPass() (int, bool, error) {
-	events, _, err := state.Load(w.EpicDir)
-	if err != nil {
-		return 0, false, err
-	}
-	snap := state.Fold(events)
-	now := w.now()
-	max := w.busyTurnMax()
-	appended := 0
-	for _, s := range snap.SortedStories() {
-		if s.State != state.Working {
-			continue
-		}
-		if busy.Read(w.EpicDir, s.ID) != busy.Busy {
-			continue // no trusted busy record (idle/unknown/absent): not our case
-		}
-		rec, ok := busy.ReadRecord(w.EpicDir, s.ID)
-		if !ok {
-			continue
-		}
-		lastEvent := time.Unix(rec.TS, 0)
-		if now.Sub(lastEvent) < max {
-			continue // busy, but the last busy event is recent - the turn is progressing
-		}
-		if cp := w.lastCheckpointTime(s.ID); !cp.IsZero() && now.Sub(cp) < max {
-			continue // a recent checkpoint means progress; not stuck-busy
-		}
-		if last := w.watchFileUnix("busy-max", s.ID); last != 0 && now.Sub(time.Unix(last, 0)) < max {
-			continue // already nudged within this window
-		}
-		if _, err := wake.Append(w.EpicDir, wake.Wake{
-			Epic: filepath.Base(w.EpicDir), Story: s.ID, Kind: wake.KindStatus,
-			Note: fmt.Sprintf("%s busy %dm with no busy event or checkpoint since - still running? (BusyTurnMax %dm; a nudge, not an interrupt)",
-				s.ID, int(now.Sub(lastEvent).Minutes()), int(max.Minutes())),
-			Evidence: map[string]any{"busy_since": lastEvent.UTC().Format(time.RFC3339)},
-		}); err != nil {
-			return appended, false, err
-		}
-		appended++
-		w.recordBusyMax(s.ID, now)
-	}
-	return appended, false, nil // a status wake is routine, never urgent
-}
-
 // lastCheckpointTime returns the written_at of the story's current checkpoint (zero when absent, unparsable, or
 // invalid), so busyTurnMaxPass treats "no checkpoint" as no recent progress.
 func (w *Watcher) lastCheckpointTime(story string) time.Time {
@@ -827,28 +712,6 @@ func (w *Watcher) lastCheckpointTime(story string) time.Time {
 		return time.Time{}
 	}
 	return t
-}
-
-// watchFileUnix reads a unix-seconds marker from <watch>/<sub>/<key> (0 when absent/unparsable), for per-window dedup.
-func (w *Watcher) watchFileUnix(sub, key string) int64 {
-	b, err := os.ReadFile(filepath.Join(w.watchDir(), sub, key))
-	if err != nil {
-		return 0
-	}
-	sec, err := strconv.ParseInt(strings.TrimSpace(string(b)), 10, 64)
-	if err != nil {
-		return 0
-	}
-	return sec
-}
-
-// recordBusyMax stamps the time a busy-max status wake fired for a story, so it fires at most once per BusyTurnMax window.
-func (w *Watcher) recordBusyMax(story string, at time.Time) {
-	dir := filepath.Join(w.watchDir(), "busy-max")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return
-	}
-	_ = os.WriteFile(filepath.Join(dir, story), []byte(strconv.FormatInt(at.Unix(), 10)), 0o644)
 }
 
 // blockedNote is the fixed lead of every stuck-on-a-prompt wake: what happened and the remedy the leader runs (steer
@@ -907,54 +770,6 @@ func (w *Watcher) reconcilePass() (int, error) {
 		}
 	}
 	return applied, nil
-}
-
-// newestWorkerDoneWake returns the timestamp of the most recent worker_done wake for a story, or the zero time when
-// there is none. This is the plane-independent completion signal: mailPass appends a worker_done wake for a mail
-// completion and `cox story report done` appends one directly, so the wake queue is the single source of truth for
-// "the worker reported done" (F8c, ADR 0012 item 10).
-func newestWorkerDoneWake(epicDir, story string) time.Time {
-	wakes, err := wake.Load(epicDir)
-	if err != nil {
-		return time.Time{}
-	}
-	var newest time.Time
-	for _, wk := range wakes {
-		if wk.Kind != wake.KindWorkerDone || wk.Story != story {
-			continue
-		}
-		if ts, err := time.Parse(time.RFC3339, wk.TS); err == nil && ts.After(newest) {
-			newest = ts
-		}
-	}
-	return newest
-}
-
-// laterTime returns the later of two times (either may be zero).
-func laterTime(a, b time.Time) time.Time {
-	if a.After(b) {
-		return a
-	}
-	return b
-}
-
-// newestSteer returns the mtime of the most recent steer record for a story (handled or not), or the zero time when
-// there is none. A steer whose worker has acked it (moved it to handled/) still awaits a worker_done, so both dirs count.
-func newestSteer(epicDir, story string) time.Time {
-	recs, err := inbox.All(epicDir, story)
-	if err != nil {
-		return time.Time{}
-	}
-	var newest time.Time
-	for _, r := range recs {
-		if r.Urgency != inbox.Steer {
-			continue
-		}
-		if info, err := os.Stat(r.Path); err == nil && info.ModTime().After(newest) {
-			newest = info.ModTime()
-		}
-	}
-	return newest
 }
 
 // OpenStories returns the ids of stories the resolver reports as working or input_required. Idle rearm counts only
@@ -1199,28 +1014,6 @@ func (w *Watcher) watchFileMtime(sub, key string) time.Time {
 		return time.Time{}
 	}
 	return info.ModTime()
-}
-
-// firedIdleNoDone returns the steer unix time an idle_no_done was last raised for a story (0 when none), for dedup.
-func (w *Watcher) firedIdleNoDone(story string) int64 {
-	b, err := os.ReadFile(filepath.Join(w.watchDir(), "idlenodone", story))
-	if err != nil {
-		return 0
-	}
-	sec, err := strconv.ParseInt(strings.TrimSpace(string(b)), 10, 64)
-	if err != nil {
-		return 0
-	}
-	return sec
-}
-
-// recordIdleNoDone remembers the steer an idle_no_done fired for, so it is raised at most once per steer.
-func (w *Watcher) recordIdleNoDone(story string, steerTS time.Time) {
-	dir := filepath.Join(w.watchDir(), "idlenodone")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return
-	}
-	_ = os.WriteFile(filepath.Join(dir, story), []byte(strconv.FormatInt(steerTS.Unix(), 10)), 0o644)
 }
 
 func (w *Watcher) touchHeartbeat(disp, phase string) {

@@ -221,33 +221,18 @@ func TestHeartbeatIsNotAWake(t *testing.T) {
 // F08: a failed probe raises unknown_probe and keeps the heartbeat; it is never concluded "gone".
 func TestStaleProbeErrorKeepsHeartbeat(t *testing.T) {
 	epic := t.TempDir()
+	must(t, state.Append(epic, ev(epic, "s", 1, state.Submitted, state.Working)))
 	b := fake.New()
-	b.FailNext("Probe", nil)
 	now := time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC)
 	writeSession(t, epic, "s", backend.Session{ID: "ctx_1"}) // Tick reloads sessions from disk (item 1)
-	w := &Watcher{
-		EpicDir: epic, Backend: b,
-		StaleMin: 20 * time.Minute,
-		Now:      func() time.Time { return now },
-	}
-	// Seed an old heartbeat.
-	hb := filepath.Join(epic, ".cox", "watch", "hb", "ctx_1")
-	if err := os.MkdirAll(filepath.Dir(hb), 0o755); err != nil {
+	w := &Watcher{EpicDir: epic, Backend: b, Now: func() time.Time { return now }}
+	if _, err := w.Tick(); err != nil { // the quiet clock starts
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(hb, nil, 0o644); err != nil {
+	now = now.Add(time.Minute) // quiet past DefaultStaleQuiet: first sight of the stale worker
+	b.FailNext("Probe", nil)
+	if _, err := w.Tick(); err != nil {
 		t.Fatal(err)
-	}
-	old := now.Add(-30 * time.Minute)
-	if err := os.Chtimes(hb, old, old); err != nil {
-		t.Fatal(err)
-	}
-	n, err := w.Tick()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if n != 1 {
-		t.Fatalf("expected 1 unknown_probe wake, got %d", n)
 	}
 	wakes, _ := wake.Drain(epic, true)
 	if len(wakes) != 1 || wakes[0].Kind != wake.KindUnknownProbe {
@@ -256,8 +241,8 @@ func TestStaleProbeErrorKeepsHeartbeat(t *testing.T) {
 	if wakes[0].Evidence["error"] == nil {
 		t.Fatal("unknown_probe must carry the probe error")
 	}
-	// Heartbeat must still exist (never conclude gone).
-	if _, err := os.Stat(hb); err != nil {
+	// The quiet clock must still exist (never conclude gone).
+	if _, err := os.Stat(filepath.Join(epic, ".cox", "watch", "hb", "ctx_1")); err != nil {
 		t.Fatalf("heartbeat was deleted after a failed probe: %v", err)
 	}
 }
@@ -419,84 +404,68 @@ func must(t *testing.T, err error) {
 
 // F8(c): a working story that went idle (composer empty, last message stale) with an unanswered steer and no
 // worker_done since raises exactly one urgent idle_no_done wake, once per steer.
-func TestIdleNoDoneWake(t *testing.T) {
-	setup := func(t *testing.T, composer string, doneAfterSteer bool, lastMsgAgo time.Duration) (*Watcher, string) {
+// Turn-end triage (supersedes the steer-gated idle pass, firstmate fm-watch-triage.test.sh:774): a working story whose
+// harness record turned idle with no report since the turn began raises one urgent idle_no_done - no steer needed -
+// once per turn end; a report in the same turn covers it; a still-busy worker is absorbed.
+func TestTurnEndWithoutReportSurfaces(t *testing.T) {
+	setup := func(t *testing.T) (*Watcher, string, string) {
 		epic := t.TempDir()
 		must(t, state.Append(epic, ev(epic, "s", 1, state.Submitted, state.Working)))
-		now := time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC)
-		b := fake.New()
-		b.ComposerState = composer
-		w := &Watcher{EpicDir: epic, Backend: b, Sessions: map[string]backend.Session{"s": {ID: "ctx_1", Handle: "term_1"}}, Now: func() time.Time { return now }}
-		stamp := func(sub, key string, ago time.Duration) {
-			dir := filepath.Join(epic, ".cox", "watch", sub)
-			must(t, os.MkdirAll(dir, 0o755))
-			p := filepath.Join(dir, key)
-			must(t, os.WriteFile(p, nil, 0o644))
-			ts := now.Add(-ago)
-			must(t, os.Chtimes(p, ts, ts))
-		}
-		stamp("lastmsg", "ctx_1", lastMsgAgo)
-		if _, err := inbox.Write(epic, "s", "do the follow-ups and re-verify", inbox.Steer, ""); err != nil {
-			t.Fatal(err)
-		}
-		recs, _ := inbox.List(epic, "s")
-		steerAt := now.Add(-8 * time.Minute)
-		must(t, os.Chtimes(recs[0].Path, steerAt, steerAt))
-		if doneAfterSteer {
-			stamp("lastdone", "ctx_1", 6*time.Minute) // worker_done after the 8-min-old steer
-		}
-		return w, epic
+		writeSession(t, epic, "s", backend.Session{ID: "ctx_1", Handle: "term_1"})
+		gen, err := busy.Arm(epic, "s", "claude", []string{"dispatch", "claude-hook", "recovery"})
+		must(t, err)
+		return &Watcher{EpicDir: epic, Backend: fake.New()}, epic, gen
 	}
 
-	t.Run("fires once per steer", func(t *testing.T) {
-		w, epic := setup(t, "empty", false, 10*time.Minute)
-		n, urgent, err := w.idleNoDonePass()
-		if err != nil || n != 1 || !urgent {
-			t.Fatalf("want 1 urgent wake, got n=%d urgent=%v err=%v", n, urgent, err)
+	t.Run("fires once per turn end without a steer", func(t *testing.T) {
+		w, epic, gen := setup(t)
+		must(t, busy.Apply(epic, "s", busy.Idle, gen, "claude-hook", "Stop"))
+		if _, err := w.Tick(); err != nil {
+			t.Fatal(err)
 		}
 		wakes, _ := wake.Drain(epic, true)
 		if len(wakes) != 1 || wakes[0].Kind != wake.KindIdleNoDone {
-			t.Fatalf("wake wrong: %+v", wakes)
+			t.Fatalf("want one idle_no_done, got %+v", wakes)
 		}
-		if n2, _, _ := w.idleNoDonePass(); n2 != 0 {
-			t.Fatalf("idle_no_done repeated for the same steer: %d", n2)
+		if _, err := w.Tick(); err != nil {
+			t.Fatal(err)
 		}
-	})
-
-	t.Run("a busy composer does not fire", func(t *testing.T) {
-		w, _ := setup(t, "busy", false, 10*time.Minute)
-		if n, _, _ := w.idleNoDonePass(); n != 0 {
-			t.Fatalf("busy composer should not raise idle_no_done, got %d", n)
+		if again, _ := wake.Drain(epic, true); len(again) != 1 {
+			t.Fatalf("the same turn end surfaced twice: %+v", again)
 		}
 	})
 
-	t.Run("a recent message does not fire", func(t *testing.T) {
-		w, _ := setup(t, "empty", false, 1*time.Minute)
-		if n, _, _ := w.idleNoDonePass(); n != 0 {
-			t.Fatalf("a worker that just messaged is not idle, got %d", n)
+	t.Run("a report in the same turn covers it", func(t *testing.T) {
+		w, epic, gen := setup(t)
+		_, err := wake.Append(epic, wake.Wake{Epic: "e", Story: "s", Kind: wake.KindWorkerDone, Note: "shipped"})
+		must(t, err)
+		must(t, busy.Apply(epic, "s", busy.Idle, gen, "claude-hook", "Stop"))
+		if _, err := w.Tick(); err != nil {
+			t.Fatal(err)
+		}
+		for _, wk := range mustDrain(t, epic) {
+			if wk.Kind == wake.KindIdleNoDone {
+				t.Fatalf("a reported turn end raised idle_no_done: %+v", wk)
+			}
 		}
 	})
 
-	t.Run("a worker_done after the steer clears it", func(t *testing.T) {
-		w, _ := setup(t, "empty", true, 10*time.Minute)
-		if n, _, _ := w.idleNoDonePass(); n != 0 {
-			t.Fatalf("a worker_done after the steer should suppress idle_no_done, got %d", n)
+	t.Run("a busy worker is absorbed", func(t *testing.T) {
+		w, epic, _ := setup(t)
+		if _, err := w.Tick(); err != nil {
+			t.Fatal(err)
+		}
+		if got := mustDrain(t, epic); len(got) != 0 {
+			t.Fatalf("a busy worker raised %+v", got)
 		}
 	})
+}
 
-	// ADR 0012 item 10: a worker_done WAKE (from `cox story report done`, no mail lastdone watch file) after the steer
-	// clears idle_no_done just the same, because the wake queue is the plane-independent completion source.
-	t.Run("a report-done wake after the steer clears it", func(t *testing.T) {
-		w, epic := setup(t, "empty", false, 10*time.Minute)
-		doneAt := time.Date(2026, 9, 15, 11, 54, 0, 0, time.UTC) // after the 8-min-old steer (11:52)
-		must(t, func() error {
-			_, err := wake.Append(epic, wake.Wake{Epic: "e", Story: "s", Kind: wake.KindWorkerDone, TS: doneAt.Format(time.RFC3339)})
-			return err
-		}())
-		if n, _, _ := w.idleNoDonePass(); n != 0 {
-			t.Fatalf("a report-done wake after the steer should suppress idle_no_done, got %d", n)
-		}
-	})
+func mustDrain(t *testing.T, epic string) []wake.Wake {
+	t.Helper()
+	ws, err := wake.Drain(epic, true)
+	must(t, err)
+	return ws
 }
 
 // M10b: a worker blocked on a local prompt (Composer "blocked") for longer than BlockedWait raises one urgent stuck
@@ -633,7 +602,7 @@ func TestTickReloadsSessionsForStoryDispatchedAfterStart(t *testing.T) {
 	}
 }
 
-// F9: a "done:" status is a completion (touches lastdone), and a rejected second worker_done has its prefix stripped
+// F9: a "done:" status is a completion, and a rejected second worker_done has its prefix stripped
 // from the note.
 func TestDoneStatusAndRejectedWorkerDoneNote(t *testing.T) {
 	epic := t.TempDir()
@@ -657,9 +626,9 @@ func TestDoneStatusAndRejectedWorkerDoneNote(t *testing.T) {
 	if k := byStory["ctx_1"]; k.Kind != wake.KindWorkerDone {
 		t.Fatalf("done: status kind = %q, want worker_done", k.Kind)
 	}
-	// It touched lastdone, so idle_no_done is cleared for that dispatch.
-	if _, err := os.Stat(filepath.Join(epic, ".cox", "watch", "lastdone", "ctx_1")); err != nil {
-		t.Errorf("done: status did not touch lastdone: %v", err)
+	// It is the story's last status line, which the stale path reads as terminal (turn-end triage replaced lastdone).
+	if line, _ := w.statusLine("ctx_1"); !captainRelevant(line) {
+		t.Errorf("done: status not recorded as a terminal status line: %q", line)
 	}
 	// The rejected worker_done note has the prefix stripped.
 	if k := byStory["ctx_2"]; k.Kind != wake.KindWorkerDone || strings.Contains(k.Note, "Rejected") || !strings.Contains(k.Note, "real summary here") {
@@ -671,47 +640,38 @@ func TestDoneStatusAndRejectedWorkerDoneNote(t *testing.T) {
 // The idle/blocked passes read the busy record FIRST, so a Pi worker whose TUI the backend classifier cannot recognize
 // (fake ComposerState "unknown") is still seen idle/busy. FAIL_TO_PASS: on the old code the pass used only the backend
 // composer, so "unknown" never fired idle_no_done and "empty" always could.
-func TestIdlePassConsultsBusyRecordFirst(t *testing.T) {
+// The harness record decides the turn end, not the backend's UI classifier: a pi-ext idle record surfaces even when the
+// backend composer is unknown, and a busy record absorbs even when the composer reads empty.
+func TestTurnEndConsultsBusyRecordFirst(t *testing.T) {
 	setup := func(t *testing.T, backendComposer, recordState string) (*Watcher, string) {
 		epic := t.TempDir()
 		must(t, state.Append(epic, ev(epic, "s", 1, state.Submitted, state.Working)))
-		now := time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC)
 		gen, err := busy.Arm(epic, "s", "pi", []string{"pi-ext", "dispatch", "interrupt", "recovery"})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if recordState != "" {
-			must(t, busy.Apply(epic, "s", recordState, gen, "pi-ext", "e"))
-		}
+		must(t, err)
+		must(t, busy.Apply(epic, "s", recordState, gen, "pi-ext", "e"))
+		writeSession(t, epic, "s", backend.Session{ID: "ctx_1", Handle: "term_1"})
 		b := fake.New()
-		b.ComposerState = backendComposer // what the UI classifier would say (must be overridden by the record)
-		w := &Watcher{EpicDir: epic, Backend: b, Sessions: map[string]backend.Session{"s": {ID: "ctx_1", Handle: "term_1", Story: "s"}}, Now: func() time.Time { return now }}
-		dir := filepath.Join(epic, ".cox", "watch", "lastmsg")
-		must(t, os.MkdirAll(dir, 0o755))
-		p := filepath.Join(dir, "ctx_1")
-		must(t, os.WriteFile(p, nil, 0o644))
-		ts := now.Add(-10 * time.Minute)
-		must(t, os.Chtimes(p, ts, ts))
-		if _, err := inbox.Write(epic, "s", "do the follow-ups", inbox.Steer, ""); err != nil {
-			t.Fatal(err)
-		}
-		recs, _ := inbox.List(epic, "s")
-		steerAt := now.Add(-8 * time.Minute)
-		must(t, os.Chtimes(recs[0].Path, steerAt, steerAt))
-		return w, epic
+		b.ComposerState = backendComposer
+		return &Watcher{EpicDir: epic, Backend: b}, epic
 	}
 
 	t.Run("harness idle fires even when the backend composer is unknown", func(t *testing.T) {
-		w, _ := setup(t, backend.ComposerUnknown, busy.Idle)
-		if n, urgent, err := w.idleNoDonePass(); err != nil || n != 1 || !urgent {
-			t.Fatalf("want 1 urgent idle_no_done, got n=%d urgent=%v err=%v", n, urgent, err)
+		w, epic := setup(t, backend.ComposerUnknown, busy.Idle)
+		if _, err := w.Tick(); err != nil {
+			t.Fatal(err)
+		}
+		if got := mustDrain(t, epic); len(got) != 1 || got[0].Kind != wake.KindIdleNoDone {
+			t.Fatalf("want one idle_no_done, got %+v", got)
 		}
 	})
 
 	t.Run("harness busy skips even when the backend composer is empty", func(t *testing.T) {
-		w, _ := setup(t, backend.ComposerEmpty, busy.Busy)
-		if n, _, err := w.idleNoDonePass(); err != nil || n != 0 {
-			t.Fatalf("harness busy must not fire idle_no_done, got n=%d err=%v", n, err)
+		w, epic := setup(t, backend.ComposerEmpty, busy.Busy)
+		if _, err := w.Tick(); err != nil {
+			t.Fatal(err)
+		}
+		if got := mustDrain(t, epic); len(got) != 0 {
+			t.Fatalf("harness busy must not surface, got %+v", got)
 		}
 	})
 }
@@ -890,38 +850,49 @@ func writeBusyRecord(t *testing.T, epic, story string, at time.Time) {
 // DESIGN wave-2 item 6d: a working story whose busy record has said busy longer than BusyTurnMax, with no fresh busy
 // event and no checkpoint, raises exactly one routine (non-urgent) status wake per window - a nudge, never an interrupt.
 // On the base sha there is no busyTurnMaxPass, so a silently-busy worker was never surfaced.
-func TestBusyTurnMaxWakeOncePerWindow(t *testing.T) {
+func TestBusyTurnBoundStartsTheWedgeTimer(t *testing.T) {
 	epic := t.TempDir()
 	must(t, state.Append(epic, ev(epic, "s", 1, state.Submitted, state.Working)))
+	writeSession(t, epic, "s", backend.Session{ID: "ctx_1", Handle: "term_1"})
 	now := time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC)
-	w := &Watcher{EpicDir: epic, Now: func() time.Time { return now }} // no backend: the pass never touches it
+	w := &Watcher{EpicDir: epic, Backend: fake.New(), Now: func() time.Time { return now }}
 
 	// A record busy since only 30m ago is within the 60m default: no wake.
 	writeBusyRecord(t, epic, "s", now.Add(-30*time.Minute))
-	if n, urg, err := w.busyTurnMaxPass(); err != nil || n != 0 || urg {
-		t.Fatalf("recent busy must not wake, got n=%d urg=%v err=%v", n, urg, err)
+	if _, err := w.Tick(); err != nil {
+		t.Fatal(err)
+	}
+	if got := mustDrain(t, epic); len(got) != 0 {
+		t.Fatalf("recent busy must not wake, got %+v", got)
 	}
 
-	// Busy since 2h ago with no checkpoint: exactly one routine status wake.
+	// Busy since 2h ago with no checkpoint: one routine status note, and the wedge timer starts.
 	writeBusyRecord(t, epic, "s", now.Add(-2*time.Hour))
-	n, urg, err := w.busyTurnMaxPass()
-	if err != nil || n != 1 || urg {
-		t.Fatalf("stale busy must raise one non-urgent wake, got n=%d urg=%v err=%v", n, urg, err)
+	if _, err := w.Tick(); err != nil {
+		t.Fatal(err)
 	}
-	wakes, _ := wake.Drain(epic, true)
-	if len(wakes) != 1 || wakes[0].Kind != wake.KindStatus {
-		t.Fatalf("want one status wake, got %+v", wakes)
-	}
-
-	// Within the same window: suppressed (no second wake).
-	if n, _, _ := w.busyTurnMaxPass(); n != 0 {
-		t.Fatalf("within the window must not repeat, got %d", n)
+	got := mustDrain(t, epic)
+	if len(got) != 1 || got[0].Kind != wake.KindStatus {
+		t.Fatalf("want one status note at the bound, got %+v", got)
 	}
 
-	// Past the window: it nudges again.
-	now = now.Add(61 * time.Minute)
-	if n, _, _ := w.busyTurnMaxPass(); n != 1 {
-		t.Fatalf("past the window must nudge again, got %d", n)
+	// Inside the wedge threshold: nothing more.
+	now = now.Add(time.Minute)
+	if _, err := w.Tick(); err != nil {
+		t.Fatal(err)
+	}
+	if again := mustDrain(t, epic); len(again) != 1 {
+		t.Fatalf("inside the threshold must not repeat, got %+v", again)
+	}
+
+	// Past StaleMin: a possible-wedge escalation (never an interrupt).
+	now = now.Add(DefaultStaleMin)
+	if _, err := w.Tick(); err != nil {
+		t.Fatal(err)
+	}
+	last := mustDrain(t, epic)
+	if len(last) != 2 || last[1].Kind != wake.KindStale || !strings.Contains(last[1].Note, "possible wedge, escalation 1") {
+		t.Fatalf("want a possible-wedge stale wake, got %+v", last)
 	}
 }
 

@@ -65,9 +65,7 @@ func ProcIdentity(pid int) (string, error) {
 		}
 		return fmt.Sprintf("%s=%s cmdline-hex=%x", key, start, cmdline), nil
 	}
-	cmd := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "lstart=", "-o", "command=")
-	cmd.Env = append(os.Environ(), "LC_ALL=C")
-	out, err := cmd.Output()
+	out, err := psRun(append(os.Environ(), "LC_ALL=C"), "-p", strconv.Itoa(pid), "-o", "lstart=", "-o", "command=")
 	if err != nil {
 		return "", fmt.Errorf("pid %d: %w", pid, err)
 	}
@@ -76,6 +74,13 @@ func ProcIdentity(pid int) (string, error) {
 		return "", fmt.Errorf("pid %d: no such process", pid)
 	}
 	return id, nil
+}
+
+// psRun runs ps with env and args; a var so a test can observe the locale it is run under without executing a stub.
+var psRun = func(env []string, args ...string) ([]byte, error) {
+	cmd := exec.Command("ps", args...)
+	cmd.Env = env
+	return cmd.Output()
 }
 
 // PidPath is the epic's watcher pidfile, <epic>/.cox/watch.pid. It holds a bare pid: other readers (doctor, epic close)
@@ -170,4 +175,11 @@ func writeAtomic(path string, data []byte) error {
 		return err
 	}
 	return nil
+}
+
+// sameDevice reports whether two files live on the same filesystem (find -xdev).
+func sameDevice(a, b os.FileInfo) bool {
+	sa, ok1 := a.Sys().(*syscall.Stat_t)
+	sb, ok2 := b.Sys().(*syscall.Stat_t)
+	return !ok1 || !ok2 || sa.Dev == sb.Dev
 }

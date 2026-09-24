@@ -65,16 +65,20 @@ func TestProcIdentityProcIgnoresWallClockAndDetectsReuse(t *testing.T) {
 
 // fm: tests/fm-watcher-lock.test.sh:1005 (R12): the ps fallback pins LC_ALL=C whatever the caller's locale.
 func TestProcIdentityPsFallbackIsLocaleInvariant(t *testing.T) {
-	old := procRoot
+	oldRoot, oldRun := procRoot, psRun
 	procRoot = filepath.Join(t.TempDir(), "no-proc")
-	defer func() { procRoot = old }()
-	bin := t.TempDir()
-	log := filepath.Join(bin, "observed")
-	script := "#!/bin/sh\nprintf '%s\\n' \"${LC_ALL-<unset>}\" >> " + log + "\nprintf '   Mon Jul 28 20:00:00 2026 sleep 300\\n'\n"
-	if err := os.WriteFile(filepath.Join(bin, "ps"), []byte(script), 0o755); err != nil {
-		t.Fatal(err)
+	defer func() { procRoot, psRun = oldRoot, oldRun }()
+	var seen []string
+	psRun = func(env []string, args ...string) ([]byte, error) {
+		lc := "<unset>"
+		for _, kv := range env {
+			if strings.HasPrefix(kv, "LC_ALL=") {
+				lc = strings.TrimPrefix(kv, "LC_ALL=") // the last assignment wins, as in exec
+			}
+		}
+		seen = append(seen, lc)
+		return []byte("   Mon Jul 28 20:00:00 2026 sleep 300\n"), nil
 	}
-	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("LC_ALL", "ko_KR.UTF-8")
 	t.Setenv("LC_TIME", "ko_KR.UTF-8")
 	id, err := ProcIdentity(os.Getpid())
@@ -84,11 +88,8 @@ func TestProcIdentityPsFallbackIsLocaleInvariant(t *testing.T) {
 	if id != "Mon Jul 28 20:00:00 2026 sleep 300" {
 		t.Fatalf("identity = %q (leading space must be trimmed)", id)
 	}
-	b, _ := os.ReadFile(log)
-	for _, l := range strings.Fields(string(b)) {
-		if l != "C" {
-			t.Fatalf("ps ran without LC_ALL=C (saw %q)", l)
-		}
+	if len(seen) != 1 || seen[0] != "C" {
+		t.Fatalf("ps ran without LC_ALL=C (saw %v)", seen)
 	}
 }
 

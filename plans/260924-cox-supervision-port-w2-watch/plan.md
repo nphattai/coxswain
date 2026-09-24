@@ -19,17 +19,18 @@ stories". Firstmate pinned 1e0e773, read only. Each phase reads the firstmate sc
 decision fold 10 in this package (stay red, wave 2b), status classification ~8 whose only gap is `wake.Classify`
 (w2-wake's package, see Q3), the rest (~76) are mine.
 
-## Phases (one phase = one commit `Phase: N/7`, pushed at the end of each)
+## Phases (one phase = one commit `Phase: N/5`, pushed at the end of each)
+
+Replanned 2026-09-24 after phase 1: plan phases 2-4 are one engine (firstmate's single triage loop in fm-watch.sh),
+so they land as one commit; phase 1's commit carries the old `1/7` trailer.
 
 | # | Phase | Red groups turned green | Status |
 |---|---|---|---|
-| 1 | [Watcher lifecycle and robustness](phase-01-lifecycle.md) | R17 self-evict, R18 beacon temp+rename, R12/R13/R19 watch-side API, unreadable status source (2), markTick/mailPass absorb (1) | pending |
-| 2 | [Crew state and turn-end triage](phase-02-crew-state-turnend.md) | turn-end triage (7), run-step authority (8, CI-running observable), stale escalation (8), recovery triage (1) | pending |
-| 3 | [Wedge detector and gone endpoint](phase-03-wedge.md) | wedge detector (17), busy-turn bound (2), gone endpoint (4) | pending |
-| 4 | [Declared wait and cadence](phase-04-declared-wait.md) | declared wait (watch cases of 14), wait cadence (7) | pending |
-| 5 | [Heartbeat backstop, override, runaway](phase-05-backstop-runaway.md) | heartbeat backstop (4), captain-relevance override (watch case), B-53 runaway (2: triage + busy-wake `watch.runaway-consumed-reply`), stale names unread steer (1) | pending |
-| 6 | [Leader alarm](phase-06-leader-alarm.md) | `watch.leader-alarm-default`, `watch.leader-alarm`, `watch.leader-alarm-channels` | pending |
-| 7 | [Kill test, untag, Makefile, supersession notes](phase-07-kill-test-close.md) | epic AC 3; `port_lifecycle_test.go` untagged when zero red; `make test` runs `test-port` | pending |
+| 1 | [Watcher lifecycle and robustness](phase-01-lifecycle.md) | R17 self-evict, R18 beacon temp+rename, R12/R13/R19 watch-side API, unreadable status source (2) | done (fcdb893) |
+| 2 | Triage engine: [crew state and turn-end](phase-02-crew-state-turnend.md) + [wedge and gone endpoint](phase-03-wedge.md) + [declared wait and cadence](phase-04-declared-wait.md) | turn-end triage, run-step authority, stale escalation, recovery triage, wedge detector, busy-turn bound, gone endpoint, declared wait, wait cadence, markTick/mailPass absorb, stale names unread steer | in progress |
+| 3 | [Heartbeat backstop, override, runaway](phase-05-backstop-runaway.md) | heartbeat backstop, B-53 runaway | pending |
+| 4 | [Leader alarm](phase-06-leader-alarm.md) | `watch.leader-alarm*` | pending |
+| 5 | [Kill test, untag, Makefile, supersession notes](phase-07-kill-test-close.md) | epic AC 3 | pending |
 
 Order: 1 is plumbing every later phase uses (per-story pass isolation, atomic watch files). 2 defines "provably
 working" which 3-5 consume. 6 is independent. 7 last.
