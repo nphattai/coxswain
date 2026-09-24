@@ -15,6 +15,21 @@ import { FakePiSession } from "./testing-fake-pi.ts";
 
 const bin = process.env.COX_REAL_BIN ?? "";
 
+// procIdentity is internal/watch ProcIdentity for pid, recorded as .cox/watch.identity so the fixture watcher is healthy
+// (identity-bound health; firstmate's record_watcher_lock writes pid-identity the same way): linux /proc start time plus
+// cmdline hex, else `ps -o lstart= -o command=` under LC_ALL=C.
+function procIdentity(pid: number): string {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    const cmdline = readFileSync(`/proc/${pid}/cmdline`);
+    const start = stat.slice(stat.lastIndexOf(")") + 1).trim().split(/\s+/)[19];
+    return `${process.platform === "linux" ? "linux-starttime" : "proc-starttime"}=${start} cmdline-hex=${cmdline.toString("hex")}`;
+  } catch {
+    const out = execFileSync("ps", ["-p", String(pid), "-o", "lstart=", "-o", "command="], { env: { ...process.env, LC_ALL: "C" } });
+    return out.toString().replace(/\n+$/, "").replace(/^[ \t]+/, "");
+  }
+}
+
 // withDeadline fails the test instead of hanging when the real cox blocks.
 async function withDeadline<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
   let timer: NodeJS.Timeout | undefined;
@@ -46,7 +61,7 @@ test("real cox: leader first turn drains a real wake, precompact writes the lead
   const ext = join(ws, ".pi", "extensions", "coxswain", "index.ts");
   assert.ok(existsSync(ext), "cox workspace init installs the unbound Pi leader extension");
 
-  // One active epic with a real wake: a live watch.pid (this process) and a fresh beacon, so the stop-rewake guard sees
+  // One active epic with a real wake: a live watch.pid (this process) with its identity and a fresh beacon, so the stop-rewake guard sees
   // a healthy watcher and never tries to launch one.
   const epic = join(ws, "proj", "epics", "e1");
   mkdirSync(join(epic, "stories"), { recursive: true });
@@ -54,6 +69,7 @@ test("real cox: leader first turn drains a real wake, precompact writes the lead
   sh(bin, ["story", "report", "status", "--epic", epic, "--story", "s1", "--note", "REAL-WAKE"]);
   mkdirSync(join(epic, ".cox", "watch"), { recursive: true });
   writeFileSync(join(epic, ".cox", "watch.pid"), String(process.pid));
+  writeFileSync(join(epic, ".cox", "watch.identity"), procIdentity(process.pid) + "\n");
   writeFileSync(join(epic, ".cox", "watch", "lasttick"), new Date().toISOString());
 
   const prevEnv = { ...process.env };
