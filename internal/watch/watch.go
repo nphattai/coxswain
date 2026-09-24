@@ -1054,8 +1054,19 @@ func runAlarmChannel(channel, summary string) error {
 	case err := <-done:
 		return err
 	case <-time.After(alarmTimeout):
+		// fm's group stop (fm-watch.sh:1896): TERM the whole group, a 0.2 s grace, then KILL it, then reap.
+		// The KILL always goes to the group: its members can outlive the shell that started them.
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
+		reaped := false
+		select {
+		case <-done:
+			reaped = true
+		case <-time.After(200 * time.Millisecond):
+		}
 		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-		<-done
+		if !reaped {
+			<-done
+		}
 		return fmt.Errorf("alerts channel %q timed out after %s; its process group was killed", channel, alarmTimeout)
 	}
 }

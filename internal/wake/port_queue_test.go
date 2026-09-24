@@ -1436,28 +1436,18 @@ func TestPortWedgeAlarm(t *testing.T) {
 	// fm: docs/wedge-alarm.md:27 (on timeout the notifier's whole process group is terminated)
 	t.Run("FM/wedge-alarm/timeout_terminates_the_process_group", func(t *testing.T) {
 		t.Parallel()
-		pidFile := filepath.Join(t.TempDir(), "pid")
-		_, _ = wedgeRigReal(t, fmt.Sprintf("command:sleep 30 & echo $! > %s; wait", pidFile))
-		b, _ := os.ReadFile(pidFile)
-		var pid int
-		fmt.Sscan(strings.TrimSpace(string(b)), &pid)
-		// A killed orphan is a zombie until init reaps it, and kill(pid, 0) succeeds on a zombie (Linux): allow the
-		// reap a bounded moment; a child that really survived is still alive after it.
-		alive := func() bool {
-			if pid <= 0 || syscall.Kill(pid, 0) != nil {
-				return false
-			}
-			stat, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid)) // Linux only; absent elsewhere
-			if i := strings.LastIndexByte(string(stat), ')'); err == nil && i >= 0 && strings.HasPrefix(string(stat[i+1:]), " Z") {
-				return false // killed, awaiting its reaper
-			}
-			return true
+		// The child proves its own fate instead of a pid probe (a reaped pid can be reissued at once on a busy host):
+		// it records that it started, and would touch the marker only after outliving the 10s timeout.
+		dir := t.TempDir()
+		started, survived := filepath.Join(dir, "started"), filepath.Join(dir, "survived")
+		begin := time.Now()
+		_, _ = wedgeRigReal(t, fmt.Sprintf("command:(touch %s; sleep 12; touch %s) & wait", started, survived))
+		if _, err := os.Stat(started); err != nil {
+			t.Fatalf("the notifier never started its child: the assertion would be vacuous")
 		}
-		for end := time.Now().Add(3 * time.Second); alive() && time.Now().Before(end); time.Sleep(20 * time.Millisecond) {
-		}
-		if alive() {
-			_ = syscall.Kill(pid, syscall.SIGKILL)
-			red(t, "watch.leader-alarm", "the timed-out notifier's child (pid %d) outlived the timeout: only the shell was killed, not its process group", pid)
+		time.Sleep(time.Until(begin.Add(13 * time.Second))) // past the child's own deadline
+		if _, err := os.Stat(survived); err == nil {
+			red(t, "watch.leader-alarm", "the timed-out notifier's child outlived the timeout: only the shell was killed, not its process group")
 		}
 	})
 
