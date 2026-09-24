@@ -63,9 +63,11 @@ func wakeAckThrough(args []string) int {
 	if *epicDir == "" || err != nil {
 		return usageErr("cox wake ack-through <gen> --epic <dir>")
 	}
-	if err := wake.AckThrough(*epicDir, g); err != nil {
+	res, err := wake.Ack(*epicDir, g)
+	if err != nil {
 		return fail("%v", err)
 	}
+	fmt.Fprint(os.Stderr, res.Notice(*epicDir))
 	return 0
 }
 
