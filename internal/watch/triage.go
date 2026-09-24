@@ -62,11 +62,20 @@ func (w *Watcher) sread(sub, story string) (string, bool) {
 
 // swrite publishes a state file atomically and stamps its mtime with the watcher clock, so ages read on the same clock.
 func (w *Watcher) swrite(sub, story, val string) {
+	if !w.controlTreePresent() {
+		return // never resurrect a vanished control tree: the loop must still self-evict
+	}
 	p := w.spath(sub, story)
 	if writeAtomic(p, []byte(val)) == nil {
 		now := w.now()
 		_ = os.Chtimes(p, now, now)
 	}
+}
+
+// controlTreePresent reports whether <epic>/.cox exists; watch state is never written into a vanished one.
+func (w *Watcher) controlTreePresent() bool {
+	_, err := os.Stat(filepath.Join(w.EpicDir, state.ControlDir))
+	return err == nil
 }
 
 func (w *Watcher) sexists(sub, story string) bool {
@@ -967,7 +976,7 @@ func (w *Watcher) clearPauseTracking(story string) {
 
 // markSurfaced records message ids whose content reached the leader (an urgent wake, or a queued actionable batch).
 func (w *Watcher) markSurfaced(ids ...string) {
-	if len(ids) == 0 {
+	if len(ids) == 0 || !w.controlTreePresent() {
 		return
 	}
 	_ = os.MkdirAll(w.watchDir(), 0o755)
