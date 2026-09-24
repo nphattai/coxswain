@@ -49,7 +49,15 @@ func TestClassifyStatusActionable(t *testing.T) {
 	}{
 		{"status", "phase 3 done", "still working", KindStatus},
 		{"status", "PR #12 ready for review", "", KindPRReady},
-		{"status", "blocked on a decision", "need a ruling on the schema", KindInputRequired},
+		// Superseded (cox-supervision-port wave 2, fm-classify-decision-key bare_prose_cannot_open_or_close_a_decision):
+		// prose that mentions "blocked" or "need a ruling" is not a declaration; the worker writes "blocked: ...".
+		{"status", "blocked on a decision", "need a ruling on the schema", KindStatus},
+		{"status", "blocked: need a ruling on the schema", "", KindInputRequired},
+		{"status", "needs-decision [key=api]: pick REST or RPC", "", KindInputRequired},
+		{"status", "failed: gave up", "", KindStuck},
+		{"status", "merged", "", KindPRReady},
+		{"status", "working: rebased onto merged #76", "", KindStatus},
+		{"status", "status: working", "needs-decision: which base branch", KindInputRequired},
 		{"status", "ready to compact", "", KindInputRequired},
 		{"merge_ready", "PR up", "", KindPRReady},
 		{"escalation", "cannot proceed", "", KindInputRequired},

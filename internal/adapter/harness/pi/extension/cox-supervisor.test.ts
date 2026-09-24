@@ -231,3 +231,150 @@ test("outbox: a quiet settle with no run (a prompt Pi could not run) stalls idle
   box.input(undefined); // the user types
   assert.deepEqual(box.beforeAgentStart(), ["Y", "Z"], "the next real turn carries every held item");
 });
+
+// --- Pi turn-end guard: firstmate tests/fm-turnend-guard.test.sh translated (R23) ------------------------------------
+// Firstmate's .pi/extensions/fm-primary-turnend-guard.ts runs the guard on agent_settled once per LOGICAL agent run
+// and injects at most one follow-up per run; the latch holds across internal tool turns and clears only when the
+// generated follow-up settles or its delivery fails. Cox's Pi guard is the leader's `cox hook stop-rewake` child the
+// extension spawns on a settle (its exit 2 with the guard banner is the follow-up), so each case drives the real wiring
+// (cox-pi.ts) against a fake `cox` that logs every guard run. The fake Pi runs a delivered prompt the way Pi 0.86.1
+// does (input, before_agent_start, agent_start, message_start, agent_settled), where firstmate's fake only settles:
+// cox's Outbox confirms delivery from those events. Firstmate's typed FIRSTMATE_OP prefix is firstmate's Ahoy
+// protocol (n/a); cox delivers on the path Pi accepts at that moment (prompt when idle), not always as a followUp.
+
+type GuardCase = {
+  handlers: Record<string, (event: unknown, ctx: unknown) => Promise<unknown> | unknown>;
+  ctx: unknown;
+  guardRuns: () => number;
+  cleanup: () => Promise<void>;
+};
+
+async function guardCase(send: (text: string, c: GuardCase) => Promise<void>): Promise<GuardCase> {
+  const { mkdtempSync, writeFileSync, chmodSync, existsSync, readFileSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const dir = mkdtempSync(join(tmpdir(), "cox-pi-guard-"));
+  const log = join(dir, "guard.log");
+  const fake = join(dir, "cox");
+  // The guard (stop-rewake) always blocks; the latched waiter (--guard=false) only waits; every other hook is a no-op.
+  writeFileSync(
+    fake,
+    `#!/bin/sh
+if [ "$1 $2" = "hook stop-rewake" ]; then
+  case " $* " in *" --guard=false "*) exec sleep 30 ;; esac
+  echo guard >> '${log}'
+  echo 'TURN WOULD END BLIND - SUPERVISION IS OFF' >&2
+  echo 'Watcher for e1 is not alive; run: cox watch --epic /e1 --replace' >&2
+  exit 2
+fi
+exit 0
+`,
+  );
+  chmodSync(fake, 0o755);
+  const prev = { bin: process.env.COX_BIN, role: process.env.COX_ROLE, story: process.env.COX_STORY, epic: process.env.COX_EPIC };
+  process.env.COX_BIN = fake;
+  process.env.COX_ROLE = "leader";
+  delete process.env.COX_STORY;
+  process.env.COX_EPIC = dir;
+  __resetProcessSingleton();
+  const handlers: GuardCase["handlers"] = {};
+  const ctx = { cwd: dir, isIdle: () => true, signal: undefined, ui: { notify() {} } };
+  const c: GuardCase = {
+    handlers,
+    ctx,
+    guardRuns: () => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").filter(Boolean).length : 0),
+    cleanup: async () => {
+      await handlers["session_shutdown"]?.({ reason: "quit" }, ctx);
+      rmSync(dir, { recursive: true, force: true });
+      for (const [k, v] of Object.entries({ COX_BIN: prev.bin, COX_ROLE: prev.role, COX_STORY: prev.story, COX_EPIC: prev.epic })) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+      __resetProcessSingleton();
+    },
+  };
+  const { default: makeExtension } = await import("./cox-pi.ts");
+  makeExtension({
+    on: (evt: string, h: (event: unknown, ctx: unknown) => unknown) => {
+      handlers[evt] = h as GuardCase["handlers"][string];
+    },
+    sendUserMessage: (text: string) => send(text, c),
+  } as never);
+  return c;
+}
+
+// runDelivered plays the run Pi starts for a delivered prompt, ending in that run's own settle.
+async function runDelivered(c: GuardCase, text: string): Promise<void> {
+  await c.handlers["input"]?.({ source: "extension" }, c.ctx);
+  await c.handlers["before_agent_start"]?.({}, c.ctx);
+  await c.handlers["agent_start"]?.({}, c.ctx);
+  await c.handlers["message_start"]?.({ message: { content: text } }, c.ctx);
+  await c.handlers["agent_settled"]?.({ type: "agent_settled" }, c.ctx);
+}
+
+// startUserRun plays a logical run the user starts (Pi fires before_agent_start for every run it starts).
+async function startUserRun(c: GuardCase): Promise<void> {
+  await c.handlers["input"]?.({ source: "interactive" }, c.ctx);
+  await c.handlers["before_agent_start"]?.({}, c.ctx);
+  await c.handlers["agent_start"]?.({}, c.ctx);
+}
+
+async function until(pred: () => boolean, ms = 5000): Promise<void> {
+  const t0 = Date.now();
+  while (!pred() && Date.now() - t0 < ms) await new Promise((r) => setTimeout(r, 10));
+}
+
+const settle = (ms = 400) => new Promise((r) => setTimeout(r, ms));
+
+// fm: tests/fm-turnend-guard.test.sh:1061
+test("FM/fm-turnend-guard/pi_extension_injects_once_per_logical_agent_run", async () => {
+  let prompts = 0;
+  const c = await guardCase(async (text, c) => {
+    prompts += 1;
+    assert.ok(text.includes("TURN WOULD END BLIND"), `unexpected prompt: ${text}`);
+    await runDelivered(c, text); // the generated follow-up's own run settles inside the delivery
+  });
+  try {
+    assert.equal(c.handlers["turn_end"], undefined, "guard still treats internal Pi turns as logical runs");
+    assert.ok(c.handlers["agent_settled"], "agent_settled handler was not registered");
+
+    await startUserRun(c); // a no-tool run
+    await c.handlers["agent_settled"]({ type: "agent_settled" }, c.ctx);
+    await until(() => prompts >= 1);
+    await settle();
+    assert.equal(prompts, 1, `no-tool run injected ${prompts} follow-ups`);
+
+    await startUserRun(c); // a multi-tool run: internal turns are notifications only
+    for (let i = 0; i < 3; i += 1) await c.handlers["turn_end"]?.({ type: "turn_end", turnIndex: i }, c.ctx);
+    await c.handlers["agent_settled"]({ type: "agent_settled" }, c.ctx);
+    await until(() => prompts >= 2);
+    await settle();
+    assert.equal(prompts, 2, `multi-tool run produced ${prompts - 1} follow-ups`);
+    assert.equal(c.guardRuns(), 2, `guard predicate ran ${c.guardRuns()} times for two logical runs`);
+  } finally {
+    await c.cleanup();
+  }
+});
+
+// fm: tests/fm-turnend-guard.test.sh:1128
+test("FM/fm-turnend-guard/pi_extension_retries_after_followup_delivery_failure", async () => {
+  let attempts = 0;
+  const c = await guardCase(async (text, c) => {
+    attempts += 1;
+    if (attempts === 1) throw new Error("synthetic delivery failure");
+    await runDelivered(c, text);
+  });
+  try {
+    await startUserRun(c);
+    await c.handlers["agent_settled"]({ type: "agent_settled" }, c.ctx);
+    await until(() => attempts >= 1);
+    await settle();
+    await startUserRun(c);
+    await c.handlers["agent_settled"]({ type: "agent_settled" }, c.ctx);
+    await until(() => attempts >= 2);
+    await settle();
+    assert.equal(attempts, 2, `expected delivery retry, saw ${attempts} attempts`);
+  } finally {
+    await c.cleanup();
+  }
+});

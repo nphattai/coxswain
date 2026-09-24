@@ -1,14 +1,15 @@
 // Package busy is the harness-owned busy-state record: idle/busy is a fact the HARNESS reports (captain ruling
 // 2026-09-21, wave 3), never something a backend infers from a UI. One record per story at
-// <epic>/.cox/sessions/<story>.busy.json holds {schema, state, gen, seq, ts, source, event}. The design copies
-// Firstmate's semantic busy-state contract (references/firstmate/bin/fm-busy-lib.sh): a gen token minted at Arm binds
-// one incarnation, every Apply must present the current gen (a stale gen is rejected so a hook that outlives its
-// incarnation fails closed), and seq advances under a writer lock so an out-of-order Apply can never regress a newer
-// record. Arm also stamps the story's harness and the sources that harness trusts (from its capability card), so a
-// source the card does not list is rejected on Apply and read as Unknown (DESIGN wave-2 item 6). Read returns the
-// current state, or Unknown when the record is absent, unreadable, malformed, or written by an untrusted source - never
-// a guess. The gen reaches the harness through the launch env (COX_BUSY_GEN); any harness hook mutates the record through
-// `cox busy arm|apply|read`.
+// <epic>/.cox/sessions/<story>.busy.json holds {schema, state, gen, seq, ts, source, event}, beside the armed-gen
+// sidecar <story>.busy-gen and the native-progress marker <story>.busy-progress. It ports firstmate's semantic busy-state
+// contract (references/firstmate/bin/fm-busy-lib.sh and fm-busy-event.sh @1e0e773): a gen minted at Arm binds one
+// incarnation, every Apply must present the armed gen (a stale gen is rejected so a hook that outlives its incarnation
+// fails closed), and seq advances under a writer lock so an out-of-order Apply can never regress a newer record. Arm also
+// stamps the story's harness and the sources that harness trusts (from its capability card). Classify returns
+// firstmate's "<state> <source>" verdict: busy/idle with the producing source, or unknown with its reason (missing,
+// malformed, gen-mismatch, source-mismatch, codex-unverified, launch-prompt) - never a guess; ClassifyLive adds the one
+// process-level override, a gone endpoint is dead (B-51). The gen reaches the harness through the launch env
+// (COX_BUSY_GEN); any harness hook mutates the record through `cox busy arm|apply|read`.
 package busy
 
 import (
@@ -95,11 +96,24 @@ func tokenValid(s string) bool {
 
 func stateValid(s string) bool { return s == Busy || s == Idle || s == Unknown }
 
-// Arm mints a fresh incarnation gen, seeds the record at seq=1 with state=busy (the launch prompt is a submitted turn),
-// and returns the gen so the caller can thread it into the launch env (COX_BUSY_GEN). It stamps the story's harness and
-// the sources that harness trusts (from its capability card, `dispatch` among them) so Apply and Read enforce the trust
-// table without re-consulting the card at every event. Arming again replaces the prior incarnation: an Apply carrying
-// the old gen is stale from then on.
+// GenPath is the armed-gen sidecar beside the record: <epic>/.cox/sessions/<story>.busy-gen (fm <id>.busy-gen). It is
+// the incarnation's own binding: a record whose gen differs is from a superseded incarnation (gen-mismatch), and a
+// record with no sidecar has no incarnation to bind to (malformed). Arm writes it; Retire removes it.
+func GenPath(epic, story string) string {
+	return filepath.Join(epic, controlDir, "sessions", story+".busy-gen")
+}
+
+// ProgressPath is the native-progress marker (fm <id>.progress): observed harness activity recorded apart from the
+// semantic state, bound to the armed gen, cleared on Arm and Retire.
+func ProgressPath(epic, story string) string {
+	return filepath.Join(epic, controlDir, "sessions", story+".busy-progress")
+}
+
+// Arm mints a fresh incarnation gen, writes it to the sidecar, seeds the record at seq=1 with state=busy (the launch
+// prompt is a submitted turn), clears the prior incarnation's progress marker, and returns the gen so the caller can
+// thread it into the launch env (COX_BUSY_GEN). It stamps the story's harness and the sources that harness trusts (from
+// its capability card, `dispatch` among them) so Apply and Read enforce the trust table without re-consulting the card at
+// every event. Arming again replaces the prior incarnation: an Apply carrying the old gen is stale from then on.
 func Arm(epic, story, harnessName string, sources []string) (string, error) {
 	gen, err := mintGen()
 	if err != nil {
@@ -109,13 +123,22 @@ func Arm(epic, story, harnessName string, sources []string) (string, error) {
 		Schema: Schema, State: Busy, Gen: gen, Seq: 1, TS: time.Now().Unix(),
 		Source: "dispatch", Event: "launch-brief", Harness: harnessName, Sources: sources,
 	}
-	if err := withLock(Path(epic, story), func() error { return write(Path(epic, story), rec) }); err != nil {
-		return "", err
+	err = withLock(Path(epic, story), func() error {
+		if err := writeFile(GenPath(epic, story), []byte(gen+"\n")); err != nil {
+			return err
+		}
+		if err := write(Path(epic, story), rec); err != nil {
+			return err
+		}
+		return removeIfExists(ProgressPath(epic, story))
+	})
+	if err != nil {
+		return "", fmt.Errorf("busy arm: %s: %w", story, err)
 	}
 	return gen, nil
 }
 
-// Apply appends one lifecycle event: it validates gen against the armed record, checks the source against the record's
+// Apply appends one lifecycle event: it validates gen against the armed sidecar, checks the source against the record's
 // trust table, advances seq under the lock, and atomically replaces the record (carrying the harness and trust table
 // forward). A stale gen (a hook that outlived its incarnation), an unarmed story, or a source the harness does not trust
 // are each rejected. All fail closed so a late, wrong-incarnation, or wrong-harness event can never mutate the live state.
@@ -131,12 +154,16 @@ func Apply(epic, story, s, gen, source, event string) error {
 	}
 	path := Path(epic, story)
 	return withLock(path, func() error {
+		armed, err := currentGen(epic, story)
+		if err != nil {
+			return fmt.Errorf("busy apply: no armed busy-state gen for %s", story)
+		}
+		if armed != gen {
+			return fmt.Errorf("busy apply: stale gen for %s (event rejected)", story)
+		}
 		cur, err := load(path)
 		if err != nil {
 			return fmt.Errorf("busy apply: %s not armed: %w", story, err)
-		}
-		if cur.Gen != gen {
-			return fmt.Errorf("busy apply: stale gen for %s (event rejected)", story)
 		}
 		if !cur.trusted(source) {
 			return fmt.Errorf("busy apply: source %q not trusted for harness %q", source, cur.Harness)
@@ -148,40 +175,68 @@ func Apply(epic, story, s, gen, source, event string) error {
 	})
 }
 
-// Retire removes the record under the writer lock, but only when the presented gen matches the armed incarnation, so a
-// SessionEnd hook (or a leader release) retires its OWN incarnation and never clobbers a newer one that a re-arm minted
-// in between (fail closed, DESIGN wave-2 item 6). An absent record is already retired (no error); a gen mismatch keeps
-// the record and returns an error the caller may treat as best-effort.
+// Progress records observed native-harness activity for the armed incarnation (fm-busy-event.sh progress): it touches
+// the progress marker and never changes the semantic record. A stale or unarmed gen is refused and writes nothing, so a
+// dead incarnation can never refresh its replacement's progress.
+func Progress(epic, story, gen string) error {
+	if !tokenValid(gen) {
+		return fmt.Errorf("busy progress: invalid gen")
+	}
+	return withLock(Path(epic, story), func() error {
+		armed, err := currentGen(epic, story)
+		if err != nil {
+			return fmt.Errorf("busy progress: no armed busy-state gen for %s", story)
+		}
+		if armed != gen {
+			return fmt.Errorf("busy progress: stale gen for %s (event rejected)", story)
+		}
+		now := time.Now()
+		if err := os.Chtimes(ProgressPath(epic, story), now, now); err == nil {
+			return nil
+		}
+		return writeFile(ProgressPath(epic, story), nil)
+	})
+}
+
+// ProgressAt returns when native progress was last recorded for the story's armed incarnation (ok false when none).
+func ProgressAt(epic, story string) (time.Time, bool) {
+	info, err := os.Stat(ProgressPath(epic, story))
+	if err != nil {
+		return time.Time{}, false
+	}
+	return info.ModTime(), true
+}
+
+// Retire removes the sidecar, the record and the progress marker under the writer lock, but only when the presented gen
+// matches the armed incarnation, so a SessionEnd hook (or a leader release) retires its OWN incarnation and never
+// clobbers a newer one that a re-arm minted in between (fail closed). Only an ABSENT sidecar counts as already retired:
+// any record left behind is removed and the call succeeds (idempotent). A malformed sidecar or a gen mismatch keeps
+// everything and returns an error the caller may treat as best-effort.
 func Retire(epic, story, gen string) error {
 	if !tokenValid(gen) {
 		return fmt.Errorf("busy retire: invalid gen")
 	}
 	path := Path(epic, story)
 	return withLock(path, func() error {
-		cur, err := load(path)
+		armed, err := currentGen(epic, story)
 		if err != nil {
-			if os.IsNotExist(err) {
-				return nil // already gone
+			if _, serr := os.Lstat(GenPath(epic, story)); os.IsNotExist(serr) {
+				return removeAll(path, ProgressPath(epic, story))
 			}
-			return fmt.Errorf("busy retire: %s: %w", story, err)
+			return fmt.Errorf("busy retire: %s: malformed armed gen (record kept)", story)
 		}
-		if cur.Gen != gen {
+		if armed != gen {
 			return fmt.Errorf("busy retire: stale gen for %s (record kept)", story)
 		}
-		return os.Remove(path)
+		return removeAll(GenPath(epic, story), path, ProgressPath(epic, story))
 	})
 }
 
-// Read returns the current busy state (Busy | Idle | Unknown). An absent, unreadable, or malformed record is Unknown,
-// and so is a record whose current source is not one the harness trusts (a stray writer, or a record armed for a
-// different harness) - never a guess. A consumer can safely fall back to its own signal on Unknown and never mistake
-// doubt, or an untrusted writer, for idle.
+// Read returns the current busy state (Busy | Idle | Unknown): Classify against the harness the record was armed for.
+// An absent, malformed, superseded (gen-mismatch) or untrusted record is Unknown - never a guess. A consumer can safely
+// fall back to its own signal on Unknown and never mistake doubt, or an untrusted writer, for idle.
 func Read(epic, story string) string {
-	rec, err := load(Path(epic, story))
-	if err != nil || !stateValid(rec.State) || !rec.trusted(rec.Source) {
-		return Unknown
-	}
-	return rec.State
+	return Classify(epic, story, "", "").State
 }
 
 // ReadRecord returns the full record for observability (`cox busy read --json`). ok is false when absent/unreadable.
@@ -193,6 +248,42 @@ func ReadRecord(epic, story string) (Record, bool) {
 	return rec, true
 }
 
+// currentGen is the armed gen from the sidecar (fm_busy_current_gen), or an error when the story was never armed or the
+// sidecar is not one valid token line.
+func currentGen(epic, story string) (string, error) {
+	b, err := os.ReadFile(GenPath(epic, story))
+	if err != nil {
+		return "", err
+	}
+	gen := strings.TrimSuffix(string(b), "\n")
+	if !tokenValid(gen) {
+		return "", fmt.Errorf("busy: malformed gen sidecar for %s", story)
+	}
+	return gen, nil
+}
+
+// readRecord is fm_busy_record_read: the validated record bound to the armed gen, or the reason it is not one -
+// missing (no record file), malformed (unparseable, bad tokens, or no armed gen for an existing record), gen-mismatch (a
+// record from a superseded incarnation).
+func readRecord(epic, story string) (Record, string) {
+	path := Path(epic, story)
+	if _, err := os.Stat(path); err != nil {
+		return Record{}, ReasonMissing
+	}
+	gen, err := currentGen(epic, story)
+	if err != nil {
+		return Record{}, ReasonMalformed
+	}
+	rec, err := load(path)
+	if err != nil {
+		return Record{}, ReasonMalformed
+	}
+	if rec.Gen != gen {
+		return Record{}, ReasonGenMismatch
+	}
+	return rec, ""
+}
+
 func mintGen() (string, error) {
 	var b [6]byte
 	if _, err := rand.Read(b[:]); err != nil {
@@ -201,18 +292,26 @@ func mintGen() (string, error) {
 	return fmt.Sprintf("g%d.%s", time.Now().UnixNano(), hex.EncodeToString(b[:])), nil
 }
 
-// load reads and validates a record. A wrong schema or an out-of-range field is an error, so a corrupt file reads as
-// Unknown rather than a fabricated state.
+// load reads and strictly validates a record: exactly one line, no field outside the schema, the busy.v1 schema, a
+// known state, token-valid gen/source/event, seq >= 1 and ts >= 0. Anything else is an error, so a torn, foreign, or
+// corrupt file reads as Unknown rather than a fabricated state (fm_busy_record_read).
 func load(path string) (Record, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return Record{}, err
 	}
-	var rec Record
-	if err := json.Unmarshal(data, &rec); err != nil {
-		return Record{}, err
+	line := strings.TrimSuffix(string(data), "\n")
+	if strings.ContainsAny(line, "\n\r") {
+		return Record{}, fmt.Errorf("busy: malformed record %s (more than one line)", path)
 	}
-	if rec.Schema != Schema || !stateValid(rec.State) || !tokenValid(rec.Gen) || rec.Seq < 1 {
+	dec := json.NewDecoder(strings.NewReader(line))
+	dec.DisallowUnknownFields()
+	var rec Record
+	if err := dec.Decode(&rec); err != nil || dec.More() {
+		return Record{}, fmt.Errorf("busy: malformed record %s", path)
+	}
+	if rec.Schema != Schema || !stateValid(rec.State) || !tokenValid(rec.Gen) || rec.Seq < 1 || rec.TS < 0 ||
+		!tokenValid(rec.Source) || !tokenValid(rec.Event) {
 		return Record{}, fmt.Errorf("busy: malformed record %s", path)
 	}
 	return rec, nil
@@ -220,20 +319,41 @@ func load(path string) (Record, error) {
 
 // write atomically replaces the record (temp in the same dir + rename), 0600 so the file never leaks to other users.
 func write(path string, rec Record) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
 	data, err := json.Marshal(rec)
 	if err != nil {
 		return err
 	}
+	return writeFile(path, append(data, '\n'))
+}
+
+// writeFile atomically replaces path with data (temp in the same dir + rename), 0600.
+func writeFile(path string, data []byte) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
 	tmp := fmt.Sprintf("%s.tmp.%d", path, os.Getpid())
-	if err := os.WriteFile(tmp, append(data, '\n'), 0o600); err != nil {
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return err
 	}
 	if err := os.Rename(tmp, path); err != nil {
 		_ = os.Remove(tmp)
 		return err
+	}
+	return nil
+}
+
+func removeIfExists(path string) error {
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+func removeAll(paths ...string) error {
+	for _, p := range paths {
+		if err := removeIfExists(p); err != nil {
+			return err
+		}
 	}
 	return nil
 }

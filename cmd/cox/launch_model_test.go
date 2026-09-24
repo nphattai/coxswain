@@ -118,7 +118,7 @@ func TestRerouteLaunchesPolicyPiModel(t *testing.T) {
 // `cox control <story> relaunch` of a pi story with no pinned model launches with the policy pi model.
 func TestControlRelaunchLaunchesPolicyPiModel(t *testing.T) {
 	epic, _, log := launchFixture(t, "harness: pi\n")
-	_ = cmdControl([]string{"s1", "relaunch", "--epic", epic, "--allow-unsandboxed"})
+	_ = cmdControl([]string{"s1", "relaunch", "--note", "resume", "--epic", epic, "--allow-unsandboxed"})
 	if got := launchedModel(t, log); got != testPiModel {
 		t.Fatalf("relaunch launched --model %q, want the policy pi model %q", got, testPiModel)
 	}

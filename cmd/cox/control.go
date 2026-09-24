@@ -14,15 +14,18 @@ import (
 	"github.com/nphattai/coxswain/internal/state"
 )
 
-// harnessFor returns the adapter for a harness name for the control path, falling back to claude for an unknown name
-// (a control verb runs against a story whose harness was already validated at dispatch). Dispatch itself enforces the
-// adapter via registry.Notices, so an unadaptered harness never reaches here.
-func harnessFor(name string) harness.Harness {
-	if h, ok := registry.Adapter(name); ok {
-		return h
+// harnessFor returns the adapter for a recorded harness name on the control path. An unknown name is refused, never
+// guessed at (firstmate fm-control.sh: "no verified control mechanics"); an empty name is a story dispatched before
+// harness frontmatter existed, which dispatch launched as claude.
+func harnessFor(story, name string) (harness.Harness, error) {
+	if h, ok := registry.Adapter(nonEmpty(name, "claude")); ok {
+		return h, nil
 	}
-	return registry.Default()
+	return nil, fmt.Errorf("story %s records harness '%s', which has no verified control mechanics; cox control refuses to guess an interrupt key or stop", story, name)
 }
+
+// resumeRefusal is firstmate's reason `resume` is not a control verb, with cox's two deterministic alternatives.
+const resumeRefusal = "'resume' is not a control verb: resuming an exited agent is not deterministic across the verified adapters (codex needs a session id printed at exit, and claude and pi have no verified pane-resume contract). Use 'relaunch' (cox control <story> relaunch), which carries the brief plus a progress note into a fresh agent on any adapter, or `cox story resume`."
 
 func wtFilePath(epicDir, story string) string { return state.WorktreePath(epicDir, story) }
 
@@ -67,12 +70,33 @@ func cmdControl(args []string) int {
 	if *epicDir == "" || story == "" || verb == "" {
 		return usageErr("cox control <story> interrupt|park|relaunch [--note <progress>] --epic <dir>")
 	}
+	// Refusals happen before any effect (firstmate fm-control.sh argument parsing): an unknown verb, resume, and a
+	// relaunch-only flag on another verb never reach the backend.
+	switch verb {
+	case "interrupt", "park", "relaunch":
+	case "resume":
+		fmt.Fprintln(os.Stderr, "cox: "+resumeRefusal)
+		return 2
+	default:
+		return usageErr("cox control <story> interrupt|park|relaunch")
+	}
+	if verb != "relaunch" {
+		relaunchOnly := false
+		fs.Visit(func(f *flag.Flag) { relaunchOnly = relaunchOnly || f.Name == "note" || f.Name == "allow-unsandboxed" })
+		if relaunchOnly {
+			return fail("--note and --allow-unsandboxed apply to 'relaunch' only")
+		}
+	}
+	meta := readStoryMeta(*epicDir, story)
+	h, err := harnessFor(story, meta.Harness)
+	if err != nil {
+		return fail("%v", err)
+	}
 	b, _ := newBackend(*epicDir)
 	if b == nil {
 		return fail("control needs a live backend: set ORCA_RUN_ID or %s/.cox/run", *epicDir)
 	}
-	meta := readStoryMeta(*epicDir, story)
-	ctl := &control.Controller{EpicDir: *epicDir, Backend: b, Harness: harnessFor(meta.Harness)}
+	ctl := &control.Controller{EpicDir: *epicDir, Backend: b, Harness: h}
 
 	switch verb {
 	case "interrupt":
@@ -124,13 +148,11 @@ func cmdControl(args []string) int {
 			extra = map[string]any{"unsandboxed": map[string]any{"authorized_by": "--allow-unsandboxed", "harness": hname}}
 		}
 		spec := backend.HarnessSpec{Name: hname, Model: model, LaunchFlags: pol.LaunchFlags(hname), Argv: argv}
-		// Re-arm the busy record for the relaunched incarnation (DESIGN wave-2 item 6): a fresh gen invalidates any late
-		// event from the prior attempt and reaches the new worker via COX_BUSY_GEN, and re-writes its worker busy hooks.
-		g, err := armWorkerBusy(*epicDir, story, hname, wtPath, pol)
-		if err != nil {
-			return fail("arm busy state: %v", err)
-		}
-		spec.BusyGen = g
+		// Retire the prior incarnation's worker hooks, then re-arm the busy record for the relaunched one (DESIGN wave-2
+		// item 6), in that order inside Relaunch after the prior agent settled: a fresh gen invalidates any late event
+		// from the prior attempt and reaches the new worker via COX_BUSY_GEN.
+		ctl.Unwire = func() error { return unwireWorkerBusy(hname, wtPath) }
+		ctl.Arm = func() (string, error) { return armWorkerBusy(*epicDir, story, hname, wtPath, pol) }
 		prior, _ := loadSession(*epicDir, story) // previous attempt's terminal, closed before the new spawn (zero value when none)
 		sess, err := ctl.Relaunch(story, wtPath, *note, prior, spec, extra)
 		if err != nil {
@@ -144,8 +166,6 @@ func cmdControl(args []string) int {
 		if err := saveSession(*epicDir, story, sess, currentAttempt(*epicDir, story)); err != nil {
 			return fail("save session: %v", err)
 		}
-	default:
-		return usageErr("cox control <story> interrupt|park|relaunch")
 	}
 	fmt.Printf("%s: %s ok\n", verb, story)
 	return 0

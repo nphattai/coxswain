@@ -1,6 +1,9 @@
 package wake
 
 import (
+	"fmt"
+	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -57,7 +60,8 @@ func TestConcurrentAppendUniqueGen(t *testing.T) {
 func TestDrainAckThroughIdempotent(t *testing.T) {
 	epic := t.TempDir()
 	for i := 0; i < 5; i++ {
-		if _, err := Append(epic, Wake{Epic: "e", Story: "s", Kind: KindStatus}); err != nil {
+		// Distinct notes: identical same-story same-kind rows are obvious duplicates the drain collapses.
+		if _, err := Append(epic, Wake{Epic: "e", Story: "s", Kind: KindStatus, Note: fmt.Sprintf("note %d", i)}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -135,5 +139,78 @@ func TestWaitWakesOnNewAppend(t *testing.T) {
 	}
 	if timedOut || len(w) != 1 || w[0].Kind != KindWorkerDone {
 		t.Fatalf("Wait did not pick up the late append: timedOut=%v w=%+v", timedOut, w)
+	}
+}
+
+func TestDrainRetiresUnusableAndAdoptsLegacyRows(t *testing.T) {
+	epic := t.TempDir()
+	if _, err := Append(epic, Wake{Epic: "e", Story: "s", Kind: KindStatus, Note: "ok"}); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.OpenFile(queuePath(epic), os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.WriteString(`{"gen":"x"}` + "\n" + `{"gen":9,"story":"s","kind":"stuck","note":"legacy"}` + "\n" + `{"schema":"coxswain.wake.v9","gen":10}` + "\n")
+	f.Close()
+	if r, err := DrainReport(epic, true); err != nil || len(r.Retired) != 0 || len(r.Wakes) != 2 {
+		t.Fatalf("peek drain = %+v %v; want 2 wakes and no retirement", r, err)
+	}
+	r, err := DrainReport(epic, false)
+	if err != nil || len(r.Retired) != 1 || r.RetireErr != nil || len(r.Wakes) != 2 || r.Wakes[1].Note != "legacy" {
+		t.Fatalf("drain = %+v %v", r, err)
+	}
+	if !strings.Contains(r.RetiredNotice(epic), "retired 1 unusable queue row") {
+		t.Errorf("notice = %q", r.RetiredNotice(epic))
+	}
+	b, _ := os.ReadFile(queuePath(epic))
+	if strings.Contains(string(b), `"gen":"x"`) || !strings.Contains(string(b), "coxswain.wake.v9") {
+		t.Errorf("retirement rewrote the wrong rows: %s", b)
+	}
+	if g, err := Append(epic, Wake{Epic: "e", Story: "s", Kind: KindStatus, Note: "next"}); err != nil || g != 11 {
+		t.Errorf("append after retirement = %d %v, want 11", g, err)
+	}
+}
+
+func TestDrainDedupesOnlyObviousDuplicates(t *testing.T) {
+	epic := t.TempDir()
+	for _, w := range []Wake{
+		{Story: "s", Kind: KindStatus, Note: "phase 2 building"},
+		{Story: "s", Kind: KindStatus, Note: "phase 2 building (turn ended)"},
+		{Story: "s", Kind: KindStatus, Note: "captain said use REST"},
+		{Story: "t", Kind: KindStatus, Note: "phase 2 building"},
+		{Story: "s", Kind: KindStuck, Note: "phase 2 building"},
+		{Story: "s", Kind: KindStuck, Note: "phase 2 buildings"},
+	} {
+		w.Epic = "e"
+		if _, err := Append(epic, w); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ws, _ := Drain(epic, true)
+	var got []string
+	for _, w := range ws {
+		got = append(got, fmt.Sprintf("%d %s %s %s", w.Gen, w.Story, w.Kind, w.Note))
+	}
+	want := []string{"2 s status phase 2 building (turn ended)", "3 s status captain said use REST", "4 t status phase 2 building", "5 s stuck phase 2 building", "6 s stuck phase 2 buildings"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Errorf("dedupe = %q\nwant %q", got, want)
+	}
+}
+
+func TestAckReportsANoOpWithTheCurrentWake(t *testing.T) {
+	epic := t.TempDir()
+	for _, n := range []string{"a", "b", "c"} {
+		if _, err := Append(epic, Wake{Epic: "e", Story: "s", Kind: KindStatus, Note: n}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if r, err := Ack(epic, 1); err != nil || r.Consumed != 1 || r.Current != 3 || r.Notice(epic) != "" {
+		t.Fatalf("first ack = %+v %v", r, err)
+	}
+	r, err := Ack(epic, 1)
+	if err != nil || r.Consumed != 0 || !strings.Contains(r.Notice(epic), "nothing was acknowledged through 1") ||
+		!strings.Contains(r.Notice(epic), "run cox wake ack-through 3 --epic") {
+		t.Fatalf("stale ack = %+v %q %v", r, r.Notice(epic), err)
 	}
 }

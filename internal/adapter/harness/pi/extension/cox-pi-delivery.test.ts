@@ -155,9 +155,10 @@ test("leader + backlog, bare restart (no launch prompt): one reopen turn after t
     const fake = new FakePiSession();
     modelAcks(fake, acked);
     await start(fake, dir);
-    await sleep(600);
+    // The reopen goes after the 150ms grace plus a stub cox spawn, which a loaded runner can stretch past any fixed sleep.
+    await waitFor(() => fake.messages.some((m) => m.role === "user"));
     await fake.idle();
-    await sleep(300);
+    await sleep(300); // any second reopen would show here
     assert.deepEqual(fake.runtimeErrors, []);
     assert.equal(fake.messages.filter((m) => m.role === "user").length, 1, "exactly one reopen turn");
     assert.equal(count(fake.texts(), "[gen 1]"), 1);

@@ -10,6 +10,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/nphattai/coxswain/internal/state"
 )
 
 // ControlDir mirrors state.ControlDir; the queue lives beside the event log.
@@ -82,8 +84,34 @@ func Append(epicDir string, w Wake) (int, error) {
 	return w.Gen, nil
 }
 
-// Load reads every wake in the queue in file order. A missing queue is not an error.
+// Load reads every usable wake in the queue in file order. A missing queue is not an error. One unusable row never
+// wedges the queue: it is skipped here and retired by the next non-peek drain (fm-wake-drain.sh:90).
 func Load(epicDir string) ([]Wake, error) {
+	rows, err := scan(epicDir)
+	if err != nil {
+		return nil, err
+	}
+	var out []Wake
+	for _, r := range rows {
+		if r.usable && r.wake.Schema == Schema {
+			out = append(out, r.wake)
+		}
+	}
+	return out, nil
+}
+
+// row is one raw queue line and its parse.
+type row struct {
+	raw    string
+	wake   Wake
+	usable bool
+}
+
+// scan reads every nonblank queue line. A row is usable when it parses and carries a positive gen, the one field a
+// drain presents and an acknowledgement names. A row with no schema tag is a legacy row, adopted as coxswain.wake.v1
+// (fm-wake-queue legacy_generationless_wake_is_adopted); a row with another explicit schema is kept but not loaded
+// (forward compatibility).
+func scan(epicDir string) ([]row, error) {
 	f, err := os.Open(queuePath(epicDir))
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -92,24 +120,22 @@ func Load(epicDir string) ([]Wake, error) {
 		return nil, fmt.Errorf("open wake queue: %w", err)
 	}
 	defer f.Close()
-	var out []Wake
+	var out []row
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
-	n := 0
 	for sc.Scan() {
-		n++
 		raw := strings.TrimSpace(sc.Text())
 		if raw == "" {
 			continue
 		}
-		var w Wake
-		if err := json.Unmarshal([]byte(raw), &w); err != nil {
-			return nil, fmt.Errorf("corrupt wake at line %d: %w", n, err)
+		r := row{raw: raw}
+		if err := json.Unmarshal([]byte(raw), &r.wake); err == nil && r.wake.Gen > 0 {
+			r.usable = true
+			if r.wake.Schema == "" {
+				r.wake.Schema = Schema
+			}
 		}
-		if w.Schema != Schema {
-			continue // forward compatibility: skip unknown-schema lines
-		}
-		out = append(out, w)
+		out = append(out, r)
 	}
 	if err := sc.Err(); err != nil {
 		return nil, fmt.Errorf("read wake queue: %w", err)
@@ -117,24 +143,133 @@ func Load(epicDir string) ([]Wake, error) {
 	return out, nil
 }
 
-// Drain returns the unacked wakes (gen > the acked generation) in gen order. peek is advisory: Drain never changes ack
-// state (AckThrough is the only consume). It is kept so callers document intent and to mirror v1's drain --peek.
+// DrainResult is one drain: the unacked wakes to present, the unusable rows this drain retired (or could not), and
+// why retirement failed. A failed retirement is reported, never fatal: the usable rows stay presentable.
+type DrainResult struct {
+	Wakes     []Wake
+	Retired   []string
+	RetireErr error
+}
+
+// Drain returns the unacked wakes (gen > the acked generation) in gen order, obvious duplicates collapsed. A drain
+// never consumes (the acknowledgement is the only consume); a non-peek drain also retires unusable rows.
 func Drain(epicDir string, peek bool) ([]Wake, error) {
+	r, err := DrainReport(epicDir, peek)
+	return r.Wakes, err
+}
+
+// DrainReport is Drain with the retirement outcome, for the presenter.
+func DrainReport(epicDir string, peek bool) (DrainResult, error) {
+	var res DrainResult
 	acked, err := Acked(epicDir)
 	if err != nil {
-		return nil, err
+		return res, err
 	}
-	all, err := Load(epicDir)
+	rows, err := scan(epicDir)
 	if err != nil {
-		return nil, err
+		return res, err
 	}
-	var out []Wake
-	for _, w := range all {
-		if w.Gen > acked {
-			out = append(out, w)
+	var unacked []Wake
+	for _, r := range rows {
+		switch {
+		case !r.usable:
+			res.Retired = append(res.Retired, r.raw)
+		case r.wake.Schema == Schema && r.wake.Gen > acked:
+			unacked = append(unacked, r.wake)
 		}
 	}
-	return out, nil
+	if len(res.Retired) > 0 {
+		if peek {
+			res.Retired = nil
+		} else {
+			res.RetireErr = retire(epicDir)
+		}
+	}
+	res.Wakes = dedupe(unacked)
+	return res, nil
+}
+
+// retire rewrites the queue without its unusable rows (fm-wake-drain.sh:90 retire_unconsumable_rows_locked). It takes
+// the queue lock without waiting, so a live lock holder never strands the drain; a busy lock is a retry next drain.
+func retire(epicDir string) error {
+	unlock, err := tryLock(epicDir)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	rows, err := scan(epicDir) // re-read under the lock: an append may have landed since
+	if err != nil {
+		return err
+	}
+	var keep strings.Builder
+	for _, r := range rows {
+		if r.usable {
+			keep.WriteString(r.raw + "\n")
+		}
+	}
+	tmp := queuePath(epicDir) + ".retire.tmp"
+	if err := os.WriteFile(tmp, []byte(keep.String()), 0o644); err != nil {
+		return fmt.Errorf("write retired queue: %w", err)
+	}
+	if err := os.Rename(tmp, queuePath(epicDir)); err != nil {
+		os.Remove(tmp)
+		return fmt.Errorf("publish retired queue: %w", err)
+	}
+	return nil
+}
+
+// RetiredNotice renders the drain's report of retired rows for stderr (fm-wake-drain.sh:90): the first 20 rows, then a
+// count of the rest; or, when the rewrite failed, that the rows remain and the drain continued.
+func (r DrainResult) RetiredNotice(epicDir string) string {
+	if len(r.Retired) == 0 {
+		return ""
+	}
+	if r.RetireErr != nil {
+		return fmt.Sprintf("wake drain: unusable queue row(s) could not be retired (check that %s is readable and %s is writable: %v); continuing with the rows that remain usable\n",
+			queuePath(epicDir), filepath.Join(epicDir, ControlDir), r.RetireErr)
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "wake drain: retired %d unusable queue row(s) that carried no sequence to present or acknowledge:\n", len(r.Retired))
+	for i, raw := range r.Retired {
+		if i == 20 {
+			fmt.Fprintf(&b, "wake drain:   ... %d further unusable row(s) not shown\n", len(r.Retired)-20)
+			break
+		}
+		fmt.Fprintf(&b, "wake drain:   %s\n", raw)
+	}
+	return b.String()
+}
+
+// text is the untruncated payload of a wake.
+func (w Wake) text() string {
+	if w.Full != "" {
+		return w.Full
+	}
+	return w.Note
+}
+
+// extends reports that later equals earlier or extends it past a word boundary ("phase 2 building" ->
+// "phase 2 building (turn ended)"), never a mere character prefix ("status-1" is not "status-10").
+func extends(later, earlier string) bool {
+	return later == earlier || strings.HasPrefix(later, earlier+" ")
+}
+
+// dedupe collapses obvious duplicates (fm-wake-queue drain_dedupes_obvious_duplicates): a later wake for the same story
+// and kind whose payload equals or extends an earlier one replaces it, keeping the latest payload and gen. Distinct
+// reports never collapse, so every unread status still surfaces (the translation of firstmate deduping raw signal
+// rows while presenting unread status separately; leader ruling q001).
+func dedupe(ws []Wake) []Wake {
+	var out []Wake
+	for _, w := range ws {
+		for i := 0; i < len(out); i++ {
+			if o := out[i]; o.Story == w.Story && o.Kind == w.Kind && extends(w.text(), o.text()) {
+				out = append(out[:i], out[i+1:]...)
+				i--
+			}
+		}
+		out = append(out, w)
+	}
+	return out
 }
 
 // Acked returns the last acknowledged generation (0 if none).
@@ -156,31 +291,80 @@ func Acked(epicDir string) (int, error) {
 // AckThrough marks every wake with gen <= gen read. It is idempotent and monotonic: acking through a lower gen than
 // already recorded is a no-op.
 func AckThrough(epicDir string, gen int) error {
+	_, err := Ack(epicDir, gen)
+	return err
+}
+
+// AckResult says what an acknowledgement consumed: the number of unacked wakes at or below the gen, and Current, the
+// newest wake still unacked afterwards (0 when none).
+type AckResult struct {
+	Through  int
+	Consumed int
+	Current  int
+}
+
+// Notice is the stderr line for an acknowledgement that consumed nothing while a wake is still waiting
+// (fm-wake-drain.sh:748): it names the exact command for the current wake instead of failing or staying silent.
+func (r AckResult) Notice(epicDir string) string {
+	if r.Consumed > 0 || r.Current == 0 {
+		return ""
+	}
+	return fmt.Sprintf("wake drain: nothing was acknowledged through %d (no unacknowledged wake is at or below it); the current wake is row %d: run cox wake ack-through %d --epic %s after handling it\n",
+		r.Through, r.Current, r.Current, epicDir)
+}
+
+// Ack is AckThrough with its result (see AckResult).
+func Ack(epicDir string, gen int) (AckResult, error) {
+	res := AckResult{Through: gen}
 	dir := filepath.Join(epicDir, ControlDir)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("create control dir: %w", err)
+		return res, fmt.Errorf("create control dir: %w", err)
 	}
 	unlock, err := lock(epicDir)
 	if err != nil {
-		return err
+		return res, err
 	}
 	defer unlock()
 
 	cur, err := Acked(epicDir)
 	if err != nil {
-		return err
+		return res, err
+	}
+	all, err := Load(epicDir)
+	if err != nil {
+		return res, err
+	}
+	named := false
+	for _, w := range all {
+		named = named || w.Gen == gen
+		switch {
+		case w.Gen <= cur:
+		case w.Gen <= gen:
+			res.Consumed++
+		case w.Gen > res.Current:
+			res.Current = w.Gen
+		}
+	}
+	if named {
+		if h, err := Handled(epicDir); err != nil {
+			return res, err
+		} else if gen > h {
+			if err := state.AtomicWrite(handledPath(epicDir), []byte(strconv.Itoa(gen)+"\n"), 0o644); err != nil {
+				return res, fmt.Errorf("write wake handled: %w", err)
+			}
+		}
 	}
 	if gen <= cur {
-		return nil
+		return res, nil
 	}
 	tmp := ackPath(epicDir) + ".tmp"
 	if err := os.WriteFile(tmp, []byte(strconv.Itoa(gen)+"\n"), 0o644); err != nil {
-		return fmt.Errorf("write wake ack: %w", err)
+		return res, fmt.Errorf("write wake ack: %w", err)
 	}
 	if err := os.Rename(tmp, ackPath(epicDir)); err != nil {
-		return fmt.Errorf("publish wake ack: %w", err)
+		return res, fmt.Errorf("publish wake ack: %w", err)
 	}
-	return nil
+	return res, nil
 }
 
 // Wait blocks until an unacked wake exists or max elapses, polling every poll interval. Polling (not fsnotify) is
@@ -212,27 +396,33 @@ func Wait(epicDir string, max, poll time.Duration) (wakes []Wake, timedOut bool,
 	}
 }
 
-// maxGen returns the highest gen in the queue (0 if empty). Caller holds the lock.
+// maxGen returns the highest gen of any usable row, whatever its schema, so a gen is never reused (0 if empty).
+// Caller holds the lock.
 func maxGen(epicDir string) (int, error) {
-	all, err := Load(epicDir)
+	rows, err := scan(epicDir)
 	if err != nil {
 		return 0, err
 	}
 	max := 0
-	for _, w := range all {
-		if w.Gen > max {
-			max = w.Gen
+	for _, r := range rows {
+		if r.usable && r.wake.Gen > max {
+			max = r.wake.Gen
 		}
 	}
 	return max, nil
 }
 
-func lock(epicDir string) (func(), error) {
+func lock(epicDir string) (func(), error) { return flock(epicDir, syscall.LOCK_EX) }
+
+// tryLock takes the queue lock only when it is free (a busy lock is an error, never a wait).
+func tryLock(epicDir string) (func(), error) { return flock(epicDir, syscall.LOCK_EX|syscall.LOCK_NB) }
+
+func flock(epicDir string, how int) (func(), error) {
 	f, err := os.OpenFile(lockPath(epicDir), os.O_CREATE|os.O_RDWR, 0o644)
 	if err != nil {
 		return nil, fmt.Errorf("open wake lock: %w", err)
 	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+	if err := syscall.Flock(int(f.Fd()), how); err != nil {
 		f.Close()
 		return nil, fmt.Errorf("acquire wake lock: %w", err)
 	}

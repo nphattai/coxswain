@@ -40,7 +40,8 @@ test("precompact/sessionStart unbound omit --epic and --story (workspace leader-
   const pc = coxArgs.precompact("", "", "/wt");
   assert.deepEqual(pc, ["hook", "precompact", "--worktree", "/wt"]);
   const ss = coxArgs.sessionStart("", "", "/wt");
-  assert.deepEqual(ss, ["hook", "session-start", "--worktree", "/wt"]);
+  // --harness pi: the session-start digest (cox bearings) is harness-aware.
+  assert.deepEqual(ss, ["hook", "session-start", "--worktree", "/wt", "--harness", "pi"]);
 });
 
 test("resolveEpic prefers COX_EPIC, falls back to the installed marker, else empty", () => {
@@ -55,4 +56,8 @@ test("promptDrain --reopen marks a reopen-opened turn (keeps the Go block budget
   assert.deepEqual(coxArgs.promptDrain("", true), ["hook", "prompt-drain", "--reopen"]);
   assert.deepEqual(coxArgs.promptDrain("/e", true), ["hook", "prompt-drain", "--reopen", "--epic", "/e"]);
   assert.deepEqual(coxArgs.promptDrain("/e"), ["hook", "prompt-drain", "--epic", "/e"]);
+});
+
+test("busyProgress: `cox busy progress <story> --gen G --epic <dir>` (firstmate fm-busy-event.sh progress)", () => {
+  assert.deepEqual(coxArgs.busyProgress("/e", "s1", "g1"), ["busy", "progress", "s1", "--gen", "g1", "--epic", "/e"]);
 });

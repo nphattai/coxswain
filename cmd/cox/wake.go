@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -43,11 +44,13 @@ func wakeDrain(args []string) int {
 	if *epicDir == "" {
 		return usageErr("cox wake drain --epic <dir> [--peek] [--full]")
 	}
-	wakes, err := wake.Drain(*epicDir, *peek)
-	if err != nil {
+	alive := func() bool { return watcherHealthy(*epicDir, time.Now()) }
+	if err := wake.Present(*epicDir, os.Stdout, os.Stderr, wake.PresentOptions{Peek: *peek, Full: *full, WatcherAlive: alive}); err != nil {
 		return fail("%v", err)
 	}
-	printWakes(wakes, *full)
+	if !*peek {
+		printRecoveryAck(*epicDir, os.Stderr) // the recovery episode's generation-bound acknowledgement
+	}
 	return 0
 }
 
@@ -56,6 +59,7 @@ func wakeAckThrough(args []string) int {
 	fs := flag.NewFlagSet("wake ack-through", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	epicDir := fs.String("epic", "", "epic directory")
+	recoveryGen := fs.String("recovery-generation", "", "retire the watcher-down recovery episode the drain printed")
 	if err := fs.Parse(rest); err != nil {
 		return 2
 	}
@@ -63,8 +67,20 @@ func wakeAckThrough(args []string) int {
 	if *epicDir == "" || err != nil {
 		return usageErr("cox wake ack-through <gen> --epic <dir>")
 	}
-	if err := wake.AckThrough(*epicDir, g); err != nil {
+	res, err := wake.Ack(*epicDir, g)
+	if err != nil {
 		return fail("%v", err)
+	}
+	fmt.Fprint(os.Stderr, res.Notice(*epicDir))
+	if *recoveryGen != "" {
+		switch err := recoveryAck(*epicDir, *recoveryGen); {
+		case errors.Is(err, errRecoveryMoved):
+			// The sequence alone owns consumption; a moved generation names its own remedy (fm-wake-drain.sh:757).
+			fmt.Fprintf(os.Stderr, "wake drain: acknowledged wakes through %d (%d row(s) consumed), but a newer recovery episode is pending; re-run cox wake drain --epic %s and use the new WAKE_ACK_REQUIRED command\n",
+				g, res.Consumed, *epicDir)
+		case err != nil:
+			return fail("wake drain: recovery episode could not be retired safely; re-run cox wake drain --epic %s and use the new WAKE_ACK_REQUIRED command: %v", *epicDir, err)
+		}
 	}
 	return 0
 }
@@ -85,6 +101,8 @@ func wakeWait(args []string) int {
 		return fail("%v", err)
 	}
 	if timedOut {
+		// fm-watch-checkpoint.sh's quiet line (exit 124 there, 3 here): a clean statement naming the window.
+		fmt.Printf("checkpoint: no actionable wake within %s\n", *max)
 		return 3 // exit 3 on timeout (brief F)
 	}
 	printWakes(wakes, false)

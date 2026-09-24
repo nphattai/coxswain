@@ -254,6 +254,12 @@ export class Outbox {
     // items until the next turn - delayed, never dropped.
   }
 
+  // dropGuard: Pi rejected the delivery of a turn-end guard follow-up. It is dropped, not requeued: the next logical
+  // run's guard regenerates it (firstmate's latch retry). Every other lost item keeps the confirm-or-requeue path.
+  dropGuard(text: string): void {
+    this.items = this.items.filter((i) => !(text.includes(i.text) && isGuardFollowUp(i.text)));
+  }
+
   // Test/inspection accessors.
   phase(): OutboxPhase {
     return this.phaseNow;
@@ -287,6 +293,45 @@ export class TurnEndLatch {
   isPending(): boolean {
     return this.pending;
   }
+}
+
+// GuardLatch is firstmate's Pi turn-end guard latch (.pi/extensions/fm-primary-turnend-guard.ts, docs/turnend-guard.md
+// "Harness integrations"): the guard runs once per LOGICAL agent run - on agent_settled, never per internal tool turn -
+// and a blocked guard injects one follow-up. The run that follow-up opens is part of the same recovery, so its own
+// settle clears the latch instead of running the guard again; a delivery failure clears it too, so the next logical
+// run's settle retries.
+export class GuardLatch {
+  private pending = false;
+
+  // sent marks the guard's follow-up as handed to Pi.
+  sent(): void {
+    this.pending = true;
+  }
+
+  // settled reports whether this settle ends a new logical run (run the guard); the generated follow-up's own settle
+  // clears the latch and reports false.
+  settled(): boolean {
+    if (this.pending) {
+      this.pending = false;
+      return false;
+    }
+    return true;
+  }
+
+  // failed clears the latch after the follow-up could not be delivered.
+  failed(): void {
+    this.pending = false;
+  }
+
+  isPending(): boolean {
+    return this.pending;
+  }
+}
+
+// isGuardFollowUp recognizes the turn-end guard's block text among the texts the extension sends (the repair line
+// `cox hook stop-rewake` prints for an unsupervised epic), as opposed to a wake reopen.
+export function isGuardFollowUp(text: string): boolean {
+  return text.includes("TURN WOULD END BLIND") || /is not alive; run: cox watch --epic /.test(text);
 }
 
 // Process-global singleton (DESIGN item 2). A Pi process can load a cox extension TWICE: the launch `-e` path plus a

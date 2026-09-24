@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/nphattai/coxswain/internal/watch"
 	"io"
 	"os"
 	"path/filepath"
@@ -355,6 +356,9 @@ func TestWatcherInfoAndIssue(t *testing.T) {
 	if err := os.WriteFile(watchPidPath(epic), []byte(strconv.Itoa(os.Getpid())), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := watch.RecordIdentity(epic, os.Getpid()); err != nil { // an identityless pid is not a watcher
+		t.Fatal(err)
+	}
 	tickDir := filepath.Join(epic, controlDir, "watch")
 	os.MkdirAll(tickDir, 0o755)
 	os.WriteFile(filepath.Join(tickDir, "lasttick"), []byte(now.Add(-30*time.Second).Format(time.RFC3339)), 0o644)
@@ -369,7 +373,7 @@ func TestWatcherInfoAndIssue(t *testing.T) {
 	if err := state.Append(epic, state.Event{Epic: filepath.Base(epic), Story: "s", Attempt: 1, Actor: state.Leader, From: state.Submitted, To: state.Working, ExternalConfirmed: true}); err != nil {
 		t.Fatal(err)
 	}
-	if iss := watcherIssue(epic, wi); iss != "" {
+	if iss := watcherIssue(epic); iss != "" {
 		t.Errorf("alive watcher must raise no issue, got %q", iss)
 	}
 
@@ -379,7 +383,7 @@ func TestWatcherInfoAndIssue(t *testing.T) {
 	if dead.Alive {
 		t.Skip("pid 999999 happens to be alive on this host")
 	}
-	if iss := watcherIssue(epic, dead); iss == "" || !strings.Contains(iss, "not alive") {
+	if iss := watcherIssue(epic); iss == "" || !strings.Contains(iss, "not alive") {
 		t.Fatalf("dead watcher with a working story must raise an issue, got %q", iss)
 	}
 }

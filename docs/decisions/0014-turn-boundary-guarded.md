@@ -31,9 +31,21 @@ with a rate-limited out-of-band wedge alarm (`docs/wedge-alarm.md`).
    `cox watch --epic <dir> --replace`. The guard enumerates epics regardless of watcher liveness, so the very watcher
    whose death would hide the epic from every leader hook is still seen. `session-start` cannot block, so it surfaces
    the repair line as session context instead.
+   *Superseded 2026-09-24 (firstmate bin/fm-supervision-lib.sh, bin/fm-turnend-guard.sh, bin/fm-claude-stop-autoarm.sh):
+   supervision is needed for an open story, a registered process-event source or a registered custom check
+   (`cox watch check register`); healthy means an identity-matched live `.cox/watch.pid` and a beacon younger than the
+   poll-derived grace max(300s, poll+60s), not three ticks; Claude runs the Stop auto-arm (generation ledger
+   `.cox/claude-autoarm-epoch`, owner lock, one failure notice) before the guard, and a confirmed restart is silent;
+   Codex and Pi block once and a `stop_hook_active` retry always allows; the single-waiter lock records the waiter's
+   process identity and a reused pid or a waiter hung over a dead watcher is reclaimed; the block banner is firstmate's
+   `TURN WOULD END BLIND - SUPERVISION IS OFF`, naming the need.*
 2. **Block budget (item 1).** Each block is charged against a per-terminal, per-turn budget file
    (`cox-rewake-<handle>.blocks`, reset when the next turn's `prompt-drain` runs). Once the budget (3) is exhausted the
    guard lets the turn end (exit 0 with a warning) so a permanently broken watcher can never wedge the leader.
+   *Superseded 2026-09-24 (firstmate docs/turnend-guard.md, bin/fm-turnend-guard.sh): the Claude budget is per epic and
+   session (`.cox/turnend-claude-blocks`, charged per auto-arm epoch under a lock) and is never reset by a prompt; only
+   positive watcher recovery clears the budget, the failure notice and the alarm together; the one fail-open is the
+   attended one (verified auto-arm failure, notice consumed, budget spent, a final unhealthy check under both locks).*
 3. **Watcher self-eviction (item 2).** The watch loop stands down - releasing its pidfile - when its epic's `.cox` tree
    or the epic dir is gone, its own binary no longer stats, or a `.cox.closed` marker appears; it logs one line first
    when the tree still allows it. `cox doctor` lists every live `cox watch` process whose `--epic` dir no longer exists
@@ -42,6 +54,8 @@ with a rate-limited out-of-band wedge alarm (`docs/wedge-alarm.md`).
    delivered one resets the count. At three consecutive failures the watcher raises one `_leader` stuck wake and, when
    `policy.alerts.channel` is set (`off|osascript|command:<cmd>`, default off), fires that out-of-band channel at most
    once per 30 minutes with the summary passed argv-safe. `cox doctor` raises an ISSUE while the count is >= 3.
+   *Superseded 2026-09-24 (firstmate docs/wedge-alarm.md): an unset channel is `auto` (default on, osascript on macOS),
+   the channel is a directive list where every non-off entry fires, and each invocation is process-group bounded (10s).*
 5. **Nudge rate limit (item 3, B-33).** The leader doorbell nudges a standing unacked urgent backlog, but a re-nudge for
    a backlog whose max gen is unchanged is sent at most once per nudge window (`watch/nudged` records the last-nudged gen
    and time); a backlog that grew always nudges. This self-heals once the leader drains and acks.

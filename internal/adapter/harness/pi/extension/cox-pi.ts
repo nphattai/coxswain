@@ -17,9 +17,9 @@
 // Every `cox` child runs with stdin closed (dogfood F-4: an open, never-written stdin pipe hung `cox hook prompt-drain`).
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { spawn, execFile, type ChildProcess } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { Outbox, Supervisor, TurnEndLatch, claimProcessSingleton, releaseProcessSingleton } from "./cox-supervisor.ts";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { GuardLatch, Outbox, Supervisor, TurnEndLatch, claimProcessSingleton, isGuardFollowUp, releaseProcessSingleton } from "./cox-supervisor.ts";
 import { coxArgs, resolveEpic } from "./cox-commands.ts";
 
 const EPIC_MARKER = "cox-pi.epic"; // written next to the extension by `cox workspace hooks --harness pi --epic <dir>`
@@ -27,8 +27,8 @@ const ACTIVATED_MARKER = ".cox-pi.activated"; // written on session_start so cox
 // REOPEN_BUDGET bounds a reopen EPISODE: consecutive stop-rewake reopens with no user prompt in between and no new wake
 // gen. In Pi every reopen is a new turn, so a per-turn budget never trips (dogfood finding 8: 49 reopen turns in 3
 // min over a dead watcher). Past it: one visible warning, no more reopen turns until a user prompt or a new wake gen;
-// the idle waiter keeps re-arming (with backoff) so a new gen is still seen. The Go block budget bounds the same
-// episode server-side (prompt-drain --reopen keeps it).
+// the idle waiter keeps re-arming (with backoff) so a new gen is still seen. The Go guard forces a blocked Stop at most
+// once per logical run server-side (the --guard=false latch).
 const REOPEN_BUDGET = 3;
 // Re-arm backoff (dogfood F-10): a stop-rewake that returns within QUICK_EXIT_MS (exit 0 at once - no active epic, a
 // watcher restart, the Go budget spent - or an exit 2 past the episode budget) is re-armed after a doubling delay from
@@ -66,6 +66,31 @@ function markActivated(): void {
     writeFileSync(join(import.meta.dirname, ACTIVATED_MARKER), new Date().toISOString());
   } catch {
     /* best-effort: an unwritable extension dir leaves cox to downgrade, which is the safe direction */
+  }
+}
+
+// workspaceRoot walks up from dir to the nearest cox workspace (the directory holding cox/workspace.json), "" when none.
+function workspaceRoot(dir: string): string {
+  for (let d = dir; ; d = dirname(d)) {
+    if (existsSync(join(d, "cox", "workspace.json"))) return d;
+    if (dirname(d) === d) return "";
+  }
+}
+
+// markLeaderLoaded writes the Pi leader extension's loaded proof the session-start digest reads
+// (<workspace>/.cox/pi-leader-extension-loaded, internal/bearings PiLoadedMarker; firstmate's .pi-watch-extension-loaded):
+// line 1 the installed extension build (.cox-pi.hash, pi.ExtensionHash at install), line 2 this pi pid, then the
+// generation and its phase - "handoff" once the session shuts down, so a replacement that never loaded the extension
+// cannot borrow this proof. Best-effort: with no workspace or no install hash there is nothing to prove.
+function markLeaderLoaded(cwd: string, generation: number, phase: "active" | "handoff"): void {
+  try {
+    const ws = workspaceRoot(cwd);
+    const hash = readFileSync(join(import.meta.dirname, ".cox-pi.hash"), "utf8").trim();
+    if (!ws || !hash) return;
+    mkdirSync(join(ws, ".cox"), { recursive: true });
+    writeFileSync(join(ws, ".cox", "pi-leader-extension-loaded"), `${hash}\n${process.pid}\ngeneration=${generation} phase=${phase}\n`);
+  } catch {
+    /* no install hash (a source checkout) or an unwritable workspace: the digest reports the extension as not proven */
   }
 }
 
@@ -118,25 +143,64 @@ export default function (pi: ExtensionAPI): void {
       return false;
     }
   };
+  // guardLatch bounds the turn-end guard to once per logical run (firstmate fm-primary-turnend-guard.ts); guardNext is
+  // whether the next leader waiter runs the guard (false for the waiter the guard follow-up's own settle arms).
+  const guardLatch = new GuardLatch();
+  let leaderCwd = ""; // the leader session's cwd, for the loaded-proof marker
+  let guardNext = true;
+  // send hands text to Pi. A guard follow-up whose delivery throws or rejects releases the guard latch and is dropped,
+  // so the next logical run's guard retries it; any other lost text is requeued by the Outbox's own confirmation.
+  const send = (text: string, opts?: { deliverAs: "followUp" }): void => {
+    if (!live) return;
+    const guard = isGuardFollowUp(text);
+    if (guard) guardLatch.sent();
+    const failed = () => {
+      if (!guard) return;
+      outbox.dropGuard(text);
+      guardLatch.failed();
+    };
+    try {
+      const r = (opts ? pi.sendUserMessage(text, opts) : pi.sendUserMessage(text)) as unknown;
+      if (r && typeof (r as Promise<void>).catch === "function") (r as Promise<void>).catch(failed);
+    } catch {
+      failed();
+    }
+  };
   const outbox = new Outbox({
-    prompt: (text) => {
-      if (live) pi.sendUserMessage(text);
-    },
-    followUp: (text) => {
-      if (live) pi.sendUserMessage(text, { deliverAs: "followUp" });
-    },
+    prompt: (text) => send(text),
+    followUp: (text) => send(text, { deliverAs: "followUp" }),
     streaming: () => piState((ctx) => !ctx.isIdle()),
     quiet: () => piState((ctx) => ctx.isIdle() && ctx.signal === undefined),
   });
 
   // applyBusy reports one lifecycle transition into the busy record, best-effort: a missing gen means no write, and a
-  // refusal (a stale gen after re-arm) is swallowed so it never breaks Pi's own lifecycle.
+  // refusal (a stale gen after re-arm) is swallowed so it never breaks Pi's own lifecycle. Applies run one at a time in
+  // event order (firstmate fm-busy-adapter-wiring pi_extension_serializes_settle_before_next_start): a settle's idle
+  // must land before the next run's busy, or two racing children leave a running turn recorded idle.
+  let busyChain: Promise<void> = Promise.resolve();
   function applyBusy(state: "busy" | "idle", event: string): void {
     if (!busyGen || !epic || !story) return;
-    execCox(cox, coxArgs.busyApply(epic, story, state, busyGen, event), process.env, () => {
-      /* best-effort: cox rejects a stale gen; that must not disturb the turn */
-    });
+    const args = coxArgs.busyApply(epic, story, state, busyGen, event);
+    busyChain = busyChain.then(
+      () =>
+        new Promise<void>((resolve) => {
+          execCox(cox, args, process.env, () => resolve()); // best-effort: a stale gen must not disturb the turn
+        }),
+    );
   }
+
+  // Native progress (firstmate fm-spawn.sh:4240-4250): a native harness can make progress inside one Pi turn. It is
+  // recorded as the separate progress marker (`cox busy progress`), throttled to one write a second, so a long turn is
+  // not mistaken for a wedge; it never changes the semantic busy state or fabricates a completed turn. turn_end stays
+  // a notification: it is not wired to any busy edge.
+  let lastProgress = 0;
+  pi.events?.on?.("codex-native:progress", () => {
+    if (!busyGen || !epic || !story) return;
+    const now = Date.now();
+    if (now - lastProgress < 1000) return;
+    lastProgress = now;
+    execCox(cox, coxArgs.busyProgress(epic, story, busyGen), process.env, () => {}); // best-effort, like applyBusy
+  });
 
   let child: ChildProcess | null = null;
   const latch = new TurnEndLatch();
@@ -217,7 +281,7 @@ export default function (pi: ExtensionAPI): void {
     if (!isLeader) return false;
     try {
       killChild();
-      const c = spawn(cox, coxArgs.stopRewake(epic), {
+      const c = spawn(cox, coxArgs.stopRewake(epic, guardNext), {
         env: childEnv,
         stdio: ["ignore", "ignore", "pipe"],
       });
@@ -322,10 +386,15 @@ export default function (pi: ExtensionAPI): void {
     lastCtx = ctx;
     live = true;
     markActivated(); // startup handshake: confirm to cox that Pi loaded this extension
+    if (isLeader) {
+      leaderCwd = ctx.cwd;
+      markLeaderLoaded(leaderCwd, sup.generation() + 1, "active");
+    }
     outbox.sessionStart();
     pushNoted = false;
     setTimeout(() => outbox.startupGrace(), STARTUP_GRACE_MS).unref?.();
     injectCheckpoint(ctx);
+    guardNext = true;
     if (isLeader) sup.sessionStart();
   });
 
@@ -406,12 +475,17 @@ export default function (pi: ExtensionAPI): void {
   // still holds the agent, and must not report idle, retire the interrupt watcher, or re-arm the leader's idle waiter.
   pi.on("agent_settled", async (_event, ctx) => {
     lastCtx = ctx;
+    // Read the guard latch before the Outbox flushes: a requeued guard follow-up delivered by this flush opens its own
+    // run, whose settle (possibly nested inside the delivery) must see the latch this settle leaves behind.
+    if (!piState((c) => c.isIdle() && c.signal === undefined)) return; // a race loser's settle: see Outbox.settled
+    const newRun = guardLatch.settled(); // the guard follow-up's own settle is not a new logical run
     if (!outbox.settled()) return; // requeues what this run did not carry and delivers it now that Pi is idle
     applyBusy("idle", "agent_settled");
     killInterruptChild(); // the turn ended: retire the interrupt watcher until the next turn
     if (!isLeader || !live) return;
     const healthy = sup.liveGeneration() !== null;
     latch.onSettled(healthy, () => {
+      guardNext = newRun;
       sup.sessionStart(); // re-establish the idle wait child
       latch.consumed();
     });
@@ -436,6 +510,7 @@ export default function (pi: ExtensionAPI): void {
     sup.sessionShutdown();
     killChild();
     killInterruptChild();
+    if (isLeader && leaderCwd) markLeaderLoaded(leaderCwd, sup.generation(), "handoff");
   });
   process.once("exit", () => {
     killChild();

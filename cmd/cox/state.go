@@ -68,9 +68,7 @@ func cmdState(args []string) int {
 	fmt.Printf("epic %s (%s)\n", fleet.Epic, fleet.GeneratedAt)
 	wi := watcherInfo(*epicDir)
 	fmt.Println("  " + watcherLine(wi, now))
-	if iss := watcherIssue(*epicDir, wi); iss != "" {
-		fmt.Fprintln(os.Stderr, "ISSUE:", iss)
-	}
+	fmt.Fprint(os.Stderr, guardBanner(*epicDir, false)) // firstmate's pull guard: a supervision command warns (writable)
 	for _, s := range fleet.Stories {
 		fmt.Printf("  %-24s %-16s attempt %d  liveness=%v  composer=%v  forge=%s  quota=%s\n",
 			s.ID, s.State, s.Attempt, s.Observations["liveness"].Value, s.Observations["composer"].Value, forgeSummary(s.Observations["forge"]), quotaObsSummary(s.Observations["quota"]))
