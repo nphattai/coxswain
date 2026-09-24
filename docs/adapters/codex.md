@@ -42,6 +42,9 @@ This table is checked against `internal/adapter/harness/codex.Harness.Card()` by
   trust decision. `cox workspace init` (or `cox workspace hooks --harness codex`) writes the workspace `.codex/hooks.json`
   with the four leader hooks from `hooks/hooks.json`; each hook resolves the workspace from the cwd and acts on every
   epic with a live watcher, so leader hooks belong to the workspace, not an epic.
+- The `Stop` hook runs firstmate's default-mode turn-end guard: with supervision needed and no healthy watcher it
+  restarts the watcher, else blocks once (`{"decision":"block"}`); the retry Codex sends with `stop_hook_active: true`
+  always allows, so a turn is forced at most once (superseded 2026-09-24: the per-turn block budget of ADR 0014).
 
 The executable owners are `internal/adapter/harness/codex/`, `internal/adapter/backend/launch.go`,
 `cmd/cox/workspace.go`, `cmd/cox/hook.go`, and their tests. Dated hook and sandbox findings are in

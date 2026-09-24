@@ -82,19 +82,18 @@ hooks the Claude/Codex leader hooks run, so the Go side stays the single owner o
 
 | Pi event | cox hook | Behaviour |
 |---|---|---|
-| `before_agent_start` | `cox hook prompt-drain [--reopen]` | drain every active epic's unread wakes (a per-epic header names each epic and its `--epic <dir>`) and inject them as turn context; the pending idle child is retired first so a wake is delivered once. `--reopen` marks a turn a stop-rewake reopen opened, which keeps the block budget |
-| `agent_settled` | `cox hook stop-rewake --harness pi` | wait for a wake while idle, then reopen with one visible turn; run the turn-boundary watcher guard (restart a dead watcher and confirm its fresh tick, or surface the `cox watch --replace` repair line). No tick turn at max-wait: exit 0 and the extension re-arms |
+| `before_agent_start` | `cox hook prompt-drain [--reopen]` | drain every active epic's unread wakes (a per-epic header names each epic and its `--epic <dir>`) and inject them as turn context; the pending idle child is retired first so a wake is delivered once. `--reopen` is accepted and ignored: no prompt resets the block budget (superseded 2026-09-24, firstmate docs/turnend-guard.md) |
+| `agent_settled` | `cox hook stop-rewake --harness pi` | wait for a wake while idle, then reopen with one visible turn; run the turn-boundary watcher guard (restart a dead watcher and confirm its fresh tick, or surface the `cox watch --replace` repair line). No tick turn at max-wait: exit 0 and the extension re-arms. The guard runs once per logical run (firstmate fm-primary-turnend-guard.ts latch): the settle of the guard's own follow-up arms the waiter with `--guard=false` |
 | `session_before_compact` | `cox hook precompact` | persist the per-epic leader checkpoint before compaction |
-| `session_start` | `cox hook session-start` | inject the recovery checkpoint on start/resume; a leader with no checkpoint gets nothing |
+| `session_start` | `cox hook session-start --harness pi` | inject the recovery checkpoint on start/resume, then the bearings digest (a leader with no checkpoint still gets the digest; superseded 2026-09-24) |
 
 The first turn context of every leader session also says Pi is a **push** harness: wakes arrive as turns by themselves,
 so the leader never runs `cox wake wait`.
 
 **Reopens are bounded per episode.** In Pi every reopen is a new turn, so a per-turn budget never trips. The extension
 counts a reopen *episode* - consecutive reopens with no user prompt in between and no new `[gen N]` - and after 3 shows
-one visible warning and opens no more reopen turns until a user prompt or a new wake gen. `prompt-drain --reopen` keeps
-the Go turn-boundary block budget across reopen-opened turns (the extension threads a stable per-session
-`ORCA_TERMINAL_HANDLE`, else `pi-<pid>`). A stop-rewake that returns within 5s (exit 0 at once - no active epic, the Go
+one visible warning and opens no more reopen turns until a user prompt or a new wake gen. Pi runs the guard in
+firstmate's default mode, so a blocked Stop is forced at most once per logical run (the latch above). A stop-rewake that returns within 5s (exit 0 at once - no active epic, the Go
 budget spent - or an exit 2 past the episode budget) is re-armed after a doubling backoff from 1s to 60s, never at once,
 and its stderr note is surfaced once. A watcher restart counts only once the new watcher has written a fresh `lasttick`
 (10s window); one that exits at once (for example a fresh epic with no `.cox/run`) takes the repair path. A hook exit 2

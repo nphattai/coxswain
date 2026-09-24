@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -17,6 +18,7 @@ import (
 	"github.com/nphattai/coxswain/internal/protocol/checkpoint"
 	"github.com/nphattai/coxswain/internal/state"
 	"github.com/nphattai/coxswain/internal/wake"
+	"github.com/nphattai/coxswain/internal/watch"
 	"github.com/nphattai/coxswain/internal/workspace"
 )
 
@@ -460,8 +462,8 @@ func TestPromptDrainWarnsDuplicateLeader(t *testing.T) {
 
 // --- item 1: turn-boundary watcher guard ---
 
-// A dead watcher for an epic with an open story is restarted (the startWatcher-equivalent) and the turn ends cleanly
-// (exit 0): the fresh watcher now delivers wakes, so the leader is not blind.
+// A dead watcher for an epic with an open story is restarted (the startWatcher-equivalent). A confirmed restart ends the
+// guard silently (firstmate: the Stop auto-arm's healthy close is clean, no notice) and the idle wait runs.
 func TestGuardRestartsDeadWatcher(t *testing.T) {
 	epic := t.TempDir() // no watch.pid => the watcher is dead
 	var out bytes.Buffer
@@ -471,13 +473,13 @@ func TestGuardRestartsDeadWatcher(t *testing.T) {
 		launch: func(ep string) error { launched = ep; return nil },
 	})
 	if code != 0 {
-		t.Fatalf("a restarted watcher must end the turn with exit 0, got %d", code)
+		t.Fatalf("a restarted watcher must not block the turn, got %d", code)
 	}
 	if launched != epic {
 		t.Fatalf("the guard must restart the dead watcher, launched=%q", launched)
 	}
-	if !bytes.Contains(out.Bytes(), []byte("restarted")) {
-		t.Fatalf("expected a restart notice, got %q", out.String())
+	if out.Len() != 0 {
+		t.Fatalf("a confirmed restart must be silent, got %q", out.String())
 	}
 }
 
@@ -485,10 +487,9 @@ func TestGuardRestartsDeadWatcher(t *testing.T) {
 // repair line so the leader runs cox watch --replace.
 func TestGuardBlocksWhenRestartRefused(t *testing.T) {
 	epic := t.TempDir()
-	blocks := filepath.Join(t.TempDir(), "blocks")
 	var out bytes.Buffer
 	code := runStopRewake(rewakeCfg{
-		epics: []string{epic}, guardEpics: []string{epic}, out: &out, sleep: noSleep, blocksPath: blocks,
+		epics: []string{epic}, guardEpics: []string{epic}, out: &out, sleep: noSleep,
 		launch: func(string) error { return errWatchRefused },
 	})
 	if code != 2 {
@@ -500,27 +501,6 @@ func TestGuardBlocksWhenRestartRefused(t *testing.T) {
 	}
 }
 
-// The block budget bounds the wedge: once it is exhausted (a 4th block in one turn) the guard lets the turn end (exit 0)
-// with a warning, so a permanently broken watcher can never wedge the leader.
-func TestGuardWedgeReleaseAfterBudget(t *testing.T) {
-	epic := t.TempDir()
-	blocks := filepath.Join(t.TempDir(), "blocks")
-	if err := os.WriteFile(blocks, []byte("3"), 0o644); err != nil { // three blocks already spent this turn
-		t.Fatal(err)
-	}
-	var out bytes.Buffer
-	code := runStopRewake(rewakeCfg{
-		epics: []string{epic}, guardEpics: []string{epic}, out: &out, sleep: noSleep, blocksPath: blocks,
-		launch: func(string) error { return errWatchRefused },
-	})
-	if code != 0 {
-		t.Fatalf("the 4th block in a turn must exit 0 to avoid a wedge, got %d", code)
-	}
-	if !bytes.Contains(out.Bytes(), []byte("wedge")) {
-		t.Fatalf("expected a wedge-release warning, got %q", out.String())
-	}
-}
-
 // A live, fresh watcher is healthy: the guard neither restarts it nor blocks, and the wait loop runs (a still-open
 // working story ticks, exit 2).
 func TestGuardHealthyWatcherProceeds(t *testing.T) {
@@ -529,6 +509,9 @@ func TestGuardHealthyWatcherProceeds(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(watchPidPath(epic), []byte(strconv.Itoa(os.Getpid())), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := watch.RecordIdentity(epic, os.Getpid()); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(epic, controlDir, "watch", "lasttick"), []byte(time.Now().UTC().Format(time.RFC3339)), 0o644); err != nil {
@@ -615,8 +598,48 @@ func TestPromptDrainHeaderNamesEpicDir(t *testing.T) {
 	}
 }
 
-// A leader with no saved checkpoint gets NO session-start text (F-6: the "No checkpoint ... Start from the story" notice
-// became an extra Pi leader turn); with a checkpoint saved, it is injected.
+// A leader with no saved checkpoint gets the session-start digest (cox bearings, firstmate fm-session-start.sh; this
+// supersedes F-6's "no session-start text") but never a checkpoint or a "start from the story" notice; with a checkpoint
+// saved, it is injected.
+// The session-start digest never forks the deferred forge worker from a test binary: re-executing cox.test would run
+// the suite again as an orphan that spawns more of itself (the 519-orphan fork bomb). The digest names the refusal.
+func TestSessionStartDigestDoesNotForkUnderTest(t *testing.T) {
+	ws := t.TempDir()
+	mustWrite(t, filepath.Join(ws, "cox", "workspace.json"), `{"repos":[{"alias":"a","path":"/x","production":"main"}]}`)
+	if err := os.MkdirAll(filepath.Join(ws, "proj", "epics", "e1", ".cox"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	wt := t.TempDir()
+	gitInitRepo(t, wt)
+	// A stable leader identity, so the digest owns the lease and reaches the deferred step (without one it is
+	// read-only and never detaches; locally a claude ancestor would supply one, a CI runner has none).
+	t.Setenv("ORCA_TERMINAL_HANDLE", "term-fork-test")
+	t.Setenv("COX_EPIC", "")
+	t.Setenv("COX_STORY", "")
+	t.Setenv("COX_BIN", "")
+	t.Chdir(ws)
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	prev := os.Stdout
+	os.Stdout = w
+	code := cmdHook([]string{"session-start", "--worktree", wt})
+	os.Stdout = prev
+	_ = w.Close()
+	out, _ := io.ReadAll(r)
+	if code != 0 {
+		t.Fatalf("session-start exit %d", code)
+	}
+	if !strings.Contains(string(out), "deferred forge worker could not start (deferred worker not started under a test binary)") {
+		t.Fatalf("the digest must name the refused deferred worker, got %q", out)
+	}
+	time.Sleep(200 * time.Millisecond)
+	if ps, _ := exec.Command("pgrep", "-f", "bearings deferred --root "+ws).Output(); len(strings.TrimSpace(string(ps))) > 0 {
+		t.Fatalf("session-start forked a deferred worker under the test binary: pids %s", ps)
+	}
+}
+
 func TestLeaderSessionStartSilentWithoutCheckpoint(t *testing.T) {
 	ws := t.TempDir()
 	mustWrite(t, filepath.Join(ws, "cox", "workspace.json"), `{"repos":[{"alias":"a","path":"/x","production":"main"}]}`)
@@ -647,13 +670,13 @@ func TestLeaderSessionStartSilentWithoutCheckpoint(t *testing.T) {
 		}
 		return string(b)
 	}
-	if got := capture(); strings.TrimSpace(got) != "" {
-		t.Fatalf("fresh leader must get no session-start text, got %q", got)
+	if got := capture(); !strings.Contains(got, "SESSION START") || strings.Contains(got, "Checkpoint for story") || strings.Contains(got, "No checkpoint") {
+		t.Fatalf("a fresh leader must get the digest and no checkpoint text, got %q", got)
 	}
 	if code := cmdHook([]string{"precompact", "--worktree", wt}); code != 0 {
 		t.Fatalf("precompact exit %d", code)
 	}
-	if got := capture(); !strings.Contains(got, "_leader") {
+	if got := capture(); !strings.Contains(got, "Checkpoint for story _leader") {
 		t.Fatalf("a saved leader checkpoint must be injected, got %q", got)
 	}
 }
@@ -716,31 +739,6 @@ func TestLaunchWatcherConfirmsFreshTick(t *testing.T) {
 	}
 }
 
-// Finding 8 / AC5: a turn a stop-rewake reopen opened (Pi runs prompt-drain on it) keeps the block budget; only a user
-// turn resets it. On beedd57 every Pi reopen reset it, so a dead watcher reopened 49 model turns with no warning.
-func TestPromptDrainReopenKeepsBlockBudget(t *testing.T) {
-	ws := t.TempDir()
-	mustWrite(t, filepath.Join(ws, "cox", "workspace.json"), `{"repos":[{"alias":"a","path":"/x","production":"main"}]}`)
-	t.Chdir(ws)
-	t.Setenv("TMPDIR", t.TempDir())
-	t.Setenv("ORCA_TERMINAL_HANDLE", "pi-test")
-	blocks := rewakeBlocksPath("pi-test")
-	mustWrite(t, blocks, "2")
-	openStdin(t)
-	if code := cmdHook([]string{"prompt-drain", "--harness", "pi", "--reopen"}); code != 0 {
-		t.Fatalf("prompt-drain --reopen exit %d", code)
-	}
-	if b, err := os.ReadFile(blocks); err != nil || strings.TrimSpace(string(b)) != "2" {
-		t.Fatalf("a reopen-opened turn must keep the block budget, got %q %v", b, err)
-	}
-	if code := cmdHook([]string{"prompt-drain", "--harness", "pi"}); code != 0 {
-		t.Fatalf("prompt-drain exit %d", code)
-	}
-	if _, err := os.Stat(blocks); !os.IsNotExist(err) {
-		t.Fatalf("a user turn must reset the block budget, stat err=%v", err)
-	}
-}
-
 // Pi re-arms its own idle waiter on exit 0, so stop-rewake under --harness pi never ticks (a tick would cost a model
 // turn); claude keeps ticking.
 func TestStopRewakePiNeverTicks(t *testing.T) {
@@ -750,5 +748,24 @@ func TestStopRewakePiNeverTicks(t *testing.T) {
 	code := runStopRewake(rewakeCfg{epics: []string{epic}, harness: "pi", maxWait: 0, batchMax: time.Second, poll: time.Second, out: &out, sleep: noSleep})
 	if code != 0 || out.Len() != 0 {
 		t.Fatalf("pi: MAX_WAIT must exit 0 with no tick, got %d %q", code, out.String())
+	}
+}
+
+// R4 (firstmate fm_autoarm_claim_open): the single-waiter lock only defers a Stop to a waiter it can still prove -
+// live pid, matching recorded identity, not stuck. A bare pid (the pre-port format, or a reused pid) never passes, so a
+// stale lock over a live unrelated process can no longer end a turn blind.
+func TestRewakeWaiterAliveNeedsIdentity(t *testing.T) {
+	lock := filepath.Join(t.TempDir(), "cox-rewake-x.lock")
+	mustWrite(t, lock, strconv.Itoa(os.Getpid()))
+	if rewakeWaiterAlive(lock, nil) {
+		t.Fatal("a bare live pid must not pass for a live waiter")
+	}
+	mustWrite(t, lock, fmt.Sprintf("%d\nsomeone-else\n", os.Getpid()))
+	if rewakeWaiterAlive(lock, nil) {
+		t.Fatal("a mismatched identity (pid reuse) must not pass for a live waiter")
+	}
+	mustWrite(t, lock, fmt.Sprintf("%d\n%s\n", os.Getpid(), identityOf(os.Getpid())))
+	if !rewakeWaiterAlive(lock, nil) {
+		t.Fatal("this process's own identity-matched fresh lock is a live waiter")
 	}
 }

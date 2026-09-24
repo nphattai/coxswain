@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"testing"
 	"time"
 
 	"github.com/nphattai/coxswain/internal/adapter/backend"
@@ -275,11 +276,19 @@ func runBearings(ws, source, harness string, reemit bool, timeout time.Duration,
 	return 0
 }
 
-// detachDeferred starts `cox bearings deferred` in its own session, detached from this process and its output.
+// detachDeferred starts `cox bearings deferred` in its own session, detached from this process and its output. The
+// binary is $COX_BIN when set, else this executable. Under a test binary it refuses: re-executing cox.test would run
+// the whole suite again as an orphan that spawns more of itself.
 func detachDeferred(ws, harness, leader string) error {
-	self, err := os.Executable()
-	if err != nil {
-		return err
+	if testing.Testing() {
+		return errors.New("deferred worker not started under a test binary")
+	}
+	self := os.Getenv("COX_BIN")
+	if self == "" {
+		var err error
+		if self, err = os.Executable(); err != nil {
+			return err
+		}
 	}
 	cmd := exec.Command(self, "bearings", "deferred", "--root", ws, "--harness", harness, "--leader", leader)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}

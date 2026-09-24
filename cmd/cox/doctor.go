@@ -239,7 +239,7 @@ func cmdDoctor(args []string) int {
 				fmt.Printf("    epic %s  (%s)\n", ep.Path, ctrl)
 				wi := watcherInfo(ep.Path)
 				fmt.Printf("      %s\n", watcherLine(wi, now))
-				if iss := watcherIssue(ep.Path, wi); iss != "" {
+				if iss := watcherIssue(ep.Path); iss != "" {
 					watcherIssues = append(watcherIssues, iss)
 				}
 				if drift := policyDriftFor(ep.Path); len(drift) > 0 {
@@ -371,7 +371,7 @@ func watcherIssuesForWorkspaces(reps []doctor.WorkspaceReport) []string {
 			if ep.WatcherAlive || ep.Closed {
 				continue // a closed epic has no watcher to be dead and no open stories
 			}
-			if iss := watcherIssue(ep.Path, watcherInfo(ep.Path)); iss != "" {
+			if iss := watcherIssue(ep.Path); iss != "" {
 				issues = append(issues, iss)
 			}
 		}

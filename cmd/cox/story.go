@@ -631,7 +631,11 @@ func storyControl(verb string, args []string) int {
 		return fail("story %s needs a live backend: set ORCA_RUN_ID or %s/.cox/run", verb, *epicDir)
 	}
 	meta := readStoryMeta(*epicDir, story)
-	ctl := &control.Controller{EpicDir: *epicDir, Backend: b, Harness: harnessFor(meta.Harness), ParkWait: *parkWait}
+	h, err := harnessFor(story, meta.Harness)
+	if err != nil {
+		return fail("%v", err)
+	}
+	ctl := &control.Controller{EpicDir: *epicDir, Backend: b, Harness: h, ParkWait: *parkWait}
 	switch verb {
 	case "park":
 		sess, err := loadSession(*epicDir, story)
@@ -696,13 +700,14 @@ func storyControl(verb string, args []string) int {
 			return fail("compose launch argv: %v", err)
 		}
 		spec := backend.HarnessSpec{Name: targetHarness, Model: targetModel, Argv: argv}
-		// Re-arm the busy record for a fresh incarnation so a resumed worker's hook Applies against a new gen and any late
-		// event from the prior incarnation is rejected as stale (DESIGN wave-2 item 6).
-		g, err := armWorkerBusy(*epicDir, story, targetHarness, wtPath, loadPolicyQuiet(*epicDir))
-		if err != nil {
-			return fail("arm busy state: %v", err)
+		// Retire the prior harness's worker hooks (a reroute must not leave them applying against a retired gen), then
+		// re-arm the busy record for a fresh incarnation so a resumed worker's hook Applies against a new gen and any late
+		// event from the prior incarnation is rejected as stale (DESIGN wave-2 item 6). Relaunch runs both in that order
+		// after the prior agent settled.
+		ctl.Unwire = func() error { return unwireWorkerBusy(curHarness, wtPath) }
+		ctl.Arm = func() (string, error) {
+			return armWorkerBusy(*epicDir, story, targetHarness, wtPath, loadPolicyQuiet(*epicDir))
 		}
-		spec.BusyGen = g
 		prior, _ := loadSession(*epicDir, story) // previous attempt's terminal, closed before the new spawn (zero value when none)
 		sess, err := ctl.Relaunch(story, wtPath, *note, prior, spec, extra)
 		if err != nil {
