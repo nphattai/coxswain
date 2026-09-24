@@ -104,6 +104,7 @@ type Watcher struct {
 	// Per-tick triage scratch (reset by Tick): the no-verb signal batch, the stories that surfaced, the probe cache and
 	// the declaration the current stale alarm binds its throttle to.
 	signals    map[string]*signal
+	spans      map[string][]string // this tick's status span per story (mail and terminal-plane reports), in order
 	surfaced   map[string]bool
 	mailbox    []backend.Message // this tick's mailbox read, for the heartbeat backstop
 	pendingAck string            // this tick's delivery, acked once every wake it produced is written
@@ -141,7 +142,7 @@ func orDur(v, def time.Duration) time.Duration {
 // appended (0 when nothing was actionable). It never blocks; Run wraps it in a poll loop.
 func (w *Watcher) Tick() (int, error) {
 	w.tickCount++
-	w.signals, w.surfaced, w.probes, w.mailbox, w.ci, w.pendingAck, w.appendedCount = nil, nil, nil, nil, nil, "", 0
+	w.signals, w.spans, w.surfaced, w.probes, w.mailbox, w.ci, w.pendingAck, w.appendedCount = nil, nil, nil, nil, nil, nil, "", 0
 	w.Sessions = LoadSessions(w.EpicDir) // pick up any story dispatched since the last tick (item 1)
 	dispatchStory, err := w.dispatchStoryMap()
 	if err != nil {
@@ -469,8 +470,14 @@ func (w *Watcher) mailPass(dispatchStory map[string]string) (int, bool, error) {
 	if err != nil {
 		return 0, false, err
 	}
-	appended := 0
-	urgent := false
+	// fm reads each status file's span appended since the seen offset as one unit (status_span_first_actionable_record):
+	// collect every story's new lines first, fold each span once, then emit in message order.
+	type entry struct {
+		story, line, id string
+		wk              wake.Wake
+	}
+	var entries []entry
+	spans := map[string][]string{}
 	for _, m := range msgs {
 		if m.ID != "" && seen[m.ID] {
 			continue
@@ -491,7 +498,8 @@ func (w *Watcher) mailPass(dispatchStory map[string]string) (int, bool, error) {
 			w.markSeen(m.ID)
 			continue
 		}
-		w.recordStatus(story, statusFromMail(m))
+		line := statusFromMail(m)
+		w.recordStatus(story, line)
 		note := wakeNote(kind, m.Subject, m.Body)
 		wk := wake.Wake{
 			Epic: filepath.Base(w.EpicDir), Story: story, Kind: kind,
@@ -501,9 +509,32 @@ func (w *Watcher) mailPass(dispatchStory map[string]string) (int, bool, error) {
 		if full := wakeFull(kind, m.Subject, m.Body); full != note {
 			wk.Full = full // keep the untruncated text for `cox wake drain --full`
 		}
-		if !wake.IsUrgent(kind) {
+		entries = append(entries, entry{story, line, m.ID, wk})
+		spans[story] = append(spans[story], line)
+		w.spanAdd(story, line)
+	}
+	live := map[string]spanEvents{} // per story: the span's actionable events
+	for story, span := range spans {
+		live[story] = w.spanEvents(story, span)
+	}
+	appended := 0
+	urgent := false
+	for _, e := range entries {
+		story, wk := e.story, e.wk
+		if wake.IsUrgent(wk.Kind) {
+			if event, ok := live[story].take(e.line); ok {
+				if event != e.line {
+					// A reserved key spoken by a foreign writer opens nothing; it surfaces labeled for reconciliation.
+					wk.Note = truncate(reconPrefix+wk.Note, 400)
+				}
+			} else if spanDecision(e.line) {
+				// A needs-decision/blocked the same span already closed (or superseded) is not actionable: routine.
+				wk.Kind = wake.KindStatus
+			}
+		}
+		if !wake.IsUrgent(wk.Kind) {
 			// A no-verb signal: triaged with the rest of this tick's batch (absorbed only if provably working).
-			line, id := statusFromMail(m), m.ID
+			line, id := e.line, e.id
 			w.addSignal(story, func(s *signal) {
 				s.statuses = append(s.statuses, wk)
 				s.lines = append(s.lines, line)
@@ -516,12 +547,12 @@ func (w *Watcher) mailPass(dispatchStory map[string]string) (int, bool, error) {
 		}
 		appended++
 		urgent = true
-		w.markSurfaced(m.ID)
+		w.markSurfaced(e.id)
 		if w.surfaced == nil {
 			w.surfaced = map[string]bool{}
 		}
 		w.surfaced[story] = true
-		w.markSeen(m.ID)
+		w.markSeen(e.id)
 	}
 	// The delivery is acked by Tick only after the signal triage has durably written every wake (and the heartbeat
 	// backstop has read this delivery), never before: the 2026-09-15 lesson.

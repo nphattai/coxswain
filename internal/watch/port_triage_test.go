@@ -7,6 +7,7 @@
 package watch
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,7 +23,11 @@ import (
 	"github.com/nphattai/coxswain/internal/adapter/backend/fake"
 	"github.com/nphattai/coxswain/internal/adapter/forge"
 	"github.com/nphattai/coxswain/internal/protocol/busy"
+	"github.com/nphattai/coxswain/internal/protocol/decision"
 	"github.com/nphattai/coxswain/internal/protocol/inbox"
+	"github.com/nphattai/coxswain/internal/protocol/question"
+	"github.com/nphattai/coxswain/internal/protocol/report"
+	"github.com/nphattai/coxswain/internal/protocol/status"
 	"github.com/nphattai/coxswain/internal/state"
 	"github.com/nphattai/coxswain/internal/wake"
 )
@@ -384,8 +389,13 @@ func TestPortTriageA1(t *testing.T) {
 		_, ws = pA1Lines(t, "needs-decision [key=api]: pick A or B", "needs-decision [key=db]: pick a store",
 			"resolved [key=db]: took sqlite")
 		pA1UrgentNote(t, ws, "needs-decision [key=api]: pick A or B")
-		// A rejected reserved-key request surfaces labeled reconciliation-required and opens no decision: needs the fold.
-		notImplemented(t, pA1MechFold)
+		// A rejected reserved-key request surfaces labeled reconciliation-required and opens no decision.
+		rejected := []string{"needs-decision [key=pending-reply-x]: unrelated request", "working: awaiting reconciliation"}
+		_, ws = pA1Lines(t, rejected...)
+		pA1UrgentNote(t, ws, "reconciliation-required: needs-decision [key=pending-reply-x]: unrelated request")
+		if open := decision.Fold(rejected, decision.KindUnknown, decision.Verbs{}); len(open) != 0 {
+			t.Errorf("span classification treated a rejected reserved-key request as an open decision: %+v", open)
+		}
 	})
 
 	t.Run(s+"status_span_closure_from_an_offset", func(t *testing.T) {
@@ -403,8 +413,14 @@ func TestPortTriageA1(t *testing.T) {
 		r.mail("c6", "status", "resolved [key=db]: took sqlite")
 		r.mail("c7", "status", "needs-decision [key=api]: revisit A or B")
 		r.mail("c8", "status", "working: waiting")
-		pA1UrgentNote(t, r.tick(), "needs-decision [key=api]: revisit A or B")
-		notImplemented(t, pA1MechFold)
+		ws := r.tick()
+		pA1UrgentNote(t, ws, "needs-decision [key=api]: revisit A or B")
+		// cox's span is the tick's new lines (fm: the bytes after the offset); the db decision it closed is not reported.
+		for _, w := range ws {
+			if wake.IsUrgent(w.Kind) && strings.Contains(w.Note, "pick a store") {
+				t.Errorf("classifying from an offset reported the closed db decision: %s", w.Note)
+			}
+		}
 	})
 
 	t.Run(s+"malformed_seen_signature_reads_the_whole_log", func(t *testing.T) {
@@ -514,8 +530,33 @@ func TestPortTriageA1(t *testing.T) {
 		if last, _ := r.w.statusLine(portStory); !captainRelevantRE(last, r.w.CaptainRE) {
 			t.Errorf("the watcher did not read the last line through its override: %q", last)
 		}
-		// Keyed open decisions and keyed activity phases are the decision fold (wave 2b, w2-watch-decisions).
-		notImplemented(t, pA1MechFold)
+		// Keyed open decisions and keyed activity phases: the one fold the watcher and the drain share.
+		open := decision.Fold([]string{"needs-decision: should docs mention [key=prose]?", "needs-decision [key=q1]: real choice",
+			"resolved: docs still mention [key=q1]", "needs-decision [key=bad key]: malformed"}, decision.KindUnknown, decision.Verbs{})
+		if _, ok := decision.Open(open, "q1"); !ok {
+			t.Errorf("a key token in resolved note prose closed the keyed decision: %+v", open)
+		}
+		if _, ok := decision.Open(open, "prose"); ok {
+			t.Errorf("a key token in note prose changed the decision key: %+v", open)
+		}
+		if _, ok := decision.Open(open, "bad key"); ok {
+			t.Errorf("an invalid key slug entered the open-decision set: %+v", open)
+		}
+		activity := decision.OpenActivities([]string{"working [key=phase7]: Phase 7 started", "working [key=phase6]: Phase 6 started",
+			"working [key=legal]: reviewing legal dependency", "done [key=phase6]: Phase 6 completed",
+			"resolved [key=phase7]: Phase 7 completed and moved to Done", "paused [key=legal]: awaiting external counsel",
+			"resolved [key=legal]: legal item returned to the queue", "working [key=phase8]: Phase 8 started"}, decision.Verbs{})
+		if a, ok := decision.Open(activity, "phase8"); !ok || a.Verb != "working" || a.Note != "Phase 8 started" {
+			t.Errorf("the current keyed working phase was not retained: %+v", activity)
+		}
+		for _, k := range []string{"phase7", "phase6", "legal"} {
+			if _, ok := decision.Open(activity, k); ok {
+				t.Errorf("a same-key closing event did not close the %s phase: %+v", k, activity)
+			}
+		}
+		if a := decision.OpenActivities([]string{"working: legacy start", "done: legacy completion"}, decision.Verbs{}); len(a) != 0 {
+			t.Errorf("a legacy terminal event did not supersede the default working phase: %+v", a)
+		}
 	})
 
 	t.Run(s+"crew_is_provably_working_classifier", func(t *testing.T) {
@@ -864,6 +905,22 @@ func pA2Wakes(ws []wake.Wake) []wake.Wake {
 	return out
 }
 
+// say queues a worker status mail and writes the durable status event a worker report leaves (status.Report, the
+// history `cox wake drain` folds), so a case can run firstmate's OPEN DECISIONS fold between watcher steps.
+func (r *portRig) say(id, line string) {
+	r.t.Helper()
+	r.mail(id, "status", line)
+	portMust(r.t, status.Report(r.epic, portStory, 1, "status", line, nil, ""))
+}
+
+// portDrain runs one `cox wake drain` presentation (wake.Present, not a peek) and returns what it printed.
+func portDrain(r *portRig) string {
+	r.t.Helper()
+	var out, errOut bytes.Buffer
+	portMust(r.t, wake.Present(r.epic, &out, &errOut, wake.PresentOptions{}))
+	return out.String()
+}
+
 func TestPortTriageA2(t *testing.T) {
 	const s = "FM/fm-watch-triage/"
 
@@ -1068,7 +1125,24 @@ func TestPortTriageA2(t *testing.T) {
 		wantAbsorbed(t, r.tick(), "the home's own bookkeeping close")
 		r.mail("m2", "status", "needs-decision [key=k2]: a genuinely new decision")
 		wantSurfaced(t, r.tick(), "a later different note after a self-announced close")
-		notImplemented(t, pA2MechFold)
+		// cox's home-authored close is `cox reply` to a worker question: the answer enters the story's durable history
+		// as "resolved [key=qNNN]: answered", so the drain's fold retires the decision and the close wakes nothing.
+		r = newPortRig(t)
+		q, err := report.Question(r.epic, portStory, 1, "pick one")
+		portMust(t, err)
+		r.tick() // the announced baseline
+		if d := portDrain(r); !strings.Contains(d, portStory+" [key="+q+"] needs-decision") {
+			t.Errorf("the drain fold did not list the open question %s:\n%s", q, d)
+		}
+		_, err = question.Answer(r.epic, portStory, q, "one", false)
+		portMust(t, err)
+		r.reply("answer to " + q + ": one")
+		wantAbsorbed(t, r.tick(), "the home's own close through cox reply")
+		if d := portDrain(r); strings.Contains(d, "[key="+q+"]") {
+			t.Errorf("the answered question stayed open in the drain fold:\n%s", d)
+		}
+		r.mail("m3", "status", "needs-decision [key=k2]: a genuinely new decision")
+		wantSurfaced(t, r.tick(), "the next real note after a close through cox reply")
 	})
 
 	t.Run(s+"self_announced_close_after_open_decisions_fold_does_not_rewake", func(t *testing.T) {
@@ -1087,19 +1161,23 @@ func TestPortTriageA2(t *testing.T) {
 		// fm: tests/fm-watch-triage.test.sh:1642
 		// cox: decision fold
 		r := newPortRig(t)
-		r.mail("m1", "status", "working: building")
+		r.say("m1", "working: building")
 		r.tick()
-		r.mail("m2", "status", "needs-decision [key=k3]: pick a region")
+		r.say("m2", "needs-decision [key=k3]: pick a region")
+		// Any drain folds OPEN DECISIONS; the fold is no proof the watcher's owner saw the line.
+		if d := portDrain(r); !strings.Contains(d, portStory+" [key=k3] needs-decision: pick a region") {
+			t.Errorf("the OPEN DECISIONS fold did not read the fresh worker decision:\n%s", d)
+		}
 		wantSurfaced(t, r.tick(), "a fresh worker decision the home appended nothing to")
-		notImplemented(t, pA2MechFold)
 	})
 
 	t.Run(s+"separate_self_announced_answers_after_fold_wake_once", func(t *testing.T) {
 		// fm: tests/fm-watch-triage.test.sh:1668
 		// cox: decision fold
 		r := newPortRig(t)
-		r.mail("m1", "status", "needs-decision [key=k1]: pick REST or RPC")
-		r.mail("m2", "status", "needs-decision [key=k2]: pick us-east or eu-west")
+		r.say("m1", "needs-decision [key=k1]: pick REST or RPC")
+		r.say("m2", "needs-decision [key=k2]: pick us-east or eu-west")
+		portDrain(r) // the OPEN DECISIONS fold drain before the answers
 		r.reply("resolved [key=k1]: answered: REST")
 		r.reply("resolved [key=k2]: answered: eu-west")
 		ws := r.tick()
@@ -1110,20 +1188,25 @@ func TestPortTriageA2(t *testing.T) {
 		wantAbsorbed(t, r.tick(), "the owned answers on the next cycle")
 		r.mail("m3", "status", "blocked: need staging credentials")
 		wantSurfaced(t, r.tick(), "a later worker line after two owned answers")
-		notImplemented(t, pA2MechFold)
 	})
 
 	t.Run(s+"self_announced_close_after_fold_still_surfaces_folded_worker_failure", func(t *testing.T) {
 		// fm: tests/fm-watch-triage.test.sh:1707
 		// cox: status span
 		r := newPortRig(t)
-		r.mail("m1", "status", "needs-decision [key=budget]: approve spend?")
+		r.say("m1", "needs-decision [key=budget]: approve spend?")
 		r.tick()
-		r.mail("m2", "status", "failed: crew c3 hit an unrecoverable migration error")
-		r.mail("m3", "status", "working: retrying c3 in a fresh worktree")
+		r.say("m2", "failed: crew c3 hit an unrecoverable migration error")
+		r.say("m3", "working: retrying c3 in a fresh worktree")
+		// The session-start fold reads through both lines but lists only the open decision.
+		d := portDrain(r)
+		if !strings.Contains(d, portStory+" [key=budget] needs-decision") || strings.Contains(d, "crew c3") {
+			t.Errorf("the fold did not list exactly the open budget decision:\n%s", d)
+		}
 		r.reply("resolved [key=budget]: answered: approved")
-		wantSurfaced(t, r.tick(), "a worker failure inside the folded span, under a routine append")
-		notImplemented(t, pA2MechSpan)
+		ws := r.tick()
+		wantSurfaced(t, ws, "a worker failure inside the folded span, under a routine append")
+		pA1UrgentNote(t, ws, "crew c3 hit an unrecoverable migration error")
 	})
 
 	// n/a test_self_announced_close_after_fold_still_surfaces_folded_secondmate_lines (fm-watch-triage.test.sh:1738):
@@ -2890,6 +2973,34 @@ func pPDrainDurable(t *testing.T) {
 	}
 }
 
+// pPDrainReconcile pins the rest of the drain contract: the drain also lists open decisions and unread status lines
+// to reconcile, and an ack-through never retires them - an open decision stays listed until its key is resolved, and
+// a captain-facing status with no handled wake is presented as unread.
+func pPDrainReconcile(t *testing.T) {
+	t.Helper()
+	r := newPortRig(t)
+	r.say("m1", "needs-decision [key=api]: pick A or B")
+	ws := r.tick()
+	wantSurfaced(t, ws, "the worker decision")
+	d := portDrain(r)
+	if !strings.Contains(d, "OPEN DECISIONS") || !strings.Contains(d, portStory+" [key=api] needs-decision: pick A or B") {
+		t.Errorf("the drain did not list the open decision to reconcile:\n%s", d)
+	}
+	portMust(t, wake.AckThrough(r.epic, ws[len(ws)-1].Gen))
+	if d := portDrain(r); !strings.Contains(d, portStory+" [key=api] needs-decision") {
+		t.Errorf("the ack-through retired a decision nobody resolved:\n%s", d)
+	}
+	portMust(t, status.Report(r.epic, portStory, 1, "status", "resolved [key=api]: took A", nil, ""))
+	if d := portDrain(r); strings.Contains(d, "[key=api]") {
+		t.Errorf("a resolved decision stayed listed:\n%s", d)
+	}
+	// An unread status line: a captain-facing event whose wake was never handled is presented for reconciliation.
+	portMust(t, status.Report(r.epic, portStory, 1, "status", "done: shipped the api", nil, ""))
+	if d := portDrain(r); !strings.Contains(d, "STATUS OUTCOME BACKSTOP") || !strings.Contains(d, "done: shipped the api") {
+		t.Errorf("the drain did not present the unread status line:\n%s", d)
+	}
+}
+
 // Protocol docs: each numbered rule with a testable consequence in the watcher/wake queue. Rules whose consequence is
 // the Stop hook, the arm layer, the turn-end guard or the foreground checkpoint are n/a here, owned by
 // cox-supervision-port-turnend (cmd/cox/hook.go, fm-watch-checkpoint, watcher-continuity.md).
@@ -2899,7 +3010,7 @@ func TestPortProtocols(t *testing.T) {
 		// fm: docs/supervision-protocols/claude.md:4
 		// cox: wake.Drain / AckThrough + decision fold (drain's OPEN DECISIONS / UNREAD STATUS)
 		pPDrainDurable(t)
-		notImplemented(t, pPMechFold) // the drain also lists open decisions and unread status lines to reconcile
+		pPDrainReconcile(t)
 	})
 	// n/a claude.md:6 rule 2 (Stop asyncRewake owns arm/re-arm): owned by cox-supervision-port-turnend
 	// n/a claude.md:9 rule 3 (drain first on a Stop hook feedback wake; no manual re-arm): owned by cox-supervision-port-turnend
@@ -2939,7 +3050,7 @@ func TestPortProtocols(t *testing.T) {
 		// fm: docs/supervision-protocols/codex.md:4
 		// cox: wake.Drain / AckThrough + decision fold
 		pPDrainDurable(t)
-		notImplemented(t, pPMechFold)
+		pPDrainReconcile(t)
 	})
 	// n/a codex.md:6 rule 2 (source the Relay env): relay/X is firstmate-only (DESIGN rule 5)
 	// n/a codex.md:7 rule 3 (first foreground watcher checkpoint): owned by cox-supervision-port-turnend (fm-watch-checkpoint)
@@ -2954,7 +3065,7 @@ func TestPortProtocols(t *testing.T) {
 		// fm: docs/supervision-protocols/pi.md:4
 		// cox: wake.Drain / AckThrough + decision fold
 		pPDrainDurable(t)
-		notImplemented(t, pPMechFold)
+		pPDrainReconcile(t)
 	})
 	// n/a pi.md:6 rule 2 (both project extensions auto-loaded at session start): owned by cox-supervision-port-session (session-start)
 	// n/a pi.md:7 rule 3 (one initial fm_watch_arm_pi call): owned by cox-supervision-port-turnend
@@ -2976,7 +3087,7 @@ func TestPortProtocols(t *testing.T) {
 		// fm: docs/supervision-protocols/unknown.md:6
 		// cox: wake.Drain / AckThrough + decision fold
 		pPDrainDurable(t)
-		notImplemented(t, pPMechFold)
+		pPDrainReconcile(t)
 	})
 	t.Run("FM/protocol-unknown/L7", func(t *testing.T) {
 		// fm: docs/supervision-protocols/unknown.md:7
