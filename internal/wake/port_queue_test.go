@@ -503,6 +503,12 @@ func staleEnqueueBeforeSuppressor(t *testing.T, probeErr error) {
 	must(t, os.WriteFile(hb, nil, 0o644))
 	old := time.Now().Add(-time.Hour)
 	must(t, os.Chtimes(hb, old, old))
+	// fm primes .hash-$key to the pane's current hash (fm-wake-queue.test.sh:105,137): the quiet interval is already
+	// running. cox's analog is the story's activity signature (no busy record, no activity: "-|").
+	sig := filepath.Join(epic, state.ControlDir, "watch", "sig", story)
+	must(t, os.MkdirAll(filepath.Dir(sig), 0o755))
+	must(t, os.WriteFile(sig, []byte("-|"), 0o644))
+	stale := filepath.Join(epic, state.ControlDir, "watch", "stale", story) // fm .stale-$key, the stale suppressor
 	b := fake.New()
 	b.Liveness = backend.Unknown
 	w := &watch.Watcher{EpicDir: epic, Backend: b, StaleMin: time.Minute}
@@ -512,19 +518,32 @@ func staleEnqueueBeforeSuppressor(t *testing.T, probeErr error) {
 	}
 	_, _ = w.Tick()
 	if info, err := os.Stat(hb); err == nil && time.Since(info.ModTime()) < time.Minute {
-		red(t, "watch.stale-enqueue-order", "the stale suppressor (heartbeat) advanced although the wake was never enqueued")
+		red(t, "watch.stale-enqueue-order", "the stale quiet clock (heartbeat) advanced although the wake was never enqueued")
+	}
+	if _, err := os.Stat(stale); err == nil {
+		red(t, "watch.stale-enqueue-order", "the stale suppressor advanced although the wake was never enqueued")
 	}
 	must(t, os.Remove(queuePath(epic)))
 	if probeErr != nil {
 		b.FailNext("Probe", probeErr)
 	}
 	_, _ = w.Tick()
+	// fm drains a "stale" row (fm-wake-queue.test.sh:113,148); a failed liveness probe is cox's unknown_probe (F08).
+	want := wake.KindStale
+	if probeErr != nil {
+		want = wake.KindUnknownProbe
+	}
 	found := false
+	var got []wake.Kind
 	for _, wk := range drain(t, epic) {
-		found = found || wk.Kind == wake.KindUnknownProbe
+		found = found || wk.Kind == want
+		got = append(got, wk.Kind)
 	}
 	if !found {
-		red(t, "watch.stale-enqueue-order", "the stale wake lost to a failed enqueue never surfaced on the next tick")
+		red(t, "watch.stale-enqueue-order", "the %s wake lost to a failed enqueue never surfaced on the next tick: %v", want, got)
+	}
+	if b, _ := os.ReadFile(stale); string(b) != "-|" {
+		red(t, "watch.stale-enqueue-order", "the stale suppressor was not advanced after the enqueue: %q", b)
 	}
 }
 
