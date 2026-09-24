@@ -615,8 +615,9 @@ func TestPromptDrainHeaderNamesEpicDir(t *testing.T) {
 	}
 }
 
-// A leader with no saved checkpoint gets NO session-start text (F-6: the "No checkpoint ... Start from the story" notice
-// became an extra Pi leader turn); with a checkpoint saved, it is injected.
+// A leader with no saved checkpoint gets the session-start digest (cox bearings, firstmate fm-session-start.sh; this
+// supersedes F-6's "no session-start text") but never a checkpoint or a "start from the story" notice; with a checkpoint
+// saved, it is injected.
 func TestLeaderSessionStartSilentWithoutCheckpoint(t *testing.T) {
 	ws := t.TempDir()
 	mustWrite(t, filepath.Join(ws, "cox", "workspace.json"), `{"repos":[{"alias":"a","path":"/x","production":"main"}]}`)
@@ -647,13 +648,13 @@ func TestLeaderSessionStartSilentWithoutCheckpoint(t *testing.T) {
 		}
 		return string(b)
 	}
-	if got := capture(); strings.TrimSpace(got) != "" {
-		t.Fatalf("fresh leader must get no session-start text, got %q", got)
+	if got := capture(); !strings.Contains(got, "SESSION START") || strings.Contains(got, "Checkpoint for story") || strings.Contains(got, "No checkpoint") {
+		t.Fatalf("a fresh leader must get the digest and no checkpoint text, got %q", got)
 	}
 	if code := cmdHook([]string{"precompact", "--worktree", wt}); code != 0 {
 		t.Fatalf("precompact exit %d", code)
 	}
-	if got := capture(); !strings.Contains(got, "_leader") {
+	if got := capture(); !strings.Contains(got, "Checkpoint for story _leader") {
 		t.Fatalf("a saved leader checkpoint must be injected, got %q", got)
 	}
 }

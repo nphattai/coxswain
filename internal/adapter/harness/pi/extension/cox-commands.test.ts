@@ -40,7 +40,8 @@ test("precompact/sessionStart unbound omit --epic and --story (workspace leader-
   const pc = coxArgs.precompact("", "", "/wt");
   assert.deepEqual(pc, ["hook", "precompact", "--worktree", "/wt"]);
   const ss = coxArgs.sessionStart("", "", "/wt");
-  assert.deepEqual(ss, ["hook", "session-start", "--worktree", "/wt"]);
+  // --harness pi: the session-start digest (cox bearings) is harness-aware.
+  assert.deepEqual(ss, ["hook", "session-start", "--worktree", "/wt", "--harness", "pi"]);
 });
 
 test("resolveEpic prefers COX_EPIC, falls back to the installed marker, else empty", () => {

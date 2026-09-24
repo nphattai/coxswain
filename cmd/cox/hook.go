@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -13,7 +14,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/nphattai/coxswain/internal/adapter/backend"
@@ -48,6 +48,9 @@ func cmdHook(args []string) int {
 	// turn, including the ones a reopen opens, so resetting the block budget there would reset it on every reopen and a
 	// dead watcher would reopen forever (dogfood finding 8 / AC5). Claude never sets it: UserPromptSubmit is a user turn.
 	reopenTurn := fs.Bool("reopen", false, "prompt-drain: this turn was opened by a stop-rewake reopen; keep the block budget")
+	// stop-rewake only: false is the Pi waiter armed by the settle of the guard's own follow-up (firstmate's
+	// once-per-logical-run latch, fm-primary-turnend-guard.ts): it waits for wakes without running the guard again.
+	runGuard := fs.Bool("guard", true, "stop-rewake: run the turn-boundary watcher guard before waiting")
 	if err := fs.Parse(args[1:]); err != nil {
 		return 2
 	}
@@ -56,11 +59,11 @@ func cmdHook(args []string) int {
 	case "prompt-drain":
 		return hookPromptDrain(*epicDir, *harnessName, *reopenTurn)
 	case "stop-rewake":
-		return hookStopRewake(*epicDir, *harnessName)
+		return hookStopRewake(*epicDir, *harnessName, *runGuard)
 	case "precompact":
-		return hookLeaderCheckpoint("precompact", *epicDir, *story, *worktree, hookPreCompact)
+		return hookLeaderCheckpoint("precompact", *epicDir, *story, *worktree, *harnessName, hookPreCompact)
 	case "session-start":
-		return hookLeaderCheckpoint("session-start", *epicDir, *story, *worktree, hookSessionStart)
+		return hookLeaderCheckpoint("session-start", *epicDir, *story, *worktree, *harnessName, hookSessionStart)
 	default:
 		fmt.Fprintf(os.Stderr, "cox hook: unknown hook %q\n", name)
 		return 2
@@ -178,7 +181,7 @@ func mustCwd() string {
 // narrows to that one checkpoint. Otherwise it resolves the workspace and runs the hook for the leader checkpoint
 // (_leader) of every active epic, best-effort: one epic's checkpoint failure must not crash the leader's turn. Outside a
 // workspace it prints one line and exits 0.
-func hookLeaderCheckpoint(name, epicDir, story, worktree string, fn func(epicDir, story, worktree string) int) int {
+func hookLeaderCheckpoint(name, epicDir, story, worktree, harnessName string, fn func(epicDir, story, worktree string) int) int {
 	if epicDir != "" && story != "" {
 		return fn(epicDir, story, worktree)
 	}
@@ -191,6 +194,10 @@ func hookLeaderCheckpoint(name, epicDir, story, worktree string, fn func(epicDir
 	// take over is surfaced as the repair line in the session context.
 	if name == "session-start" {
 		guardWatchersSessionStart(guardEpics(epicDir), os.Stdout, os.Stderr)
+		// The leader's session-start digest (w2-bearings, firstmate fm-session-start.sh) for the workspace.
+		if ws, err := findWorkspaceRoot("."); err == nil {
+			_ = bearingsSessionStart(ws, sessionStartSource(os.Stdin), harnessName, os.Stdout)
+		}
 	}
 	st := story
 	if st == "" {
@@ -233,11 +240,10 @@ func hookPromptDrain(epicDir, harnessName string, reopenTurn bool) int {
 	if !in {
 		return outsideWorkspace("prompt-drain")
 	}
-	// A user turn is starting, so the turn-boundary guard's block budget resets here (item 1). A turn a reopen opened
-	// (Pi) keeps it: the budget bounds a reopen episode, not one harness turn (finding 8).
-	if !reopenTurn {
-		resetRewakeBlocks(os.Getenv("ORCA_TERMINAL_HANDLE"))
-	}
+	// The turn-boundary block budget is NOT reset by a prompt (firstmate: only positive watcher recovery clears the
+	// budget, the failure notice and the alarm together; supersedes ADR 0014's per-turn reset). --reopen stays accepted
+	// for the Pi extension that passes it.
+	_ = reopenTurn
 	return runPromptDrainAll(filterLeaderEpics(epics), harnessName, os.Stdin, os.Stdout, os.Stderr)
 }
 
@@ -402,12 +408,24 @@ var hookStdinWait = time.Second
 // terminal, not the hook envelope, or silent past hookStdinWait (so a manual `cox hook prompt-drain` is harmless and an
 // open, never-closed stdin pipe never blocks the hook).
 func hookPrompt(in io.Reader) string {
+	var p struct {
+		Prompt string `json:"prompt"`
+	}
+	if json.Unmarshal(hookStdin(in), &p) == nil {
+		return p.Prompt
+	}
+	return ""
+}
+
+// hookStdin reads a hook envelope from stdin, or nil when stdin is absent, a terminal, empty, or silent past
+// hookStdinWait (an open, never-closed pipe never blocks the hook).
+func hookStdin(in io.Reader) []byte {
 	if in == nil {
-		return ""
+		return nil
 	}
 	if f, ok := in.(*os.File); ok {
 		if fi, err := f.Stat(); err == nil && fi.Mode()&os.ModeCharDevice != 0 {
-			return "" // an interactive terminal: no envelope will ever arrive
+			return nil // an interactive terminal: no envelope will ever arrive
 		}
 	}
 	got := make(chan []byte, 1)
@@ -415,22 +433,12 @@ func hookPrompt(in io.Reader) string {
 		b, _ := io.ReadAll(io.LimitReader(in, 1<<20))
 		got <- b
 	}()
-	var b []byte
 	select {
-	case b = <-got:
+	case b := <-got:
+		return b
 	case <-time.After(hookStdinWait):
-		return "" // ponytail: the reader goroutine is abandoned; the hook process exits right after
+		return nil // ponytail: the reader goroutine is abandoned; the hook process exits right after
 	}
-	if len(b) == 0 {
-		return ""
-	}
-	var p struct {
-		Prompt string `json:"prompt"`
-	}
-	if json.Unmarshal(b, &p) == nil {
-		return p.Prompt
-	}
-	return ""
 }
 
 // hookStopRewake (Stop, asyncRewake): while the leader is idle, wait for a watcher wake in the durable queue, then exit
@@ -438,7 +446,7 @@ func hookPrompt(in io.Reader) string {
 // terminal (a lock file); an urgent wake rewakes at once, routine wakes (status/stale/quiet/unknown_probe) batch up to
 // WAKE_BATCH so several cost one turn; on MAX_WAIT with no wake, a still-open dispatched story ticks (exit 2) so the
 // next turn re-arms the waiter, otherwise the leader stays idle (exit 0).
-func hookStopRewake(epicDir, harnessName string) int {
+func hookStopRewake(epicDir, harnessName string, runGuard bool) int {
 	epics, in := leaderEpics(epicDir)
 	if !in {
 		return outsideWorkspace("stop-rewake")
@@ -446,15 +454,23 @@ func hookStopRewake(epicDir, harnessName string) int {
 	epics = filterLeaderEpics(epics)
 	// The guard set (open-story epics regardless of watcher liveness) is computed before the single-waiter lock and the
 	// len(epics)==0 return, so a dead-watcher epic - which activeEpics hides - is still guarded (item 1).
-	guard := guardEpics(epicDir)
+	var guard []string
+	if runGuard {
+		guard = guardEpics(epicDir)
+	}
 	handle := os.Getenv("ORCA_TERMINAL_HANDLE")
+	payload := readStopPayload(os.Stdin)
 	if handle != "" {
 		lock := filepath.Join(tmpDir(), "cox-rewake-"+handle+".lock")
-		if rewakeWaiterAlive(lock) {
+		if rewakeWaiterAlive(lock, guard) {
 			return 0 // another waiter already runs for this terminal
 		}
-		if err := os.WriteFile(lock, []byte(strconv.Itoa(os.Getpid())), 0o644); err == nil {
-			defer os.Remove(lock)
+		if err := os.WriteFile(lock, []byte(fmt.Sprintf("%d\n%s\n", os.Getpid(), identityOf(os.Getpid()))), 0o644); err == nil {
+			defer func() {
+				if pid, _, _ := lockHolder(lock); pid == os.Getpid() {
+					_ = os.Remove(lock)
+				}
+			}()
 		}
 	}
 	return runStopRewake(rewakeCfg{
@@ -467,8 +483,45 @@ func hookStopRewake(epicDir, harnessName string) int {
 		out:        os.Stderr,
 		stdout:     os.Stdout,
 		sleep:      time.Sleep,
-		blocksPath: rewakeBlocksPath(handle),
+		session:    nonEmpty(payload.SessionID, nonEmpty(handle, "unknown")),
+		stopActive: payload.StopHookActive,
 	})
+}
+
+// sessionStartSource is the SessionStart envelope's source (startup, resume, compact, clear), "startup" when absent.
+func sessionStartSource(in io.Reader) string {
+	var p struct {
+		Source string `json:"source"`
+	}
+	if json.Unmarshal(hookStdin(in), &p) == nil && p.Source != "" {
+		return p.Source
+	}
+	return "startup"
+}
+
+// stopPayload is the Stop hook envelope fields the guard reads: the session the block budget is keyed on and the loop
+// guard (firstmate reads `stopHookActive` first when it is a boolean, else `stop_hook_active`).
+type stopPayload struct {
+	SessionID      string
+	StopHookActive bool
+}
+
+// readStopPayload reads the Stop envelope from stdin, bounded like hookPrompt; an absent or malformed envelope reads as
+// the zero payload (no loop guard, the terminal handle as the session).
+func readStopPayload(in io.Reader) stopPayload {
+	raw := hookStdin(in)
+	var m map[string]any
+	if json.Unmarshal(raw, &m) != nil {
+		return stopPayload{}
+	}
+	var p stopPayload
+	p.SessionID, _ = m["session_id"].(string)
+	if v, ok := m["stopHookActive"].(bool); ok {
+		p.StopHookActive = v
+	} else if v, ok := m["stop_hook_active"].(bool); ok {
+		p.StopHookActive = v
+	}
+	return p
 }
 
 // rewakeCfg is the stop-rewake loop's inputs, injected so the loop is unit-tested without real waiting (sleep is a
@@ -486,9 +539,10 @@ type rewakeCfg struct {
 	// launch restarts a dead epic watcher (the startWatcher-equivalent). nil => launchWatcher; a test injects a stub so
 	// no real process is spawned and the refused path is exercised (item 1).
 	launch func(epicDir string) error
-	// blocksPath is the per-terminal turn block-budget file (cox-rewake-<handle>.blocks). "" disables the budget (no
-	// handle to key it), so a block always reopens; a test sets it to a temp file to exercise the wedge release (item 1).
-	blocksPath string
+	// session keys the Claude block budget (the Stop payload's session_id, else the terminal handle); "" = "unknown".
+	session string
+	// stopActive is the Stop payload's loop guard: in the default (codex, pi) mode a true value allows the stop.
+	stopActive bool
 }
 
 // reopen ends the idle wait by opening a new turn: codex reads a stdout block decision (exit 0), every other harness
@@ -501,11 +555,6 @@ func (cfg rewakeCfg) reopen(msg string) int {
 	fmt.Fprint(cfg.out, msg)
 	return 2
 }
-
-// rewakeBlockBudget is how many times one turn may block on a dead-and-unrestartable watcher before the guard gives up
-// and lets the turn end (exit 0 with a warning), so a broken watcher can never wedge the leader (item 1, firstmate's
-// FM_CLAUDE_TURNEND_BLOCK_BUDGET). The budget resets when the next turn's prompt-drain runs.
-const rewakeBlockBudget = 3
 
 // runStopRewake is the testable core: first guard every led epic's watcher (item 1), then peek every led epic's wake
 // queue each poll up to maxWait and decide the tick.
@@ -554,39 +603,62 @@ func runStopRewake(cfg rewakeCfg) int {
 	return 0
 }
 
-// guardWatchers is the turn-boundary guard (item 1): before the leader waits, every led epic with an open story must
-// have a live, fresh watcher, or a leader turn ends blind over a dead watcher (the recurring "watcher dead, N stories
-// active" doctor ISSUE). For each such epic it restarts a dead watcher (the startWatcher-equivalent); a restart that
-// cannot take over (a live-but-wedged watcher, or a launch error) reopens the turn with the repair line so the leader
-// runs `cox watch --epic <dir> --replace`. That block is charged against a per-turn budget: once the budget is
-// exhausted the guard lets the turn end (exit 0 with a warning) so a broken watcher never wedges the leader. It returns
-// (exit code, proceed): proceed=true means run the wait loop; proceed=false means return the code now.
+// guardWatchers is the turn-boundary guard (item 1, firstmate bin/fm-turnend-guard.sh + bin/fm-claude-stop-autoarm.sh):
+// before the leader waits, every led epic that needs supervision must have a live, identity-matched watcher with a
+// fresh beacon, or the turn would end blind. Claude (the default harness) runs firstmate's --claude contract per epic:
+// the Stop auto-arm (restart, generation ledger, one failure notice) and then the cooperative guard (bounded block
+// budget, the one verified attended fail-open). Codex and Pi run firstmate's default mode: the restart, then a block
+// that a loop-guarded retry (stop_hook_active) always allows, so a turn is forced at most once. It returns
+// (exit code, proceed): proceed=true means run the wait loop.
 func (cfg rewakeCfg) guardWatchers() (code int, proceed bool) {
-	restarted := false
-	var blocked []string
+	claude := cfg.harness != "codex" && cfg.harness != "pi"
+	session := nonEmpty(cfg.session, "unknown")
+	var text strings.Builder
+	var sys bytes.Buffer
+	reopen, failOpen, loopGuarded := false, false, false
 	for _, ep := range cfg.guardEpics {
 		if watcherHealthy(ep, time.Now()) {
+			if claude && !failureEpisodeReset(ep, false) {
+				reopen = true // reset contention: continue silently, the episode state is preserved for the retry
+			}
 			continue
 		}
-		if err := cfg.launchWatcher(ep); err == nil {
-			fmt.Fprintf(cfg.out, "cox: watcher for %s was not alive; restarted it (cox watch --epic %s)\n", filepath.Base(ep), ep)
-			restarted = true
+		open := 0
+		if o, err := watch.OpenStories(ep); err == nil {
+			open = len(o)
+		}
+		if !claude {
+			if cfg.launchWatcher(ep) == nil || watcherHealthy(ep, time.Now()) {
+				continue
+			}
+			if cfg.stopActive {
+				loopGuarded = true // the loop-guarded retry: never block twice in one turn; this Stop ends here
+				continue
+			}
+			text.WriteString(blockText(ep, open, false))
+			reopen = true
 			continue
 		}
-		blocked = append(blocked, ep)
-	}
-	if len(blocked) > 0 {
-		count := bumpRewakeBlocks(cfg.blocksPath)
-		if cfg.blocksPath != "" && count > rewakeBlockBudget {
-			fmt.Fprintf(cfg.out, "cox: watcher for %s still not alive after %d blocks this turn; ending the turn to avoid a wedge - run: cox watch --epic %s --replace\n",
-				filepath.Base(blocked[0]), count-1, blocked[0])
-			return 0, false
+		armCode, healthy := runClaudeAutoarm(ep, cfg.launchWatcher, &text)
+		if healthy {
+			reopen = reopen || armCode == 2
+			continue
 		}
-		return cfg.reopen(rewakeRepairMsg(blocked)), false
+		before := sys.Len()
+		guardCode := runClaudeGuard(ep, session, open, &text, &sys)
+		if sys.Len() > before && guardCode == 0 {
+			failOpen = true // the one attended fail-open ends this turn; no automatic continuation defeats it
+			continue
+		}
+		reopen = reopen || armCode == 2 || guardCode == 2
 	}
-	if restarted {
-		// A freshly restarted watcher now delivers wakes and rings the doorbell; end the turn (exit 0) so the leader is not
-		// held waiting on a watcher this same turn spawned, and the next Stop re-arms the waiter over the live watcher.
+	if sys.Len() > 0 {
+		_, _ = cfg.stdout.Write(sys.Bytes())
+	}
+	if reopen {
+		return cfg.reopen(text.String()), false
+	}
+	if failOpen || loopGuarded {
 		return 0, false
 	}
 	return 0, true
@@ -648,20 +720,11 @@ func launchWatcher(epicDir string) error {
 	}
 }
 
-// watcherHealthy reports whether the epic's watcher is alive AND fresh: its watch.pid names a live process and
-// watch/lasttick was written within 3 tick intervals (watch.DefaultPoll, the same constant the loop uses). A live
-// watcher whose beacon has gone stale is unhealthy (wedged), exactly as a dead one is (item 1).
-func watcherHealthy(epicDir string, now time.Time) bool {
-	pid := readPid(watchPidPath(epicDir))
-	if pid <= 0 || !processAlive(pid) {
-		return false
-	}
-	info, err := os.Stat(filepath.Join(epicDir, controlDir, "watch", "lasttick"))
-	if err != nil {
-		return false
-	}
-	return now.Sub(info.ModTime()) < 3*watch.DefaultPoll
-}
+// watcherHealthy is firstmate's PID-strict fm_watcher_healthy: watch.pid names a live process whose identity matches
+// the .cox/watch.identity sidecar (an identityless or reused pid is not a watcher) and watch/lasttick is younger than
+// the poll-derived grace max(300s, poll+60s) (fm_poll_derived_grace; supersedes ADR 0014's 3 x poll). A live watcher
+// whose beacon has gone stale is wedged, exactly as a dead one is.
+func watcherHealthy(epicDir string, now time.Time) bool { return watch.Healthy(epicDir, now, 0) }
 
 // rewakeRepairMsg is the reopen text naming every blocked epic and the exact repair command.
 func rewakeRepairMsg(blocked []string) string {
@@ -670,38 +733,6 @@ func rewakeRepairMsg(blocked []string) string {
 		fmt.Fprintf(&b, "Watcher for %s is not alive; run: cox watch --epic %s --replace\n", filepath.Base(ep), ep)
 	}
 	return b.String()
-}
-
-// rewakeBlocksPath is the per-terminal turn block-budget file, or "" when there is no ORCA_TERMINAL_HANDLE to key it on
-// (the budget is best-effort, like the single-waiter lock).
-func rewakeBlocksPath(handle string) string {
-	if handle == "" {
-		return ""
-	}
-	return filepath.Join(tmpDir(), "cox-rewake-"+handle+".blocks")
-}
-
-// bumpRewakeBlocks increments and returns the per-turn block count. An empty path (no handle) returns 1 so a block
-// always reopens (no wedge protection without a handle, but never a false wedge-release either).
-func bumpRewakeBlocks(path string) int {
-	if path == "" {
-		return 1
-	}
-	n := 0
-	if b, err := os.ReadFile(path); err == nil {
-		n, _ = strconv.Atoi(strings.TrimSpace(string(b)))
-	}
-	n++
-	_ = os.WriteFile(path, []byte(strconv.Itoa(n)), 0o644)
-	return n
-}
-
-// resetRewakeBlocks clears the per-turn block budget. prompt-drain calls it at the start of a real turn so each turn
-// starts with a full budget (item 1).
-func resetRewakeBlocks(handle string) {
-	if p := rewakeBlocksPath(handle); p != "" {
-		_ = os.Remove(p)
-	}
 }
 
 // drainAll peeks every epic's unacked wakes and returns them merged (each wake carries its own epic name). A per-epic
@@ -754,17 +785,24 @@ func tmpDir() string {
 	return "/tmp"
 }
 
-// rewakeWaiterAlive reports whether the lock file names a still-running process (v1's `kill -0` single-waiter guard).
-func rewakeWaiterAlive(lock string) bool {
-	b, err := os.ReadFile(lock)
-	if err != nil {
+// rewakeWaiterAlive reports whether the single-waiter lock names a live waiter still owning this terminal's wait: its
+// pid is alive, the identity it recorded recomputes and matches (a reused or identityless pid is not a waiter), and it
+// is not stuck - the lock and every guarded epic's beacon older than the grace prove a waiter hung over a dead watcher
+// (firstmate fm_autoarm_claim_open). Anything else is reclaimed by this Stop, never trusted blind.
+func rewakeWaiterAlive(lock string, guard []string) bool {
+	pid, identity, _, ok := lockRecord(lock) // the waiter lock records "pid\nidentity"
+	if !ok || pid <= 0 || !processAlive(pid) || identity == "" || identityOf(pid) != identity {
 		return false
 	}
-	pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
-	if err != nil || pid <= 0 {
-		return false
+	if pathAge(lock) < watch.DefaultGrace {
+		return true
 	}
-	return syscall.Kill(pid, 0) == nil
+	for _, ep := range guard {
+		if pathAge(beaconPath(ep)) < watch.DefaultGrace {
+			return true
+		}
+	}
+	return len(guard) == 0
 }
 
 // hookPreCompact (PreCompact): compute checkpoint facts and refresh them in the handoff so the post-compaction session

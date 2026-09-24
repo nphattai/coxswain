@@ -92,7 +92,8 @@ test("real cox: leader first turn drains a real wake, precompact writes the lead
     await new Promise((r) => setTimeout(r, 1000)); // the real session-start hook has answered
     await withDeadline(s2.prompt("you are the leader again"), 20000, "the restarted leader turn");
     await withDeadline(s2.idle(), 20000, "settling the restarted turn");
-    assert.equal(s2.texts().filter((t) => t.includes("_leader")).length, 1, `the leader checkpoint is injected once: ${JSON.stringify(s2.texts())}`);
+    // Count the checkpoint header itself: the session-start digest's wake queue may also name _leader wakes.
+    assert.equal(s2.texts().filter((t) => t.includes("Checkpoint for story _leader")).length, 1, `the leader checkpoint is injected once: ${JSON.stringify(s2.texts())}`);
     assert.deepEqual(s2.runtimeErrors, []);
     await s2.emit("session_shutdown", {});
   } finally {

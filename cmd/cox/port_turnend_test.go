@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -206,7 +207,7 @@ func fmStopHook(t *testing.T, epic string, lockPid, blocks int) (int, string) {
 	if blocks > 0 {
 		mustWrite(t, rewakeBlocksPath("fm-leader"), strconv.Itoa(blocks))
 	}
-	return fmCapture(t, func() int { return hookStopRewake(epic, "claude") })
+	return fmCapture(t, func() int { return hookStopRewake(epic, "claude", true) })
 }
 
 // fmCapture runs fn with os.Stdin at /dev/null and os.Stdout/os.Stderr redirected to a temp file, returning fn's
@@ -579,14 +580,14 @@ func fmTurnendGuard(t *testing.T) {
 	// n/a: opencode_plugin_anchors_guard_to_worktree (fm: tests/fm-turnend-guard.test.sh:1002) - cox has no OpenCode harness.
 	// fm: tests/fm-turnend-guard.test.sh:1061
 	t.Run("pi_extension_injects_once_per_logical_agent_run", func(t *testing.T) {
-		// Cox's Pi turn-end guard is the TypeScript extension internal/adapter/harness/pi/extension/cox-supervisor.ts,
-		// which this story's Go files cannot drive; the case stays red until it is ported into that extension's suite.
-		notImplemented(t, "Pi guard extension case not yet ported: translate into the cox-supervisor.ts node suite")
+		// Cox's Pi turn-end guard is the TypeScript extension (cox-pi.ts + cox-supervisor.ts); the case is translated
+		// into that extension's node suite (captain ruling 2026-09-24) and run from here by name.
+		fmPiNodeCase(t, "FM/fm-turnend-guard/pi_extension_injects_once_per_logical_agent_run")
 	})
 
 	// fm: tests/fm-turnend-guard.test.sh:1128
 	t.Run("pi_extension_retries_after_followup_delivery_failure", func(t *testing.T) {
-		notImplemented(t, "Pi guard extension case not yet ported: translate into the cox-supervisor.ts node suite")
+		fmPiNodeCase(t, "FM/fm-turnend-guard/pi_extension_retries_after_followup_delivery_failure")
 	})
 
 	// --- --claude cooperative mode ---
@@ -867,6 +868,26 @@ func fmTurnendGuard(t *testing.T) {
 		fmBeacon(t, epic, 400*time.Second)
 		fmWantBlock(t, fmGuard(t, epic, launchWatcher, fmBlocks(t)), epic, "400s-old beacon")
 	})
+}
+
+// fmPiNodeCase runs one translated case of the Pi extension's node suite (cox-supervisor.test.ts) by its exact name,
+// with the cox/Orca session env stripped so a case never reads the caller's terminal. The case must run and pass.
+func fmPiNodeCase(t *testing.T, name string) {
+	t.Helper()
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Fatalf("node is required to run the Pi guard case %s: %v", name, err)
+	}
+	suite := filepath.Join("..", "..", "internal", "adapter", "harness", "pi", "extension", "cox-supervisor.test.ts")
+	cmd := exec.Command("node", "--test", "--test-timeout=60000", "--test-name-pattern=^"+regexp.QuoteMeta(name)+"$", suite)
+	for _, kv := range os.Environ() {
+		if !strings.HasPrefix(kv, "COX_") && !strings.HasPrefix(kv, "ORCA_") {
+			cmd.Env = append(cmd.Env, kv)
+		}
+	}
+	out, err := cmd.CombinedOutput()
+	if err != nil || !strings.Contains(string(out), "# pass 1\n") || !strings.Contains(string(out), "# fail 0\n") {
+		t.Fatalf("Pi guard case %s did not pass in the node suite (err %v):\n%s", name, err, out)
+	}
 }
 
 // fmBanner is cox's pull-side watcher-down warning: the ISSUE line `cox doctor` and `cox state` print for an epic

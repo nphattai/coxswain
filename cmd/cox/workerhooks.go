@@ -48,7 +48,8 @@ func busyRecordEnabled(harnessName string, pol *workspace.Policy) bool {
 // writeWorkerBusyHooks writes the worker-side busy-state hooks into the story worktree's harness settings, so a
 // dispatched worker reports its own idle/busy through the busy record (DESIGN wave-2 item 6). The hooks Apply against
 // the gen armed at dispatch, threaded to the worker as $COX_BUSY_GEN in the launch env: UserPromptSubmit -> busy,
-// Stop -> idle, SessionEnd -> retire. Every command ends with `|| true` so a refused Apply (a stale gen after a re-arm,
+// Stop, StopFailure (Claude's API-error turn end) and SessionEnd -> idle, as firstmate's fm-spawn wires them, so an
+// abnormal turn end can never strand the record busy. Every command ends with `|| true` so a refused Apply (a stale gen after a re-arm,
 // or a source the harness stops trusting) never breaks the harness lifecycle, and calls ${COX_BIN:-cox} so a worker
 // runs the SAME cox that launched it (the driver Orca pins on the worker PATH may predate `cox busy`). It merges into any
 // existing settings like writeLeaderHooks does (idempotent: a re-dispatch replaces cox's own busy groups, keeps the
@@ -58,7 +59,7 @@ func writeWorkerBusyHooks(harnessName, wtPath, epicDir, story string) error {
 	if path == "" {
 		return nil // this harness reports busy some other way (e.g. pi's extension); no settings file to write
 	}
-	if err := mergeWorkerHookFile(path, busyHookGroups(epicDir, story, source)); err != nil {
+	if err := mergeWorkerHookFile(path, busyHookGroups(harnessName, epicDir, story, source)); err != nil {
 		return err
 	}
 	// The hook file is cox runtime, not the worker's deliverable. In THIS repo the path is gitignored, but a product repo
@@ -67,6 +68,46 @@ func writeWorkerBusyHooks(harnessName, wtPath, epicDir, story string) error {
 	// via the repo's shared info/exclude (never committed), keeping the worktree clean without touching .gitignore.
 	excludeFromGitIfNeeded(wtPath, path)
 	return nil
+}
+
+// unwireWorkerBusy retires the prior incarnation's worker busy hooks from the worktree before a relaunch arms the
+// replacement (firstmate fm_control_harness_wiring_paths + fm-spawn.sh "could not retire <harness> wiring"), so a
+// harness switch leaves no hook applying against a retired gen. Firstmate owns the whole settings file and deletes it;
+// cox merges into it, so only cox's busy entries go, and the file only when nothing else is left in it.
+func unwireWorkerBusy(harnessName, wtPath string) error {
+	path, _ := workerHookTarget(harnessName, wtPath)
+	if path == "" {
+		return nil
+	}
+	orig, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	doc := map[string]any{}
+	if err := json.Unmarshal(orig, &doc); err != nil {
+		return fmt.Errorf("parse %s: %w", path, err)
+	}
+	hooksMap, _ := doc["hooks"].(map[string]any)
+	for event, v := range hooksMap {
+		if kept := withoutBusyGroups(v); len(kept) > 0 {
+			hooksMap[event] = kept
+		} else {
+			delete(hooksMap, event)
+		}
+	}
+	if len(hooksMap) == 0 {
+		delete(doc, "hooks")
+	}
+	if len(doc) == 0 {
+		return os.Remove(path)
+	}
+	out, err := marshalSettings(doc)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, out, 0o644)
 }
 
 // workerHookTarget maps a harness to its worker settings file inside the worktree and the trusted source token its
@@ -119,22 +160,27 @@ func excludeFromGitIfNeeded(wtPath, absPath string) {
 	fmt.Fprintln(f, rel)
 }
 
-// busyHookGroups builds the three per-event busy hook groups (Claude Code settings shape: event -> [{hooks:[{type,command}]}]).
-// The epic and story are fixed at dispatch and rendered literally; the gen is $COX_BUSY_GEN from the launch env.
-func busyHookGroups(epicDir, story, source string) map[string][]any {
+// busyHookGroups builds the per-event busy hook groups (Claude Code settings shape: event -> [{hooks:[{type,command}]}]).
+// The epic and story are fixed at dispatch and rendered literally; the gen is $COX_BUSY_GEN from the launch env. Every
+// closing event applies idle (firstmate fm-busy-adapter-wiring claude_hooks_semantic_lifecycle): SessionEnd is a turn
+// end like Stop, not a retire, and Claude's StopFailure closes an API-error turn that fires no Stop.
+func busyHookGroups(harnessName, epicDir, story, source string) map[string][]any {
 	apply := func(state, event string) string {
 		return fmt.Sprintf(`${COX_BIN:-cox} busy apply %s --epic %q --story %q --gen "$COX_BUSY_GEN" --source %s --event %s || true`,
 			state, epicDir, story, source, event)
 	}
-	retire := fmt.Sprintf(`${COX_BIN:-cox} busy retire --epic %q --story %q --gen "$COX_BUSY_GEN" || true`, epicDir, story)
 	group := func(cmd string) []any {
 		return []any{map[string]any{"hooks": []any{map[string]any{"type": "command", "command": cmd}}}}
 	}
-	return map[string][]any{
+	groups := map[string][]any{
 		"UserPromptSubmit": group(apply("busy", "prompt")),
 		"Stop":             group(apply("idle", "stop")),
-		"SessionEnd":       group(retire),
+		"SessionEnd":       group(apply("idle", "session-end")),
 	}
+	if harnessName == "claude" {
+		groups["StopFailure"] = group(apply("idle", "stop-failure"))
+	}
+	return groups
 }
 
 // mergeWorkerHookFile reads the settings file (creating it when absent), strips cox's own busy hook entries from each

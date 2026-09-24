@@ -39,7 +39,7 @@ func hookCommand(t *testing.T, hooks map[string]any, event string) string {
 	return inner[0].(map[string]any)["command"].(string)
 }
 
-// armWorkerBusy on a Claude story arms the busy record and writes the three worker busy hooks into the worktree's
+// armWorkerBusy on a Claude story arms the busy record and writes the four worker busy hooks into the worktree's
 // .claude/settings.local.json, each running `cox busy apply|retire` with the gen from $COX_BUSY_GEN and the claude-hook source.
 // On the base sha there is no armWorkerBusy/worker-hook writer and the Claude card does not report busy state, so a
 // dispatched Claude worker never wrote a busy record - this is the behavior that changed.
@@ -66,8 +66,10 @@ func TestArmWorkerBusyClaudeWritesHooks(t *testing.T) {
 	if stop := hookCommand(t, hooks, "Stop"); !strings.Contains(stop, "busy apply idle") || !strings.Contains(stop, "--event stop") {
 		t.Errorf("Stop command = %q, want busy apply idle --event stop", stop)
 	}
-	if end := hookCommand(t, hooks, "SessionEnd"); !strings.Contains(end, "busy retire") || !strings.Contains(end, "$COX_BUSY_GEN") {
-		t.Errorf("SessionEnd command = %q, want busy retire with the env gen", end)
+	for ev, want := range map[string]string{"StopFailure": "--event stop-failure", "SessionEnd": "--event session-end"} {
+		if c := hookCommand(t, hooks, ev); !strings.Contains(c, "busy apply idle") || !strings.Contains(c, want) || !strings.Contains(c, "$COX_BUSY_GEN") {
+			t.Errorf("%s command = %q, want busy apply idle %s with the env gen", ev, c, want)
+		}
 	}
 }
 
@@ -106,6 +108,37 @@ func TestWorkerBusyHooksIdempotentAndPreservesUserHooks(t *testing.T) {
 	}
 	if !userKept {
 		t.Error("the user's own UserPromptSubmit hook was dropped")
+	}
+}
+
+// A relaunch unwires only cox's busy entries: a user's own hook survives, and a file holding nothing but cox's hooks is
+// removed (firstmate fm_control_harness_wiring_paths).
+func TestUnwireWorkerBusyKeepsUserHooks(t *testing.T) {
+	wt := t.TempDir()
+	path := filepath.Join(wt, ".claude", "settings.local.json")
+	mustWrite(t, path, `{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"echo mine"}]}]}}`)
+	if err := writeWorkerBusyHooks("claude", wt, "/epic", "s1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := unwireWorkerBusy("claude", wt); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(path)
+	if strings.Contains(string(b), "busy apply") || !strings.Contains(string(b), "echo mine") {
+		t.Fatalf("unwire must drop cox's busy hooks and keep the user's, got %s", b)
+	}
+	bare := t.TempDir()
+	if err := writeWorkerBusyHooks("claude", bare, "/epic", "s1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := unwireWorkerBusy("claude", bare); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(bare, ".claude", "settings.local.json")); !os.IsNotExist(err) {
+		t.Fatalf("a settings file holding only cox's hooks must be removed, stat err=%v", err)
+	}
+	if err := unwireWorkerBusy("claude", bare); err != nil {
+		t.Fatalf("unwiring an absent file must be a no-op, got %v", err)
 	}
 }
 

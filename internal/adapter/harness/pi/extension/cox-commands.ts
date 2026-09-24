@@ -24,7 +24,10 @@ export const coxArgs = {
   // reopen/repair text on stderr (the extension reads the exit code itself) and, at MAX_WAIT, exits 0 instead of a tick
   // turn (the extension re-arms its own waiter). No --max: the Go side owns batch timing. Unbound (no --epic) waits on
   // every active epic and runs the turn-boundary watcher guard (item 1).
-  stopRewake: (epic: string): string[] => withEpic(["hook", "stop-rewake", "--harness", "pi"], epic),
+  // guard=false is the waiter armed by the settle of the guard's own follow-up (firstmate's once-per-logical-run latch):
+  // it waits for wakes without running the turn-end guard again.
+  stopRewake: (epic: string, guard = true): string[] =>
+    withEpic(["hook", "stop-rewake", "--harness", "pi", ...(guard ? [] : ["--guard=false"])], epic),
 
   // precompact PERSISTS the checkpoint before Pi summarizes context: `cox hook precompact` writes
   // <epic>/handoffs/<story>.md, whereas `cox checkpoint facts` only prints the facts to stdout (which the extension
@@ -35,7 +38,11 @@ export const coxArgs = {
   // sessionStart injects the saved checkpoint on session start THROUGH the hook, which computes the current git HEAD from
   // the worktree so the CHECKPOINT STALE freshness check runs. `cox checkpoint inject` without --head has an empty HEAD
   // and silently suppresses that warning. Unbound (empty epic/story) is the workspace path.
-  sessionStart: (epic: string, story: string, worktree: string): string[] => checkpointArgs("session-start", epic, story, worktree),
+  sessionStart: (epic: string, story: string, worktree: string): string[] => [
+    ...checkpointArgs("session-start", epic, story, worktree),
+    "--harness",
+    "pi",
+  ],
 
   // busyApply reports the harness-owned busy state (DESIGN wave-3 item 2): `cox busy apply <story> <state> --gen G
   // --source pi-ext --event E --epic <dir>`. The gen is the one armed at dispatch (COX_BUSY_GEN); a stale gen is
