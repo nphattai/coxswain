@@ -2347,3 +2347,292 @@ func TestPortTriageD(t *testing.T) {
 		notImplemented(t, pDMechWaitCadence)
 	})
 }
+
+// Mechanism names for the report's red list (strings shared with the translated triage parts).
+const (
+	pPMechFold      = "decision fold: open/close decisions by [key=] across a worker's status history"
+	pPMechRecovery  = "recovery triage: a finished (landed) story is not a stale/recovery case"
+	pPMechStaleNote = "stale escalation names the unread steer (the durable instruction the worker never acknowledged)"
+	pPMechReplyRun  = "runaway ladder: a reply already consumed through the question channel is not an unread steer (B-53)"
+	fmProto         = "docs/supervision-protocols/"
+	fmRecovery      = ".agents/skills/stuck-crewmate-recovery/SKILL.md"
+)
+
+// pPDrainDurable pins firstmate's drain contract: a queued wake is re-presented by every drain until the exact
+// ack-through, and is gone after it (durable for idempotent re-handling after an interruption).
+func pPDrainDurable(t *testing.T) {
+	t.Helper()
+	r := newPortRig(t)
+	r.mail("m1", "question", "which base branch?")
+	ws := r.tick()
+	if len(ws) != 1 {
+		t.Fatalf("want one queued wake, got %v", kinds(ws))
+	}
+	for i := 0; i < 2; i++ { // an interrupted leader drains again: the wake is still there
+		again, err := wake.Drain(r.epic, true)
+		portMust(t, err)
+		if len(again) != 1 || again[0].Gen != ws[0].Gen {
+			t.Errorf("drain %d lost the unacked wake: %v", i, kinds(again))
+		}
+	}
+	portMust(t, wake.AckThrough(r.epic, ws[0].Gen))
+	if left, _ := wake.Drain(r.epic, true); len(left) != 0 {
+		t.Errorf("wake survived its ack-through: %v", kinds(left))
+	}
+}
+
+// Protocol docs: each numbered rule with a testable consequence in the watcher/wake queue. Rules whose consequence is
+// the Stop hook, the arm layer, the turn-end guard or the foreground checkpoint are n/a here, owned by
+// cox-supervision-port-turnend (cmd/cox/hook.go, fm-watch-checkpoint, watcher-continuity.md).
+func TestPortProtocols(t *testing.T) {
+	// --- claude.md ---
+	t.Run("FM/protocol-claude/rule-1", func(t *testing.T) {
+		// fm: docs/supervision-protocols/claude.md:4
+		// cox: wake.Drain / AckThrough + decision fold (drain's OPEN DECISIONS / UNREAD STATUS)
+		pPDrainDurable(t)
+		notImplemented(t, pPMechFold) // the drain also lists open decisions and unread status lines to reconcile
+	})
+	// n/a claude.md:6 rule 2 (Stop asyncRewake owns arm/re-arm): owned by cox-supervision-port-turnend
+	// n/a claude.md:9 rule 3 (drain first on a Stop hook feedback wake; no manual re-arm): owned by cox-supervision-port-turnend
+	// n/a claude.md:12 rule 4 (auto-arm FAILED notice handling): owned by cox-supervision-port-turnend
+	// n/a claude.md:13 rule 5 (Stop hook does not claim the home): owned by cox-supervision-port-turnend
+	// n/a claude.md:15 rule 6 (watcher started/attached is proof of one live cycle): owned by cox-supervision-port-turnend
+	t.Run("FM/protocol-claude/rule-7", func(t *testing.T) {
+		// fm: docs/supervision-protocols/claude.md:17
+		// cox: wake queue durability across a watcher restart (the session-lock/guard half is owned by cox-supervision-port-turnend)
+		r := newPortRig(t)
+		r.mail("m1", "question", "which base branch?")
+		if ws := r.tick(); len(ws) != 1 {
+			t.Fatalf("want one wake, got %v", kinds(ws))
+		}
+		// A fresh watcher (the next arm) over the same epic: the actionable event is still queued and not duplicated.
+		r.w = &Watcher{EpicDir: r.epic, Backend: r.b, Now: r.w.Now}
+		r.mb.Queue = r.mb.Queue[:0]
+		r.mail("m1", "question", "which base branch?") // the mailbox re-presents the unacked delivery
+		if ws := r.tick(); len(ws) != 0 {
+			t.Errorf("a restarted watcher re-queued an already-queued event: %v", kinds(ws))
+		}
+		if all, _ := wake.Drain(r.epic, true); len(all) != 1 {
+			t.Errorf("the actionable event did not survive the re-arm: %v", kinds(all))
+		}
+	})
+	// n/a claude.md:20 rule 8 (turn-end guard backstop): owned by cox-supervision-port-turnend
+	t.Run("FM/protocol-claude/rule-9", func(t *testing.T) {
+		// fm: docs/supervision-protocols/claude.md:23
+		// cox: mailPass heartbeat sentinel (never queued)
+		r := newPortRig(t)
+		r.heartbeat("h1")
+		wantAbsorbed(t, r.tick(), "waiting on a parked cycle is silent: a heartbeat is not a wake")
+	})
+
+	// --- codex.md ---
+	t.Run("FM/protocol-codex/rule-1", func(t *testing.T) {
+		// fm: docs/supervision-protocols/codex.md:4
+		// cox: wake.Drain / AckThrough + decision fold
+		pPDrainDurable(t)
+		notImplemented(t, pPMechFold)
+	})
+	// n/a codex.md:6 rule 2 (source the Relay env): relay/X is firstmate-only (DESIGN rule 5)
+	// n/a codex.md:7 rule 3 (first foreground watcher checkpoint): owned by cox-supervision-port-turnend (fm-watch-checkpoint)
+	// n/a codex.md:8 rule 4 (ordinary wake inside the checkpoint): owned by cox-supervision-port-turnend (fm-watch-checkpoint)
+	// n/a codex.md:9 rule 5 (checkpoint timeout, drain anyway): owned by cox-supervision-port-turnend (fm-watch-checkpoint)
+	// n/a codex.md:10 rule 6 (never shell & for supervision): a model-conduct rule; its seatbelt is the arm layer, owned by cox-supervision-port-turnend
+	// n/a codex.md:11 rule 7 (no fm-watch-arm as normal command; PreToolUse seatbelt): owned by cox-supervision-port-turnend
+	// n/a codex.md:13 rule 8 (failure or missing cycle: fresh checkpoint): owned by cox-supervision-port-turnend
+
+	// --- pi.md ---
+	t.Run("FM/protocol-pi/rule-1", func(t *testing.T) {
+		// fm: docs/supervision-protocols/pi.md:4
+		// cox: wake.Drain / AckThrough + decision fold
+		pPDrainDurable(t)
+		notImplemented(t, pPMechFold)
+	})
+	// n/a pi.md:6 rule 2 (both project extensions auto-loaded at session start): owned by cox-supervision-port-session (session-start)
+	// n/a pi.md:7 rule 3 (one initial fm_watch_arm_pi call): owned by cox-supervision-port-turnend
+	// n/a pi.md:10 rule 4 (reclaim the session lock, re-arm): owned by cox-supervision-port-turnend
+	// n/a pi.md:11 rule 5 (extension owns successor launches): owned by cox-supervision-port-turnend
+	// n/a pi.md:12 rule 6 (same-process session replacement retires the prior generation): owned by cox-supervision-port-turnend
+	// n/a pi.md:14 rule 7 (successor verified before the follow-up wake): owned by cox-supervision-port-turnend
+	// n/a pi.md:15 rule 8 (never re-arm on ordinary wakes): owned by cox-supervision-port-turnend
+	// n/a pi.md:16 rule 9 (unexpected child close: bounded retry, failure surfaced): owned by cox-supervision-port-turnend (watcher-continuity)
+	// n/a pi.md:17 rule 10 (missing/failed cycle repair): owned by cox-supervision-port-turnend
+	// n/a pi.md:19 rule 11 (never shell &; seatbelt in the turn-end guard extension): owned by cox-supervision-port-turnend
+	// n/a pi.md:22-36 (the in-process Pi supervision branch, leases, branch outcomes): firstmate-only supervision branch, no cox analog
+	// n/a pi.md:38-40 (extension file locations; session-start reports unloaded extensions): owned by cox-supervision-port-session
+
+	// --- unknown.md (unnumbered: one case per directive line) ---
+	// n/a unknown.md:3-4 (no verified adapter; follow the generic contract): descriptive, no testable consequence
+	// n/a unknown.md:5 (first cycle: drain, then a wait the harness can wake from): the pull wait is owned by cox-supervision-port-turnend (fm-watch-checkpoint)
+	t.Run("FM/protocol-unknown/L6", func(t *testing.T) {
+		// fm: docs/supervision-protocols/unknown.md:6
+		// cox: wake.Drain / AckThrough + decision fold
+		pPDrainDurable(t)
+		notImplemented(t, pPMechFold)
+	})
+	t.Run("FM/protocol-unknown/L7", func(t *testing.T) {
+		// fm: docs/supervision-protocols/unknown.md:7
+		// cox: wake.Drain / AckThrough
+		pPDrainDurable(t)
+	})
+	// n/a unknown.md:8 (arm only with a tracked background mechanism): owned by cox-supervision-port-turnend
+	// n/a unknown.md:9 (bounded foreground wait when unverified): owned by cox-supervision-port-turnend
+	// n/a unknown.md:10 (never shell &): model-conduct rule, owned by cox-supervision-port-turnend
+	// n/a unknown.md:11 (failure: restore the same wait shape): owned by cox-supervision-port-turnend
+	// n/a unknown.md:13 (record verification evidence before promoting a harness): a documentation process, no runtime consequence
+}
+
+// The stuck-crewmate recovery ladder: each rung or rule that names an observable the watcher owns.
+func TestPortStuckCrewmateRecovery(t *testing.T) {
+	const s = "FM/stuck-crewmate-recovery/"
+
+	t.Run(s+"landed-work-is-not-a-recovery-case", func(t *testing.T) {
+		// fm: .agents/skills/stuck-crewmate-recovery/SKILL.md:16
+		// cox: stalePass (heartbeat of a story that is no longer working)
+		r := newPortRig(t)
+		r.heartbeat("h1")
+		r.tick()
+		portMust(t, state.Append(r.epic, state.Event{Epic: filepath.Base(r.epic), Story: portStory, Attempt: 1,
+			Actor: state.Leader, From: state.Working, To: state.Completed, ExternalConfirmed: true}))
+		r.liveness(backend.Unknown) // the finished worker's endpoint is gone
+		r.advance(2 * DefaultStaleMin)
+		ws := r.tick()
+		for _, w := range ws {
+			if w.Story == portStory {
+				t.Errorf("a completed story raised a recovery wake %s: %s", w.Kind, w.Note)
+			}
+		}
+		if len(ws) != 0 {
+			notImplemented(t, pPMechRecovery)
+		}
+	})
+	// n/a SKILL.md:18 (crew-hosted lavish board): lavish is firstmate-only (DESIGN rule 5)
+	// n/a SKILL.md:20 (interrupt/exit/relaunch through the control plane, verified): owned by cox-supervision-port-busy-wake (fm-control*)
+	// n/a SKILL.md:21,30-31 (remote secondmates): secondmates are firstmate-only (DESIGN rule 5)
+	// n/a SKILL.md:22-23 (load harness-adapters; harness recorded in meta): agent reading instruction, no runtime consequence
+	// n/a SKILL.md:27-28 (ordinary kinds vs secondmate): secondmates are firstmate-only
+	t.Run(s+"endpoint-result-is-presence-not-proof", func(t *testing.T) {
+		// fm: .agents/skills/stuck-crewmate-recovery/SKILL.md:33
+		// cox: stalePass F08 (a failed probe raises unknown_probe and never concludes gone)
+		r := newPortRig(t)
+		r.heartbeat("h1")
+		r.tick()
+		r.advance(DefaultStaleMin + time.Minute)
+		r.b.FailNext("Probe", nil)
+		ws := r.tick()
+		found := false
+		for _, w := range ws {
+			if w.Kind == wake.KindUnknownProbe {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("a failed probe on a stale worker did not raise unknown_probe: %v", kinds(ws))
+		}
+		if _, err := os.Stat(filepath.Join(r.epic, state.ControlDir, "watch", "hb", "ctx_"+portStory)); err != nil {
+			t.Errorf("a failed probe dropped the heartbeat (concluded gone): %v", err)
+		}
+	})
+	// n/a SKILL.md:34-35 (read fm-crew-state; an active no-mistakes run stays authoritative): the no-mistakes pipeline is firstmate-only
+	// n/a SKILL.md:37-39 (inspect only the recorded backend/worktree inventory): treehouse/herdr/tmux inventory is firstmate-only
+	// n/a SKILL.md:41-48 (relaunch preconditions: no live owner, same worktree, same identity): owned by cox-supervision-port-busy-wake (fm-control relaunch)
+	// n/a SKILL.md:49 (unreconcilable: leave state intact, report failed/blocked): a leader judgment, no watcher observable
+	// n/a SKILL.md:51-68 (a live crewmate claiming the pipeline dead): the no-mistakes daemon is firstmate-only (DESIGN rule 5)
+
+	t.Run(s+"live-endpoint-rung-1-unread-steer", func(t *testing.T) {
+		// fm: .agents/skills/stuck-crewmate-recovery/SKILL.md:74
+		// cox: inboxLadder stuck note + stale escalation naming the unread steer
+		r := newPortRig(t)
+		r.heartbeat("h1")
+		r.tick()
+		r.steer("rebase onto the epic tip")
+		var stuck []wake.Wake
+		for i := 0; i < 6; i++ { // grace + ringMax rings, each past the grace
+			r.advance(DefaultInboxGrace + time.Second)
+			for _, w := range r.tick() {
+				if w.Kind == wake.KindStuck {
+					stuck = append(stuck, w)
+				}
+			}
+		}
+		if len(stuck) != 1 || !strings.Contains(stuck[0].Note, "001.msg") {
+			t.Errorf("an unacknowledged steer did not escalate once naming its record: %v", stuck)
+		}
+		// The stale wake itself must name the unread instruction.
+		r.liveness(backend.Unknown)
+		r.advance(DefaultStaleMin)
+		named := false
+		for _, w := range r.tick() {
+			if (w.Kind == wake.KindStale || w.Kind == wake.KindUnknownProbe) && strings.Contains(w.Note, "001.msg") {
+				named = true
+			}
+		}
+		if !named {
+			notImplemented(t, pPMechStaleNote)
+		}
+	})
+	t.Run(s+"live-endpoint-rung-2-question-the-brief-answers", func(t *testing.T) {
+		// fm: .agents/skills/stuck-crewmate-recovery/SKILL.md:75
+		// cox: mailPass question -> urgent wake (answered with cox reply)
+		r := newPortRig(t)
+		r.mail("q1", "question", "which base branch should I cut from?")
+		ws := r.tick()
+		wantSurfaced(t, ws, "a worker question reaches the leader")
+		if len(ws) != 1 || ws[0].Kind != wake.KindQuestion {
+			t.Errorf("want one question wake, got %v", kinds(ws))
+		}
+	})
+	t.Run(s+"live-endpoint-rung-3-interrupt-then-redirect", func(t *testing.T) {
+		// fm: .agents/skills/stuck-crewmate-recovery/SKILL.md:76
+		// cox: inboxLadder runaway (interrupt once per window, then the doorbell)
+		r := newPortRig(t)
+		r.liveness(backend.Alive)
+		r.steer("stop looping on the flaky test; skip it and continue")
+		r.advance(DefaultRunawayMin + time.Minute)
+		ws := r.tick()
+		ints := 0
+		for _, c := range r.b.Calls {
+			if c == "Interrupt" {
+				ints++
+			}
+		}
+		if ints != 1 {
+			t.Errorf("want exactly one interrupt of the looping worker, got %d", ints)
+		}
+		runaway := false
+		for _, w := range ws {
+			runaway = runaway || w.Kind == wake.KindRunaway
+		}
+		if !runaway {
+			t.Errorf("the interrupt raised no runaway wake: %v", kinds(ws))
+		}
+		r.advance(time.Minute)
+		r.tick()
+		n := 0
+		for _, c := range r.b.Calls {
+			if c == "Interrupt" {
+				n++
+			}
+		}
+		if n != 1 {
+			t.Errorf("a second interrupt inside the window: %d", n)
+		}
+
+		// B-53: an answer the worker already consumed through the question channel is not a looping signal; the
+		// ladder must not interrupt a working crewmate over it.
+		r2 := newPortRig(t)
+		r2.liveness(backend.Alive)
+		r2.busySet(busy.Busy)
+		r2.reply("answer to q001: use epic/x")
+		r2.advance(DefaultRunawayMin + time.Minute)
+		r2.tick()
+		for _, c := range r2.b.Calls {
+			if c == "Interrupt" {
+				t.Errorf("a consumed reply record interrupted a working worker (B-53)")
+				notImplemented(t, pPMechReplyRun)
+				break
+			}
+		}
+	})
+	// n/a SKILL.md:77-81 rung 4 (relaunch a wedged crewmate with a progress note): owned by cox-supervision-port-busy-wake (fm-control relaunch)
+	// n/a SKILL.md:82 rung 5 (second relaunch fails: write failed, tell the captain): a leader action with no watcher observable
+}
