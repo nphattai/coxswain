@@ -69,7 +69,8 @@ if [ "$after_recs" -gt "$before_recs" ]; then
 else
   no "no new _leader inbox record (did you Send feedback before the timeout?)"
 fi
-if "$COX" wake drain --peek --epic "$EPIC" 2>/dev/null | grep -qE "review_feedback|review_decision"; then
+DRAIN="$("$COX" wake drain --peek --epic "$EPIC" 2>/dev/null)"
+if grep -qE "review_feedback|review_decision" <<<"$DRAIN"; then
   ok "a review wake is queued for the leader"
 else
   no "no review_feedback/review_decision wake queued"
