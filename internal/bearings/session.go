@@ -1,11 +1,14 @@
 package bearings
 
 import (
+	"bytes"
 	"fmt"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/nphattai/coxswain/internal/wake"
 )
 
 // Stages is the digest's ordered stage list; the STARTUP TRUNCATED banner names every stage at and after the one that
@@ -262,29 +265,31 @@ func (s *session) run() {
 	}
 }
 
-// printWakeQueue prints cox wake drain's records for every active epic, the drain annotation, and the generation-bound
-// acknowledgement the leader runs after handling them.
+// printWakeQueue prints cox wake drain's own presentation (wake.Present: the unacked records, the outcome backstop and
+// OPEN DECISIONS, its notices included) for every active epic, then the drain annotation and the generation-bound
+// acknowledgement the leader runs after handling them. The digest never acknowledges.
 func (s *session) printWakeQueue() {
-	p, shown := s.p, 0
+	p, shown := s.p, false
 	for _, ep := range s.epics {
-		ws, err := WakeDrain(ep)
-		if err != nil {
+		var out bytes.Buffer
+		if err := wake.Present(ep, &out, &out, wake.PresentOptions{}); err != nil {
 			p.line(fmt.Sprintf("epic %s: wake queue unreadable: %v", filepath.Base(ep), err))
 			continue
 		}
-		if len(ws) == 0 {
+		ws, _ := WakeDrain(ep)
+		if out.Len() == 0 && len(ws) == 0 {
 			continue
 		}
-		shown += len(ws)
+		shown = true
 		p.line(fmt.Sprintf("epic %s (%s):", filepath.Base(ep), ep))
-		for _, w := range ws {
-			p.line(fmt.Sprintf("[gen %d] %s %s: %s", w.Gen, w.Kind, w.Story, strings.ReplaceAll(w.Note, "\n", " ")))
+		p.raw(strings.TrimRight(out.String(), "\n") + "\n")
+		if len(ws) > 0 {
+			p.line("wake annotation: latest wake-EVENT observed at drain, not current state")
+			p.line("WAKE_ACK_REQUIRED: after handling every record above, acknowledge with:")
+			p.line(fmt.Sprintf("  cox wake ack-through %d --epic %s", ws[len(ws)-1].Gen, ep))
 		}
-		p.line("wake annotation: latest wake-EVENT observed at drain, not current state")
-		p.line("WAKE_ACK_REQUIRED: after handling every record above, acknowledge with:")
-		p.line(fmt.Sprintf("  cox wake ack-through %d --epic %s", ws[len(ws)-1].Gen, ep))
 	}
-	if shown == 0 {
+	if !shown {
 		p.line("(no queued wakes)")
 	}
 }
