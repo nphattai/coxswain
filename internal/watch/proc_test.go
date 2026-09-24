@@ -186,3 +186,30 @@ func TestEvictOnPidfileTakeover(t *testing.T) {
 		t.Fatalf("takeover not evicted: %q", r)
 	}
 }
+
+// A process caught mid-exec reads an empty cmdline for a moment; the identity waits it out (bounded), while a cmdline
+// that stays empty is still unreadable.
+func TestProcIdentityWaitsOutAnExecInProgress(t *testing.T) {
+	root := t.TempDir()
+	old := procRoot
+	procRoot = root
+	defer func() { procRoot = old }()
+	fakeProc(t, root, 4243, "5555")
+	cmdline := filepath.Join(root, "4243", "cmdline")
+	if err := os.WriteFile(cmdline, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		time.Sleep(30 * time.Millisecond)
+		_ = os.WriteFile(cmdline, []byte("sleep\x0060\x00"), 0o644)
+	}()
+	if id, err := ProcIdentity(4243); err != nil || !strings.Contains(id, "=5555 ") {
+		t.Fatalf("an exec in progress was not waited out: %q %v", id, err)
+	}
+	if err := os.WriteFile(cmdline, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ProcIdentity(4243); err == nil {
+		t.Fatal("a permanently empty cmdline was given an identity")
+	}
+}

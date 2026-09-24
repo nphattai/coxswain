@@ -1,5 +1,3 @@
-//go:build port
-
 package watch
 
 // Port tests, wave 1 (story cox-supervision-port-turnend): the watcher-lifecycle half of firstmate's watcher lock,

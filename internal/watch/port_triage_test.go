@@ -1,5 +1,3 @@
-//go:build port
-
 // Port tests (wave 1, cox-supervision-port-triage): firstmate's wake triage translated case by case against cox's
 // watcher passes. Firstmate pinned at 1e0e773 (references/firstmate, read only). Every case is
 // t.Run("FM/<suite>/<case>") with a `// fm: path:line` citation and a `// cox:` mechanism tag; a case whose mechanism

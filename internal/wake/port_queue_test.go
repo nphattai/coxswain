@@ -1,5 +1,3 @@
-//go:build port
-
 // Port tests (wave 1, cox-supervision-port-busy-wake): firstmate's wake-queue and drain suites (fm-wake-queue,
 // fm-wake-drain-unread-status, fm-wake-drain-open-decisions, fm-wake-drain-open-decisions-cursor,
 // fm-wake-drain-outcome-backstop, fm-wake-daemon-lifecycle-e2e) and docs/wedge-alarm.md translated case by case against
@@ -26,6 +24,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -1345,6 +1344,13 @@ func TestPortWedgeAlarm(t *testing.T) {
 	// fm: docs/wedge-alarm.md:15
 	t.Run("FM/wedge-alarm/auto_resolves_to_osascript_on_macos", func(t *testing.T) {
 		_, got := wedgeRig(t, "auto", watch.DoorbellFailAlarm)
+		if runtime.GOOS != "darwin" {
+			// fm: other platforms have no built-in OS channel (a command: directive is the configured route).
+			if len(got) != 0 {
+				red(t, "watch.leader-alarm-channels", "auto resolved to %+v on %s, want no built-in channel", got, runtime.GOOS)
+			}
+			return
+		}
 		if len(got) != 1 || got[0].channel != "osascript" {
 			red(t, "watch.leader-alarm-channels", "auto resolved to %+v, want one osascript alarm on macOS", got)
 		}
@@ -1381,8 +1387,12 @@ func TestPortWedgeAlarm(t *testing.T) {
 			red(t, "watch.leader-alarm-default", "an absent alerts.channel resolves to %q: N failed leader doorbells raise no out-of-band alarm by default", ch)
 		}
 		_, got := wedgeRig(t, "", watch.DoorbellFailAlarm)
-		if len(got) != 1 {
-			red(t, "watch.leader-alarm-default", "an unset channel fired %d alarms after %d failed doorbells, want 1", len(got), watch.DoorbellFailAlarm)
+		want := 1 // fm: an absent config behaves as auto, default-on on macOS; elsewhere auto has no built-in channel
+		if runtime.GOOS != "darwin" {
+			want = 0
+		}
+		if len(got) != want {
+			red(t, "watch.leader-alarm-default", "an unset channel fired %d alarms after %d failed doorbells on %s, want %d", len(got), watch.DoorbellFailAlarm, runtime.GOOS, want)
 		}
 	})
 
@@ -1431,7 +1441,21 @@ func TestPortWedgeAlarm(t *testing.T) {
 		b, _ := os.ReadFile(pidFile)
 		var pid int
 		fmt.Sscan(strings.TrimSpace(string(b)), &pid)
-		if pid > 0 && syscall.Kill(pid, 0) == nil {
+		// A killed orphan is a zombie until init reaps it, and kill(pid, 0) succeeds on a zombie (Linux): allow the
+		// reap a bounded moment; a child that really survived is still alive after it.
+		alive := func() bool {
+			if pid <= 0 || syscall.Kill(pid, 0) != nil {
+				return false
+			}
+			stat, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid)) // Linux only; absent elsewhere
+			if i := strings.LastIndexByte(string(stat), ')'); err == nil && i >= 0 && strings.HasPrefix(string(stat[i+1:]), " Z") {
+				return false // killed, awaiting its reaper
+			}
+			return true
+		}
+		for end := time.Now().Add(3 * time.Second); alive() && time.Now().Before(end); time.Sleep(20 * time.Millisecond) {
+		}
+		if alive() {
 			_ = syscall.Kill(pid, syscall.SIGKILL)
 			red(t, "watch.leader-alarm", "the timed-out notifier's child (pid %d) outlived the timeout: only the shell was killed, not its process group", pid)
 		}

@@ -1,5 +1,3 @@
-//go:build port
-
 // Port tests (wave 1, cox-supervision-port-busy-wake): firstmate's busy-state suites fm-busy-state,
 // fm-busy-adapter-wiring and fm-tmux-submit-busy translated case by case against cox's harness-owned busy record
 // (busy.Arm/Apply/Read/Retire and the capability-card trust table), the worker hooks dispatch writes, and the Pi

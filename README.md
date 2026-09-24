@@ -263,6 +263,8 @@ Understand and extend:
 ## Contributing
 
 Contributions are welcome - see [Contributing](docs/contributing.md) for the workflow, repo conventions, and how to run the tests.
+`make test` runs every suite, including the translated firstmate supervision corpus (it no longer sits behind a `port`
+build tag); `make test-port` is kept as an alias of `make test`.
 
 ## License
 

@@ -1,5 +1,3 @@
-//go:build port
-
 package main
 
 // Port tests, wave 1 (story cox-supervision-port-turnend): firstmate's turn-end guard, stale banner, watch checkpoint,
@@ -1275,7 +1273,8 @@ func fmPiNodeCase(t *testing.T, name string) {
 		t.Fatalf("node is required to run the Pi guard case %s: %v", name, err)
 	}
 	suite := filepath.Join("..", "..", "internal", "adapter", "harness", "pi", "extension", "cox-supervisor.test.ts")
-	cmd := exec.Command("node", "--test", "--test-timeout=60000", "--test-name-pattern=^"+regexp.QuoteMeta(name)+"$", suite)
+	// The TAP reporter explicitly: node's default reporter differs by version and TTY, and the summary lines are read.
+	cmd := exec.Command("node", "--test", "--test-reporter=tap", "--test-timeout=60000", "--test-name-pattern=^"+regexp.QuoteMeta(name)+"$", suite)
 	for _, kv := range os.Environ() {
 		if !strings.HasPrefix(kv, "COX_") && !strings.HasPrefix(kv, "ORCA_") {
 			cmd.Env = append(cmd.Env, kv)
