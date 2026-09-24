@@ -27,8 +27,8 @@ const ACTIVATED_MARKER = ".cox-pi.activated"; // written on session_start so cox
 // REOPEN_BUDGET bounds a reopen EPISODE: consecutive stop-rewake reopens with no user prompt in between and no new wake
 // gen. In Pi every reopen is a new turn, so a per-turn budget never trips (dogfood finding 8: 49 reopen turns in 3
 // min over a dead watcher). Past it: one visible warning, no more reopen turns until a user prompt or a new wake gen;
-// the idle waiter keeps re-arming (with backoff) so a new gen is still seen. The Go block budget bounds the same
-// episode server-side (prompt-drain --reopen keeps it).
+// the idle waiter keeps re-arming (with backoff) so a new gen is still seen. The Go guard forces a blocked Stop at most
+// once per logical run server-side (the --guard=false latch).
 const REOPEN_BUDGET = 3;
 // Re-arm backoff (dogfood F-10): a stop-rewake that returns within QUICK_EXIT_MS (exit 0 at once - no active epic, a
 // watcher restart, the Go budget spent - or an exit 2 past the episode budget) is re-armed after a doubling delay from
