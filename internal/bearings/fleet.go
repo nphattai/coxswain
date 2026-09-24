@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/nphattai/coxswain/internal/protocol/question"
 	"github.com/nphattai/coxswain/internal/state"
@@ -15,10 +14,9 @@ import (
 
 // Bounds ported verbatim from fm-session-start.sh and bin/fm-line-cap-lib.sh.
 const (
-	DefaultStatusTail  = 5   // FM_SESSION_START_STATUS_TAIL
-	LineCap            = 220 // FM_LINE_CAP_DEFAULT
-	DefaultQueuedLimit = 20  // FM_SESSION_START_QUEUED_LIMIT
-	lineCapSuffix      = " [truncated]"
+	DefaultStatusTail  = 5                // FM_SESSION_START_STATUS_TAIL
+	LineCap            = 220              // FM_LINE_CAP_DEFAULT
+	DefaultQueuedLimit = 20               // FM_SESSION_START_QUEUED_LIMIT
 	notDispatched      = "not_dispatched" // a story file with no lifecycle event yet
 )
 
@@ -137,15 +135,8 @@ func firstBodyLine(s string) string {
 	return ""
 }
 
-// capLine bounds one status line the way fm_cap_line does: at most LineCap characters, the cut marked.
-func capLine(s string) string {
-	s = strings.ReplaceAll(s, "\n", " ")
-	if utf8.RuneCountInString(s) <= LineCap {
-		return s
-	}
-	r := []rune(s)
-	return string(r[:LineCap-utf8.RuneCountInString(lineCapSuffix)]) + lineCapSuffix
-}
+// capLine bounds one status line the way fm_cap_line does (wake.CapLine): at most LineCap characters, the cut marked.
+func capLine(s string) string { return wake.CapLine(strings.ReplaceAll(s, "\n", " "), LineCap) }
 
 // statusHistory returns each story's acked status lines in queue order. Unacked status wakes are still this turn's
 // work queue and print in WAKE QUEUE, so the tail never prints a line twice.
