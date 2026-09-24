@@ -64,6 +64,10 @@ three-state result wherever external facts can be unavailable. This prevents inf
 misread as permission to continue. See `internal/state/resolve.go`, `internal/verdict/`, and
 `tests/integration/probe_unknown_test.go`.
 
+> Superseded in part (2026-09-24, epic cox-supervision-port, firstmate fm-watch-triage): unknown is never proof, but a
+> quiet worker whose state stays unknown past a bound is surfaced as an urgent `stale` / `unknown_probe` wake and then
+> escalates on the wedge ladder (`internal/watch/triage.go`); it is never a skipped check.
+
 ### External effects require confirmation
 
 A transition that depends on a spawn, stop, or similar external effect records intent before the call and completion

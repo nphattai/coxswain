@@ -52,6 +52,10 @@ versioned by attempt; and the steer budget counts only the current attempt.
    policy override `watch.busy_turn_max_min`) raises one routine `status` wake per window for a working story whose busy
    record has said busy with no fresh busy event and no fresh checkpoint. It is a nudge, never an interrupt: a long but
    legitimate turn is not a runaway.
+   *Superseded 2026-09-24 (firstmate BUSY_TURN_MAX_SECS, fm-watch-triage): the default is 3600s and a crossed bound
+   starts the wedge timer, so a still-busy worker escalates as a possible wedge after StaleMin (240s) - still never an
+   interrupt; and a busy record is not proof of work when a probe reports the session ended (B-51) or when it is still
+   the dispatch seed while the backend shows an idle agent.*
 5. **Runtime records are versioned by attempt.** `sessions/<story>.json` and `wt/<story>` carry the attempt that wrote
    them and are written by temp + rename; a write whose attempt is lower than the attempt already on disk is dropped
    with a stderr note. `.cox/leader` becomes a JSON record `{handle, pid, ts}` written by temp + rename; a single reader

@@ -42,6 +42,8 @@ with a rate-limited out-of-band wedge alarm (`docs/wedge-alarm.md`).
    delivered one resets the count. At three consecutive failures the watcher raises one `_leader` stuck wake and, when
    `policy.alerts.channel` is set (`off|osascript|command:<cmd>`, default off), fires that out-of-band channel at most
    once per 30 minutes with the summary passed argv-safe. `cox doctor` raises an ISSUE while the count is >= 3.
+   *Superseded 2026-09-24 (firstmate docs/wedge-alarm.md): an unset channel is `auto` (default on, osascript on macOS),
+   the channel is a directive list where every non-off entry fires, and each invocation is process-group bounded (10s).*
 5. **Nudge rate limit (item 3, B-33).** The leader doorbell nudges a standing unacked urgent backlog, but a re-nudge for
    a backlog whose max gen is unchanged is sent at most once per nudge window (`watch/nudged` records the last-nudged gen
    and time); a backlog that grew always nudges. This self-heals once the leader drains and acks.
