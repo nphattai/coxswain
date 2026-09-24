@@ -99,13 +99,39 @@ func (r *portRig) advance(d time.Duration) { r.clock = r.clock.Add(d) }
 // tick runs one watcher pass and returns the wakes appended by it.
 func (r *portRig) tick() []wake.Wake {
 	r.t.Helper()
-	before, err := wake.Drain(r.epic, true)
+	before := portQueueGen(r)
+	_, err := r.w.Tick()
 	portMust(r.t, err)
-	_, err = r.w.Tick()
+	return portWakesAfter(r, before)
+}
+
+// portQueueGen is the highest gen in the raw wake queue (the drain dedupes by kind and story, so a count diff over it
+// would hide a second wake of the same kind).
+func portQueueGen(r *portRig) int {
+	r.t.Helper()
+	ws, err := wake.Load(r.epic)
 	portMust(r.t, err)
-	after, err := wake.Drain(r.epic, true)
+	g := 0
+	for _, w := range ws {
+		if w.Gen > g {
+			g = w.Gen
+		}
+	}
+	return g
+}
+
+// portWakesAfter returns the raw queue's wakes appended after gen.
+func portWakesAfter(r *portRig, gen int) []wake.Wake {
+	r.t.Helper()
+	ws, err := wake.Load(r.epic)
 	portMust(r.t, err)
-	return after[len(before):]
+	var out []wake.Wake
+	for _, w := range ws {
+		if w.Gen > gen {
+			out = append(out, w)
+		}
+	}
+	return out
 }
 
 // urgentFor reports whether any wake in ws is urgent for the story.
@@ -298,14 +324,11 @@ func pA1BusySet(r *portRig, story, s string) {
 // pA1RunOnce runs the real Run loop for exactly one pass (tick + beacon) with a pre-closed stop channel.
 func pA1RunOnce(r *portRig) []wake.Wake {
 	r.t.Helper()
-	before, err := wake.Drain(r.epic, true)
-	portMust(r.t, err)
+	before := portQueueGen(r)
 	stop := make(chan struct{})
 	close(stop)
 	r.w.Run(stop, time.Hour)
-	after, err := wake.Drain(r.epic, true)
-	portMust(r.t, err)
-	return after[len(before):]
+	return portWakesAfter(r, before)
 }
 
 func TestPortTriageA1(t *testing.T) {
@@ -1325,12 +1348,9 @@ func pBFlaky(r *portRig) *pBFlakyMail {
 // pBTickErr runs one tick that may fail and returns the wakes it appended (for any story) and the tick error.
 func pBTickErr(r *portRig) ([]wake.Wake, error) {
 	r.t.Helper()
-	before, err := wake.Drain(r.epic, true)
-	portMust(r.t, err)
+	before := portQueueGen(r)
 	_, tickErr := r.w.Tick()
-	after, err := wake.Drain(r.epic, true)
-	portMust(r.t, err)
-	return after[len(before):], tickErr
+	return portWakesAfter(r, before), tickErr
 }
 
 func TestPortTriageB(t *testing.T) {
