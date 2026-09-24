@@ -309,7 +309,7 @@ func releaseAbandoned(epic string) bool {
 type claudeTurnend struct {
 	epic         string
 	session      string
-	open         int // stories in flight (FM_SUP_IN_FLIGHT)
+	need         supervisionNeed // FM_SUP_IN_FLIGHT, FM_SUP_SOURCES, FM_SUP_CHECKS
 	count        int
 	initialized  bool
 	chargedEpoch string
@@ -493,15 +493,15 @@ func (g *claudeTurnend) terminalFailOpen() int {
 }
 
 // needDesc is the NEED_DESC / banner need line.
-func (g *claudeTurnend) needDesc() string { return fmt.Sprintf("%d story(ies) in flight", g.open) }
+func (g *claudeTurnend) needDesc() string { return g.need.desc() }
 
 // blockText is block_stop's banner: firstmate's text with cox's repair line (name map).
-func blockText(epic string, open int, claude bool) string {
+func blockText(epic string, need supervisionNeed, claude bool) string {
 	const rule = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 	var b strings.Builder
 	fmt.Fprintf(&b, "●%s\n", rule)
 	b.WriteString("●  TURN WOULD END BLIND - SUPERVISION IS OFF\n")
-	fmt.Fprintf(&b, "●  %d story(ies) in flight, but no live watcher holds this epic's lock (last beat: %s).\n", open, beaconDesc(epic))
+	fmt.Fprintf(&b, "●  %s, but no live watcher holds this epic's lock (last beat: %s).\n", need.desc(), beaconDesc(epic))
 	if claude {
 		b.WriteString("●  The Stop-owned auto-arm did not claim this epic either, so recovery is NOT already under way.\n")
 	}
@@ -526,8 +526,8 @@ func failOpenMessage(need string) string {
 
 // runClaudeGuard is fm-turnend-guard.sh --claude for one epic that needs supervision. It writes the block banner to
 // errw and a systemMessage to outw, and returns the Stop exit code (0 allow, 2 block).
-func runClaudeGuard(epic, session string, open int, errw, outw io.Writer) int {
-	g := &claudeTurnend{epic: epic, session: session, open: open}
+func runClaudeGuard(epic, session string, need supervisionNeed, errw, outw io.Writer) int {
+	g := &claudeTurnend{epic: epic, session: session, need: need}
 	if watcherHealthy(epic, time.Now()) {
 		if failureEpisodeReset(epic, false) {
 			return 0
@@ -541,7 +541,7 @@ func runClaudeGuard(epic, session string, open int, errw, outw io.Writer) int {
 		return 0
 	}
 	if !g.account(true) {
-		fmt.Fprint(errw, blockText(epic, open, true))
+		fmt.Fprint(errw, blockText(epic, need, true))
 		return 2
 	}
 	switch g.terminalFailOpen() {
@@ -551,7 +551,7 @@ func runClaudeGuard(epic, session string, open int, errw, outw io.Writer) int {
 	case 2:
 		return 0
 	}
-	fmt.Fprint(errw, blockText(epic, open, true))
+	fmt.Fprint(errw, blockText(epic, need, true))
 	return 2
 }
 

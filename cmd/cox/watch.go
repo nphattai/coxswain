@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/nphattai/coxswain/internal/supervision"
 	"github.com/nphattai/coxswain/internal/wake"
 	"github.com/nphattai/coxswain/internal/watch"
 )
@@ -174,12 +175,15 @@ func (n supervisionNeed) desc() string {
 	}
 }
 
-// supervisionNeeds counts what needs a watcher: open stories (working or input_required).
+// supervisionNeeds counts what needs a watcher (fm_supervision_status): open stories (working or input_required),
+// registered process-event sources and registered custom checks.
 func supervisionNeeds(epicDir string) supervisionNeed {
 	var n supervisionNeed
 	if open, err := watch.OpenStories(epicDir); err == nil {
 		n.open = len(open)
 	}
+	reg := supervision.Status(filepath.Join(epicDir, controlDir))
+	n.sources, n.checks = reg.Sources, reg.Checks
 	return n
 }
 
@@ -314,6 +318,9 @@ func killAndWait(pid int, timeout time.Duration) error {
 // until signaled. On the loop path it claims <epic>/.cox/watch.pid so a second live watcher refuses to start (or takes
 // over with --replace) and removes the pidfile on a clean exit.
 func cmdWatch(args []string) int {
+	if len(args) > 0 && args[0] == "check" {
+		return watchCheck(args[1:])
+	}
 	fs := flag.NewFlagSet("watch", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	epicDir := fs.String("epic", "", "epic directory")
@@ -392,6 +399,39 @@ func cmdWatch(args []string) int {
 	}()
 	w.Run(stop, 5*time.Second)
 	recordExit("0", "none", "unexpected-clean-exit") // evicted, closed or replaced: the loop ended on its own
+	return 0
+}
+
+// watchCheck implements `cox watch check register|unregister <id> --epic <dir>` (firstmate fm-check-register.sh /
+// fm-check-unregister.sh): bind <epic>/.cox/<id>.check.sh to its bytes so the epic needs a watcher, or retire it.
+func watchCheck(args []string) int {
+	const usage = "cox watch check register|unregister <id> --epic <dir>"
+	verb, rest := onePositional(args)
+	id, rest := onePositional(rest)
+	fs := flag.NewFlagSet("watch check", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	epicDir := fs.String("epic", "", "epic directory")
+	if err := fs.Parse(rest); err != nil {
+		return 2
+	}
+	if *epicDir == "" || id == "" {
+		return usageErr(usage)
+	}
+	control := filepath.Join(*epicDir, controlDir)
+	switch verb {
+	case "register":
+		if err := supervision.Register(control, id); err != nil {
+			return fail("error: %v", err)
+		}
+		fmt.Printf("registered: .cox/%s.check.sh\n", id)
+	case "unregister":
+		if err := supervision.Unregister(control, id); err != nil {
+			return fail("error: %v", err)
+		}
+		fmt.Printf("unregistered: .cox/%s.check.sh\n", id)
+	default:
+		return usageErr(usage)
+	}
 	return 0
 }
 

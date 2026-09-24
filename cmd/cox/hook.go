@@ -61,9 +61,9 @@ func cmdHook(args []string) int {
 	case "stop-rewake":
 		return hookStopRewake(*epicDir, *harnessName, *runGuard)
 	case "precompact":
-		return hookLeaderCheckpoint("precompact", *epicDir, *story, *worktree, hookPreCompact)
+		return hookLeaderCheckpoint("precompact", *epicDir, *story, *worktree, *harnessName, hookPreCompact)
 	case "session-start":
-		return hookLeaderCheckpoint("session-start", *epicDir, *story, *worktree, hookSessionStart)
+		return hookLeaderCheckpoint("session-start", *epicDir, *story, *worktree, *harnessName, hookSessionStart)
 	default:
 		fmt.Fprintf(os.Stderr, "cox hook: unknown hook %q\n", name)
 		return 2
@@ -193,7 +193,7 @@ func mustCwd() string {
 // narrows to that one checkpoint. Otherwise it resolves the workspace and runs the hook for the leader checkpoint
 // (_leader) of every active epic, best-effort: one epic's checkpoint failure must not crash the leader's turn. Outside a
 // workspace it prints one line and exits 0.
-func hookLeaderCheckpoint(name, epicDir, story, worktree string, fn func(epicDir, story, worktree string) int) int {
+func hookLeaderCheckpoint(name, epicDir, story, worktree, harnessName string, fn func(epicDir, story, worktree string) int) int {
 	if epicDir != "" && story != "" {
 		return fn(epicDir, story, worktree)
 	}
@@ -206,6 +206,10 @@ func hookLeaderCheckpoint(name, epicDir, story, worktree string, fn func(epicDir
 	// take over is surfaced as the repair line in the session context.
 	if name == "session-start" {
 		guardWatchersSessionStart(guardEpics(epicDir), os.Stdout, os.Stderr)
+		// The leader's session-start digest (w2-bearings, firstmate fm-session-start.sh) for the workspace.
+		if ws, err := findWorkspaceRoot("."); err == nil {
+			_ = bearingsSessionStart(ws, sessionStartSource(os.Stdin), harnessName, os.Stdout)
+		}
 	}
 	st := story
 	if st == "" {
@@ -499,6 +503,17 @@ func hookStopRewake(epicDir, harnessName string, runGuard bool) int {
 	})
 }
 
+// sessionStartSource is the SessionStart envelope's source (startup, resume, compact, clear), "startup" when absent.
+func sessionStartSource(in io.Reader) string {
+	var p struct {
+		Source string `json:"source"`
+	}
+	if json.Unmarshal(hookStdin(in), &p) == nil && p.Source != "" {
+		return p.Source
+	}
+	return "startup"
+}
+
 // stopPayload is the Stop hook envelope fields the guard reads: the session the block budget is keyed on and the loop
 // guard (firstmate reads `stopHookActive` first when it is a boolean, else `stop_hook_active`).
 type stopPayload struct {
@@ -686,10 +701,7 @@ func (cfg rewakeCfg) guard() (code int, proceed, rearmed bool) {
 			}
 			continue
 		}
-		open := 0
-		if o, err := watch.OpenStories(ep); err == nil {
-			open = len(o)
-		}
+		need := supervisionNeeds(ep)
 		if !claude {
 			if cfg.launchWatcher(ep) == nil || watcherHealthy(ep, time.Now()) {
 				rearmed = true
@@ -699,7 +711,7 @@ func (cfg rewakeCfg) guard() (code int, proceed, rearmed bool) {
 				loopGuarded = true // the loop-guarded retry: never block twice in one turn; this Stop ends here
 				continue
 			}
-			text.WriteString(blockText(ep, open, false))
+			text.WriteString(blockText(ep, need, false))
 			reopen = true
 			continue
 		}
@@ -710,7 +722,7 @@ func (cfg rewakeCfg) guard() (code int, proceed, rearmed bool) {
 			continue
 		}
 		before := sys.Len()
-		guardCode := runClaudeGuard(ep, session, open, &text, &sys)
+		guardCode := runClaudeGuard(ep, session, need, &text, &sys)
 		if sys.Len() > before && guardCode == 0 {
 			failOpen = true // the one attended fail-open ends this turn; no automatic continuation defeats it
 			continue

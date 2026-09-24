@@ -121,11 +121,17 @@ func fmLaunchRefused(string) error { return errWatchRefused }
 // the case if the guard tries to restart.
 func fmGuard(t *testing.T, epic string, launch func(string) error) fmGuardResult {
 	t.Helper()
+	return fmGuardAs(t, epic, "", launch)
+}
+
+// fmGuardAs is fmGuard under a named harness: "codex" and "pi" run firstmate's default (non --claude) hook mode.
+func fmGuardAs(t *testing.T, epic, harness string, launch func(string) error) fmGuardResult {
+	t.Helper()
 	var out bytes.Buffer
 	r := fmGuardResult{}
 	guard, foreign := guardSet(epic)
 	cfg := rewakeCfg{
-		epics: []string{epic}, guardEpics: guard, foreign: foreign, out: &out, stdout: &out, sleep: noSleep,
+		epics: []string{epic}, guardEpics: guard, foreign: foreign, harness: harness, out: &out, stdout: &out, sleep: noSleep,
 		launch: func(ep string) error {
 			r.launched = append(r.launched, ep)
 			if launch == nil {
@@ -200,9 +206,8 @@ func fmIdentity(t *testing.T, pid int) string {
 // fmClaudeGuard is run_hook_claude: the --claude guard alone (no auto-arm) for epic, as session "unknown".
 func fmClaudeGuard(t *testing.T, epic string) (int, string) {
 	t.Helper()
-	open, _ := watch.OpenStories(epic)
 	var out bytes.Buffer
-	code := runClaudeGuard(epic, "unknown", len(open), &out, &out)
+	code := runClaudeGuard(epic, "unknown", supervisionNeeds(epic), &out, &out)
 	return code, out.String()
 }
 
@@ -348,8 +353,22 @@ func fmWantOpenCount(t *testing.T, out string, n int) {
 	}
 }
 
+// fmRegisterCheck is register_custom_check (fm :112): a private 0700 <id>.check.sh registered through the real CLI
+// (cox watch check register, firstmate bin/fm-check-register.sh), so the case binds to the shipped trust record.
+func fmRegisterCheck(t *testing.T, epic, id string) {
+	t.Helper()
+	check := filepath.Join(epic, controlDir, id+".check.sh")
+	mustWrite(t, check, "#!/usr/bin/env bash\nexit 0\n")
+	if err := os.Chmod(check, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if code := watchCheck([]string{"register", id, "--epic", epic}); code != 0 {
+		t.Fatalf("cox watch check register %s exited %d", id, code)
+	}
+}
+
 // fmTurnendGuard translates tests/fm-turnend-guard.test.sh. Firstmate's predicate layer (fm-supervision-lib) maps to
-// watcherHealthy + watch.OpenStories; its hook layer (fm-turnend-guard.sh) maps to the stop-rewake guard
+// watcherHealthy + supervisionNeeds; its hook layer (fm-turnend-guard.sh) maps to the stop-rewake guard
 // (guardWatchers, driven through fmGuard) and, where the single-waiter lock or the TMPDIR budget matter, to the real
 // hookStopRewake (fmStopHook). "Unrestartable" is firstmate's hook never arming itself: cox's guard first restarts a
 // dead watcher, so an unhealthy case stubs the restart as refused unless the case is about the restart.
@@ -416,19 +435,41 @@ func fmTurnendGuard(t *testing.T) {
 
 	// fm: tests/fm-turnend-guard.test.sh:100
 	t.Run("predicate_source_needs_supervision", func(t *testing.T) {
-		// A registered process-event source needs supervision with no task in flight; cox's only supervision need is an
-		// open story (watch.OpenStories), so a source-only epic is never guarded.
-		notImplemented(t, "supervision-need registry: a registered source/check needs supervision with no open story")
+		epic := fmEpic(t)
+		mustWrite(t, filepath.Join(epic, controlDir, "procevent", "source-only.source"), "")
+		n := supervisionNeeds(epic)
+		if !n.needed() || len(guardEpics(epic)) != 1 {
+			t.Fatalf("a registered source with no beacon must need supervision, got %+v", n)
+		}
+		if n.open != 0 || n.sources != 1 {
+			t.Fatalf("a process-event source must count as one source and no story, got %+v", n)
+		}
+		if watcherHealthy(epic, time.Now()) {
+			t.Fatal("a source-only epic with no beacon must be unhealthy")
+		}
 	})
 
 	// fm: tests/fm-turnend-guard.test.sh:121
 	t.Run("predicate_registered_check_needs_supervision", func(t *testing.T) {
-		notImplemented(t, "supervision-need registry: a registered source/check needs supervision with no open story")
+		epic := fmEpic(t)
+		fmRegisterCheck(t, epic, "issue-comments")
+		n := supervisionNeeds(epic)
+		if !n.needed() || n.open != 0 || n.checks != 1 {
+			t.Fatalf("a registered custom check must need supervision with no story in flight, got %+v", n)
+		}
+		if len(guardEpics(epic)) != 1 || watcherHealthy(epic, time.Now()) {
+			t.Fatal("a registered custom check with no beacon must be guarded and unhealthy")
+		}
 	})
 
 	// fm: tests/fm-turnend-guard.test.sh:132
 	t.Run("predicate_registered_check_survives_rebinding_drift", func(t *testing.T) {
-		notImplemented(t, "supervision-need registry: a registered source/check needs supervision with no open story")
+		epic := fmEpic(t)
+		fmRegisterCheck(t, epic, "issue-comments")
+		mustWrite(t, filepath.Join(epic, controlDir, "issue-comments.check.sh"), "#!/usr/bin/env bash\necho drifted\n")
+		if n := supervisionNeeds(epic); !n.needed() || n.checks != 1 {
+			t.Fatalf("an edited registered check must stay counted so the sweep can report the rejection, got %+v", n)
+		}
 	})
 
 	// fm: tests/fm-turnend-guard.test.sh:143
@@ -470,7 +511,13 @@ func fmTurnendGuard(t *testing.T) {
 
 	// fm: tests/fm-turnend-guard.test.sh:320
 	t.Run("hook_blocks_source_only_home", func(t *testing.T) {
-		notImplemented(t, "supervision-need registry: a registered source/check needs supervision with no open story")
+		epic := fmEpic(t)
+		mustWrite(t, filepath.Join(epic, controlDir, "procevent", "source-only.source"), "")
+		r := fmGuardAs(t, epic, "pi", fmLaunchRefused) // default hook mode (fm run_hook, no --claude); Pi reopens with exit 2
+		fmWantBlock(t, r, epic, "source-only epic with no watcher")
+		if !strings.Contains(r.out, "1 process-event source(s) registered") {
+			t.Fatalf("block reason must identify the source-only supervision need, got %q", r.out)
+		}
 	})
 
 	// fm: tests/fm-turnend-guard.test.sh:331
@@ -554,7 +601,16 @@ func fmTurnendGuard(t *testing.T) {
 
 	// fm: tests/fm-turnend-guard.test.sh:480
 	t.Run("hook_registered_check_only_blocks_with_check_banner", func(t *testing.T) {
-		notImplemented(t, "supervision-need registry: a registered source/check needs supervision with no open story")
+		epic := fmEpic(t)
+		fmRegisterCheck(t, epic, "issue-comments")
+		r := fmGuardAs(t, epic, "pi", fmLaunchRefused) // default hook mode (fm run_hook, no --claude); Pi reopens with exit 2
+		fmWantBlock(t, r, epic, "registered-check-only epic with no watcher")
+		if !strings.Contains(r.out, "1 registered custom check(s), but no live watcher") {
+			t.Fatalf("check-only blind stop must identify its supervision need, got %q", r.out)
+		}
+		if strings.Contains(r.out, "story(ies) in flight") {
+			t.Fatalf("check-only blind stop must not be misreported as open stories, got %q", r.out)
+		}
 	})
 
 	// fm: tests/fm-turnend-guard.test.sh:491
