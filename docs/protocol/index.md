@@ -17,8 +17,10 @@ compatibility policy rather than copying mutable field inventories.
 
 ## Contracts without a published JSON Schema
 
-Five active contracts do not yet have a schema file. This is a documentation gap, not permission to invent a shape:
+Six active contracts do not yet have a schema file. This is a documentation gap, not permission to invent a shape:
 
+- [`busy.v1`](busy.v1.md) is owned by `internal/protocol/busy/` and its port suite; the control verbs that read it are
+  described in [Control verbs](control.md).
 - `coxswain.question.v1` is owned by `internal/protocol/question/question.go` and its tests.
 - `coxswain.artifact.v1` is owned by `internal/artifact/artifact.go` and its tests.
 - `coxswain.board.v1` is owned by `cmd/cox/board.go` and the `/data.json` board endpoint tests.

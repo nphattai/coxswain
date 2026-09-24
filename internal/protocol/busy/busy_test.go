@@ -1,6 +1,8 @@
 package busy
 
 import (
+	"os"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -196,5 +198,61 @@ func TestConcurrentApplyIsSerialized(t *testing.T) {
 	rec, _ := ReadRecord(epic, "w1")
 	if rec.Seq != n+1 { // seq started at 1 (Arm), +1 per applied event
 		t.Fatalf("seq after %d concurrent applies = %d, want %d (lock lost an update)", n, rec.Seq, n+1)
+	}
+}
+
+// fm_busy_record_read: the armed gen lives in its own sidecar, so a record with no sidecar (never armed, or a legacy
+// record) and a record from a superseded incarnation both read unknown with their reason, never idle or busy.
+func TestClassifyBindsTheArmedGen(t *testing.T) {
+	epic := t.TempDir()
+	old, _ := Arm(epic, "w1", "pi", piSources)
+	if _, err := Arm(epic, "w1", "pi", piSources); err != nil {
+		t.Fatal(err)
+	}
+	rec, _ := ReadRecord(epic, "w1")
+	rec.Gen = old
+	if err := write(Path(epic, "w1"), rec); err != nil {
+		t.Fatal(err)
+	}
+	if got := Classify(epic, "w1", "pi", "").String(); got != "unknown gen-mismatch" {
+		t.Fatalf("superseded record = %q, want unknown gen-mismatch", got)
+	}
+	if err := os.Remove(GenPath(epic, "w1")); err != nil {
+		t.Fatal(err)
+	}
+	if got := Classify(epic, "w1", "pi", "").String(); got != "unknown malformed" {
+		t.Fatalf("record without sidecar = %q, want unknown malformed", got)
+	}
+}
+
+// A field outside the schema, or a second line, is a malformed record (fm rejects both), never a busy one.
+func TestStrictParse(t *testing.T) {
+	epic := t.TempDir()
+	if _, err := Arm(epic, "w1", "pi", piSources); err != nil {
+		t.Fatal(err)
+	}
+	good, _ := os.ReadFile(Path(epic, "w1"))
+	line := strings.TrimSuffix(string(good), "\n")
+	for name, body := range map[string]string{
+		"rogue field": strings.TrimSuffix(line, "}") + `,"rogue":1}` + "\n",
+		"two lines":   line + "\n" + line + "\n",
+	} {
+		if err := os.WriteFile(Path(epic, "w1"), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if got := Read(epic, "w1"); got != Unknown {
+			t.Fatalf("%s: Read = %q, want unknown", name, got)
+		}
+	}
+}
+
+// B-51: a busy record whose endpoint is gone classifies dead, never busy.
+func TestClassifyLiveDeadOverridesBusy(t *testing.T) {
+	epic := t.TempDir()
+	if _, err := Arm(epic, "w1", "pi", piSources); err != nil {
+		t.Fatal(err)
+	}
+	if got := ClassifyLive(epic, "w1", "pi", "term", func(string) bool { return false }); got.State != Dead {
+		t.Fatalf("gone endpoint = %v, want dead", got)
 	}
 }

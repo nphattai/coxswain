@@ -11,7 +11,9 @@
 // "<state> <source>" -> busy.Read + ReadRecord().Source; the <id>.busy-gen sidecar -> the record's Gen field plus
 // COX_BUSY_GEN in the launch env; source fm-spawn -> dispatch, fm-interrupt -> interrupt, fm-recovery -> recovery;
 // fm_busy_sources_for_harness -> registry.Card(h).BusySources; `--current-gen` -> ReadRecord().Gen (the leader-side
-// idiom control.retireBusy uses); fm_busy_is_busy -> backend.BusyComposer; the tmux composer verdict -> BusyComposer.
+// idiom control.retireBusy uses); fm_busy_is_busy -> backend.BusyComposer; the tmux composer verdict -> BusyComposer;
+// fm_busy_classify -> busy.Classify(...).String(); fm_busy_classify_live -> busy.ClassifyLive; fm-busy-event.sh progress
+// -> busy.Progress; <id>.progress -> busy.ProgressPath.
 package busy_test
 
 import (
@@ -60,7 +62,7 @@ func arm(t *testing.T, epic, story, harnessName string) string {
 }
 
 // view is fm_busy_classify's "<state> <source>" in cox terms: busy.Read plus the record's source when it classifies.
-// Unknown carries no reason in cox, so it renders bare.
+// Unknown renders bare here; wantUnknown checks the reason through busy.Classify.
 func view(epic, story string) string {
 	st := busy.Read(epic, story)
 	if st == busy.Unknown {
@@ -78,15 +80,28 @@ func wantView(t *testing.T, mechanism, epic, story, want string) {
 	}
 }
 
-// wantUnknown checks the state is unknown, then records that cox's Read carries no reason (firstmate pins the reason:
-// missing, malformed, gen-mismatch, source-mismatch, <harness>-unverified).
-func wantUnknown(t *testing.T, epic, story, reason string) {
+// wantUnknown checks the classification for the story's harness is unknown with firstmate's reason (missing,
+// malformed, gen-mismatch, source-mismatch, <harness>-unverified, launch-prompt, or an applied unknown's source).
+func wantUnknown(t *testing.T, epic, story, harnessName, reason string) {
 	t.Helper()
 	if got := busy.Read(epic, story); got != busy.Unknown {
 		red(t, "busy.read", "Read = %q, want unknown %s", got, reason)
-		return
 	}
-	red(t, "busy.unknown-reason", "Read is bare unknown; firstmate attributes it as 'unknown %s'", reason)
+	if got, want := busy.Classify(epic, story, harnessName, "").String(), busy.Unknown+" "+reason; got != want {
+		red(t, "busy.unknown-reason", "classify = %q, want %q", got, want)
+	}
+}
+
+// classify is fm_busy_classify for harness h with the captured tail.
+func classify(epic, story, h, tail string) string {
+	return busy.Classify(epic, story, h, tail).String()
+}
+
+func wantClassify(t *testing.T, mechanism, got, want string) {
+	t.Helper()
+	if got != want {
+		red(t, mechanism, "classify = %q, want %q", got, want)
+	}
 }
 
 // rawRecord writes the record file directly (a torn or foreign writer that bypassed Apply).
@@ -139,8 +154,7 @@ func TestPortBusyState(t *testing.T) {
 		wantView(t, "busy.apply", epic, s, "idle interrupt")
 		cur, _ = busy.ReadRecord(epic, s)
 		must(t, busy.Apply(epic, s, busy.Unknown, cur.Gen, "recovery", "relaunch"))
-		// fm classifies an applied unknown as "unknown fm-recovery"; cox's Read cannot attribute unknown.
-		wantUnknown(t, epic, s, "recovery")
+		wantUnknown(t, epic, s, "pi", "recovery")
 	})
 
 	// fm: tests/fm-busy-state.test.sh:74
@@ -209,16 +223,23 @@ func TestPortBusyState(t *testing.T) {
 	t.Run("FM/fm-busy-state/retire_missing_sidecar_is_idempotent", func(t *testing.T) {
 		epic := t.TempDir()
 		gen := arm(t, epic, s, "claude")
-		must(t, busy.Retire(epic, s, gen))
+		must(t, os.Remove(busy.GenPath(epic, s)))
+		if err := busy.Retire(epic, s, gen); err != nil {
+			red(t, "busy.retire", "exact-gen retire rejected a missing sidecar: %v", err)
+		}
+		if _, err := os.Stat(busy.Path(epic, s)); err == nil {
+			red(t, "busy.retire", "retire left an orphan record behind")
+		}
 		if err := busy.Retire(epic, s, gen); err != nil {
 			red(t, "busy.retire", "repeated exact-gen retire was not idempotent: %v", err)
 		}
-		rawRecord(t, epic, s, "orphan\n") // a malformed existing record (fm: malformed sidecar + orphan record)
+		must(t, os.WriteFile(busy.GenPath(epic, s), []byte("malformed gen\n"), 0o600))
+		rawRecord(t, epic, s, "orphan\n")
 		if err := busy.Retire(epic, s, gen); err == nil {
-			red(t, "busy.retire", "retire accepted a malformed existing record")
+			red(t, "busy.retire", "retire accepted a malformed existing sidecar")
 		}
 		if _, err := os.Stat(busy.Path(epic, s)); err != nil {
-			red(t, "busy.retire", "retire removed a malformed record it could not vouch for")
+			red(t, "busy.retire", "retire removed the record for a malformed existing sidecar")
 		}
 	})
 
@@ -248,6 +269,7 @@ func TestPortBusyState(t *testing.T) {
 		if got := busy.Read(epic, s); got != busy.Unknown {
 			red(t, "busy.armed-gen-binding", "a record from a superseded incarnation classifies %q, want unknown gen-mismatch", got)
 		}
+		wantClassify(t, "busy.armed-gen-binding", classify(epic, s, "claude", ""), "unknown gen-mismatch")
 	})
 
 	// fm: tests/fm-busy-state.test.sh:218
@@ -258,7 +280,10 @@ func TestPortBusyState(t *testing.T) {
 				red(t, "busy.read", "%s with no record = %q, want unknown missing", h, got)
 			}
 		}
-		wantUnknown(t, epic, s, "missing")
+		for _, h := range []string{"claude", "pi"} {
+			wantUnknown(t, epic, s, h, "missing")
+		}
+		wantUnknown(t, epic, s, "codex", "codex-unverified")
 		if registry.Card("codex").BusyRecord {
 			red(t, "busy.codex-gate", "codex card reports busy by default; firstmate keeps it unknown codex-unverified")
 		}
@@ -282,7 +307,7 @@ func TestPortBusyState(t *testing.T) {
 		}
 		for name, body := range bad {
 			rawRecord(t, epic, s, body)
-			if got := busy.Read(epic, s); got != busy.Unknown {
+			if got := classify(epic, s, "claude", ""); got != "unknown malformed" {
 				red(t, "busy.strict-parse", "malformed record (%s) classifies %q, want unknown malformed", name, got)
 			}
 		}
@@ -296,6 +321,7 @@ func TestPortBusyState(t *testing.T) {
 		if got := busy.Read(epic, s); got != busy.Unknown {
 			red(t, "busy.read", "a record never armed classifies %q, want unknown", got)
 		}
+		wantClassify(t, "busy.read", classify(epic, s, "claude", ""), "unknown malformed")
 	})
 
 	// fm: tests/fm-busy-state.test.sh:262
@@ -309,6 +335,7 @@ func TestPortBusyState(t *testing.T) {
 		if got := busy.Read(epic, s); got != busy.Unknown {
 			red(t, "busy.trust-table", "pi-ext record on a claude story classifies %q, want unknown source-mismatch", got)
 		}
+		wantClassify(t, "busy.trust-table", classify(epic, s, "claude", ""), "unknown source-mismatch")
 		pgen := arm(t, epic, "p1", "pi")
 		must(t, busy.Apply(epic, "p1", busy.Busy, pgen, "pi-ext", "agent-start"))
 		wantView(t, "busy.trust-table", epic, "p1", "busy pi-ext")
@@ -324,10 +351,16 @@ func TestPortBusyState(t *testing.T) {
 	// fm: tests/fm-busy-state.test.sh:276 (cox's reader takes no rendered text at all; BusyComposer never reads a pane)
 	t.Run("FM/fm-busy-state/converted_adapters_ignore_footer_text", func(t *testing.T) {
 		epic := t.TempDir()
+		footer := "• Working (6s • esc to interrupt)\n   ■■■■⬝⬝⬝⬝  esc interrupt\nWorking...\nCtrl+c:cancel"
 		for _, h := range []string{"claude", "pi", "codex"} {
 			if cs, ok := backend.BusyComposer(epic, s+h); ok {
 				red(t, "backend.busy-composer", "%s with no record resolved to %q; must defer to unknown", h, cs)
 			}
+			want := "unknown missing"
+			if h == "codex" {
+				want = "unknown codex-unverified"
+			}
+			wantClassify(t, "busy.classify", classify(epic, s, h, footer), want)
 		}
 	})
 
@@ -335,43 +368,71 @@ func TestPortBusyState(t *testing.T) {
 	t.Run("FM/fm-busy-state/launch_prompt_claude_trust_dialog", func(t *testing.T) {
 		epic := t.TempDir()
 		arm(t, epic, s, "claude")
-		notImplemented(t, "busy.launch-prompt-backstop",
-			"a launch pinned at the dispatch seed and parked on Claude's trust or external-imports dialog must classify unknown launch-prompt; cox's busy reader has no tail input and keeps busy dispatch")
+		wantClassify(t, "busy.launch-prompt-backstop", classify(epic, s, "claude", `Accessing workspace: /tmp/wt-a
+Quick safety check: Is this a project you created or one you trust?
+Claude Code'll be able to read, edit, and execute files here.
+> No, exit
+  Yes, I trust this folder
+Enter to confirm . Esc to cancel`), "unknown launch-prompt")
+		wantClassify(t, "busy.launch-prompt-backstop", classify(epic, s, "claude", `Allow external CLAUDE.md file imports?
+This project's CLAUDE.md imports files outside the current working directory.
+> No, disable external imports
+  Yes, allow external imports`), "unknown launch-prompt")
 	})
 
 	// fm: tests/fm-busy-state.test.sh:316
 	t.Run("FM/fm-busy-state/launch_prompt_pi_trust_dialog", func(t *testing.T) {
 		epic := t.TempDir()
 		arm(t, epic, s, "pi")
-		notImplemented(t, "busy.launch-prompt-backstop",
-			"a Pi launch parked on the project-trust dialog must classify unknown launch-prompt")
+		wantClassify(t, "busy.launch-prompt-backstop", classify(epic, s, "pi", ` Trust project folder?
+ /tmp/fm-pi-trust-check/wt
+
+ This allows pi to load .pi settings and resources, install missing project packages, and execute project extensions.
+
+ > Trust
+   Trust parent folder (/tmp/fm-pi-trust-check)
+   Trust (this session only)
+   Do not trust
+   Do not trust (this session only)
+
+ up/down navigate  enter select  escape/ctrl+c cancel`), "unknown launch-prompt")
 	})
 
 	// fm: tests/fm-busy-state.test.sh:339
 	t.Run("FM/fm-busy-state/launch_prompt_pi_requires_both_markers", func(t *testing.T) {
 		epic := t.TempDir()
 		arm(t, epic, s, "pi")
-		wantView(t, "busy.launch-prompt-backstop", epic, s, "busy dispatch") // prose with "trust" never reclassifies
+		wantClassify(t, "busy.launch-prompt-backstop", classify(epic, s, "pi", "I trust this approach and will proceed."), "busy dispatch")
 	})
 
 	// fm: tests/fm-busy-state.test.sh:352
 	t.Run("FM/fm-busy-state/launch_prompt_gemini_dialogs", func(t *testing.T) {
-		notImplemented(t, "busy.launch-prompt-backstop",
-			"a launch parked on a trust, auth-picker or API-key dialog must classify unknown launch-prompt (cox has no gemini card; the gap is the backstop itself)")
+		// cox has no gemini card; the record is armed with firstmate's gemini trust set so the backstop itself is tested.
+		gemini := []string{"gemini-hook", "dispatch", "interrupt", "recovery"}
+		for _, tail := range []string{"Do you trust the files in this folder?\n● 1. Trust folder (worktree)\n  2. Trust parent folder (project)\n  3. Don't trust",
+			"How would you like to authenticate for this project?\n● 2. Use Gemini API Key",
+			"Enter Gemini API Key\n> "} {
+			epic := t.TempDir()
+			_, err := busy.Arm(epic, s, "gemini", gemini)
+			must(t, err)
+			wantClassify(t, "busy.launch-prompt-backstop", classify(epic, s, "gemini", tail), "unknown launch-prompt")
+		}
 	})
 
 	// fm: tests/fm-busy-state.test.sh:379
 	t.Run("FM/fm-busy-state/launch_prompt_never_shortens_a_working_launch", func(t *testing.T) {
 		epic := t.TempDir()
 		arm(t, epic, s, "claude")
-		wantView(t, "busy.launch-prompt-backstop", epic, s, "busy dispatch")
+		wantClassify(t, "busy.launch-prompt-backstop", classify(epic, s, "claude", "• Working (6s • esc to interrupt)"), "busy dispatch")
 	})
 
 	// fm: tests/fm-busy-state.test.sh:392 (opencode has no cox card; translated to a card-less harness)
 	t.Run("FM/fm-busy-state/launch_prompt_scoped_to_armed_harnesses", func(t *testing.T) {
 		epic := t.TempDir()
-		arm(t, epic, s, "claude")
-		wantView(t, "busy.launch-prompt-backstop", epic, s, "busy dispatch")
+		_, err := busy.Arm(epic, s, "opencode", []string{"opencode-plugin", "dispatch", "interrupt", "recovery"})
+		must(t, err)
+		wantClassify(t, "busy.launch-prompt-backstop", classify(epic, s, "opencode",
+			"Quick safety check: Is this a project you created or one you trust?"), "busy dispatch")
 	})
 
 	// fm: tests/fm-busy-state.test.sh:405
@@ -379,14 +440,15 @@ func TestPortBusyState(t *testing.T) {
 		epic := t.TempDir()
 		gen := arm(t, epic, s, "claude")
 		must(t, busy.Apply(epic, s, busy.Busy, gen, "claude-hook", "user-prompt-submit"))
-		wantView(t, "busy.launch-prompt-backstop", epic, s, "busy claude-hook")
+		wantClassify(t, "busy.launch-prompt-backstop", classify(epic, s, "claude",
+			"Quick safety check: Is this a project you created or one you trust?"), "busy claude-hook")
 	})
 
 	// fm: tests/fm-busy-state.test.sh:417
 	t.Run("FM/fm-busy-state/launch_prompt_requires_a_captured_tail", func(t *testing.T) {
 		epic := t.TempDir()
 		arm(t, epic, s, "claude")
-		wantView(t, "busy.launch-prompt-backstop", epic, s, "busy dispatch")
+		wantClassify(t, "busy.launch-prompt-backstop", classify(epic, s, "claude", ""), "busy dispatch")
 	})
 
 	// n/a grok_regex_isolated fm:tests/fm-busy-state.test.sh:427 - grok has no cox harness card and cox never classifies busy from rendered pane text (captain ruling 2026-09-21)
@@ -398,7 +460,10 @@ func TestPortBusyState(t *testing.T) {
 		if registry.Card("codex").BusyRecord {
 			red(t, "busy.codex-gate", "codex card arms the busy record without verification")
 		}
-		wantUnknown(t, epic, s, "codex-unverified")
+		wantUnknown(t, epic, s, "codex", "codex-unverified")
+		gen := arm(t, epic, s, "claude") // a record another adapter armed still reads unverified for codex
+		must(t, busy.Apply(epic, s, busy.Busy, gen, "claude-hook", "user-prompt-submit"))
+		wantClassify(t, "busy.codex-gate", classify(epic, s, "codex", ""), "unknown codex-unverified")
 	})
 
 	// n/a kimi_unverified_gate fm:tests/fm-busy-state.test.sh:456 - kimi has no cox harness card
@@ -411,8 +476,11 @@ func TestPortBusyState(t *testing.T) {
 		if got := busy.Read(epic, s); got != busy.Busy {
 			t.Fatalf("setup: armed record reads %q", got)
 		}
-		notImplemented(t, "busy.classify-live",
-			"endpoint death must override the record and classify dead endpoint-gone (B-51); cox's busy reader has no liveness input and no dead state, so a dead worker's record keeps reading busy dispatch")
+		gone := func(string) bool { return false }
+		there := func(string) bool { return true }
+		wantClassify(t, "busy.classify-live", busy.ClassifyLive(epic, s, "claude", "w1", gone).String(), "dead endpoint-gone")
+		wantClassify(t, "busy.classify-live", busy.ClassifyLive(epic, s, "claude", "w1", there).String(), "busy dispatch")
+		wantClassify(t, "busy.classify-live", busy.ClassifyLive(epic, s, "claude", "", there).String(), "unknown no-target")
 	})
 
 	// n/a herdr_native_busy_only fm:tests/fm-busy-state.test.sh:513 - herdr native agent verdict (herdr is firstmate-only surface per DESIGN rule 5; cox's herdr Composer consults only the busy record)
@@ -448,8 +516,35 @@ func TestPortBusyState(t *testing.T) {
 
 	// fm: tests/fm-busy-state.test.sh:577
 	t.Run("FM/fm-busy-state/progress_is_generation_bound_and_not_semantic_state", func(t *testing.T) {
-		notImplemented(t, "busy.progress-marker",
-			"native progress must be recorded apart from semantic state, bound to the armed gen (stale gen refused), and cleared on arm and retire; cox has no progress marker")
+		epic := t.TempDir()
+		gen := arm(t, epic, s, "claude")
+		before, _ := os.ReadFile(busy.Path(epic, s))
+		if err := busy.Progress(epic, s, gen); err != nil {
+			red(t, "busy.progress-marker", "current progress was refused: %v", err)
+		}
+		if _, ok := busy.ProgressAt(epic, s); !ok {
+			red(t, "busy.progress-marker", "progress marker missing")
+		}
+		if after, _ := os.ReadFile(busy.Path(epic, s)); string(after) != string(before) {
+			red(t, "busy.progress-marker", "progress changed semantic state")
+		}
+		replacement := arm(t, epic, s, "claude")
+		if _, ok := busy.ProgressAt(epic, s); ok {
+			red(t, "busy.progress-marker", "arm retained the previous incarnation's progress")
+		}
+		if err := busy.Progress(epic, s, gen); err == nil {
+			red(t, "busy.progress-marker", "stale progress was accepted")
+		}
+		if _, ok := busy.ProgressAt(epic, s); ok {
+			red(t, "busy.progress-marker", "stale progress wrote a marker")
+		}
+		if err := busy.Progress(epic, s, replacement); err != nil {
+			red(t, "busy.progress-marker", "replacement progress was refused: %v", err)
+		}
+		must(t, busy.Retire(epic, s, replacement))
+		if _, ok := busy.ProgressAt(epic, s); ok {
+			red(t, "busy.progress-marker", "retire retained progress")
+		}
 	})
 }
 
@@ -715,7 +810,7 @@ func TestPortBusyAdapterWiring(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(wt, ".codex", "hooks.json")); err == nil {
 			red(t, "busy.codex-gate", "codex dispatch installed unverified busy hooks")
 		}
-		wantUnknown(t, epic, "s1", "codex-unverified")
+		wantUnknown(t, epic, "s1", "codex", "codex-unverified")
 	})
 
 	// n/a gemini_hooks_semantic_lifecycle fm:tests/fm-busy-adapter-wiring.test.sh:319 - gemini has no cox harness card

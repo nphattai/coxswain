@@ -66,8 +66,12 @@ func TestScenarioInterruptBeforeCheckpoint(t *testing.T) {
 			if err := ctl.Interrupt(story, backend.Session{ID: "x"}); err != nil {
 				t.Fatal(err)
 			}
-			// Resume in the same worktree at attempt+1.
-			if _, err := ctl.Relaunch(story, "/wt", "was mid phase 1", backend.Session{}, backend.HarnessSpec{Name: name}, nil); err != nil {
+			// Resume in the same worktree at attempt+1: the relaunch preflight needs the story's instructions and a git
+			// worktree whose unlanded work it can account for (fm safe_checkpoint).
+			write(t, filepath.Join(epic, "stories", story+".md"), "---\nid: s\n---\nbody\n")
+			wt := t.TempDir()
+			runGit(t, wt, "init", "-q")
+			if _, err := ctl.Relaunch(story, wt, "was mid phase 1", backend.Session{}, backend.HarnessSpec{Name: name}, nil); err != nil {
 				t.Fatal(err)
 			}
 			s := fold(t, epic, story)
