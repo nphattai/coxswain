@@ -72,7 +72,7 @@ func epicWith(t *testing.T, h string) string {
 }
 
 func ctl(epic string, b backend.Backend, h string) *control.Controller {
-	c := &control.Controller{EpicDir: epic, Backend: b, ParkWait: 50 * time.Millisecond, PollInterval: 5 * time.Millisecond, Warn: &bytes.Buffer{}}
+	c := &control.Controller{EpicDir: epic, Backend: b, ParkWait: 50 * time.Millisecond, PollInterval: 5 * time.Millisecond, ExitWait: 50 * time.Millisecond, Warn: &bytes.Buffer{}} // fm FM_CONTROL_EXIT_WAIT=0.05
 	if a, ok := registry.Adapter(h); ok {
 		c.Harness = a
 	}
@@ -152,6 +152,8 @@ echo "$@" >> '%LOG%'
 case "$1 $2" in
 'terminal create') echo '{"ok":true,"result":{"terminal":{"handle":"h1"}}}' ;;
 'terminal close') echo '{"ok":true,"result":{}}' ;;
+'terminal show')
+  if [ "$FAKE_ORCA_PRIOR" = exited ]; then echo '{"ok":true,"result":{"terminal":{"exitCause":"exited"}}}'; else echo '{"ok":false,"error":{"message":"fake orca"}}'; exit 1; fi ;;
 *) echo '{"ok":false,"error":{"message":"fake orca"}}'; exit 1 ;;
 esac
 `
@@ -208,6 +210,10 @@ func (c ws) cox(t *testing.T, args ...string) (string, int) {
 	}
 	return string(out), code
 }
+
+// priorExited makes the story's recorded terminal read as exited (fm alive_as zsh: no agent at the endpoint), so a
+// relaunch or resume needs no stop and reaches its launch line.
+func (c *ws) priorExited() { c.env = append(c.env, "FAKE_ORCA_PRIOR=exited") }
 
 func (c ws) calls(t *testing.T) string {
 	t.Helper()
@@ -399,14 +405,13 @@ func TestPortControl(t *testing.T) {
 	// fm: tests/fm-control.test.sh:769
 	t.Run("FM/fm-control/already_stopped_exit_is_idempotent", func(t *testing.T) {
 		epic := epicWith(t, "claude")
-		b := fake.New()
-		b.StopConfirmed = true
-		freshCheckpoint(t, epic, b)
+		b := alive(true)
+		freshCheckpoint(t, epic, b.Backend)
 		must(t, ctl(epic, b, "claude").Park(story, t.TempDir(), sess))
-		stops := called(b, "Stop")
+		stops := called(b.Backend, "Stop")
 		err := ctl(epic, b, "claude").Park(story, t.TempDir(), sess)
-		if err != nil || called(b, "Stop") != stops {
-			red(t, "control.park", "parking an already-parked story is not idempotent success without a second stop (err %v, stops %d->%d)", err, stops, called(b, "Stop"))
+		if err != nil || called(b.Backend, "Stop") != stops {
+			red(t, "control.park", "parking an already-parked story is not idempotent success without a second stop (err %v, stops %d->%d)", err, stops, called(b.Backend, "Stop"))
 		}
 	})
 
@@ -449,11 +454,10 @@ func TestPortControl(t *testing.T) {
 	// fm: tests/fm-control.test.sh:841
 	t.Run("FM/fm-control/idle_agent_is_not_interrupted", func(t *testing.T) {
 		epic := epicWith(t, "claude")
-		b := fake.New()
-		b.StopConfirmed = true
-		freshCheckpoint(t, epic, b)
+		b := alive(true)
+		freshCheckpoint(t, epic, b.Backend)
 		must(t, ctl(epic, b, "claude").Park(story, t.TempDir(), sess))
-		if called(b, "Interrupt") > 0 {
+		if called(b.Backend, "Interrupt") > 0 {
 			red(t, "control.park", "an idle worker was interrupted before its stop")
 		}
 	})
@@ -530,12 +534,10 @@ func TestPortControlRelaunch(t *testing.T) {
 	// translated invariant is one live agent in the same worktree and branch at attempt+1)
 	t.Run("FM/fm-control-relaunch/same_harness_relaunch_keeps_identity_and_reuses_the_endpoint", func(t *testing.T) {
 		epic := epicWith(t, "claude")
-		b := fake.New()
-		b.StopConfirmed = true
-		wt := t.TempDir()
-		must(t, relaunch(t, epic, b, wt, "phase 2 half done", sess))
+		b := alive(true)
+		must(t, relaunch(t, epic, b, gitWT(t), "phase 2 half done", sess))
 		s := snap(t, epic)
-		if s.State != state.Working || s.Attempt != 2 || called(b, "Stop") != 1 || called(b, "Spawn") != 1 {
+		if s.State != state.Working || s.Attempt != 2 || called(b.Backend, "Stop") != 1 || called(b.Backend, "Spawn") != 1 {
 			red(t, "control.relaunch", "want one stop + one spawn to working attempt 2, got %s attempt %d calls %v", s.State, s.Attempt, b.Calls)
 		}
 	})
@@ -543,9 +545,9 @@ func TestPortControlRelaunch(t *testing.T) {
 	// fm: tests/fm-control-relaunch.test.sh:390
 	t.Run("FM/fm-control-relaunch/relaunch_refuses_before_exit_when_the_composer_holds_pending_text", func(t *testing.T) {
 		epic := epicWith(t, "claude")
-		b := fake.New()
+		b := alive(true)
 		b.ComposerState = backend.ComposerPending
-		if err := relaunch(t, epic, b, t.TempDir(), "note", sess); err == nil || called(b, "Stop") > 0 {
+		if err := relaunch(t, epic, b, gitWT(t), "note", sess); err == nil || !strings.Contains(err.Error(), "pending text") || called(b.Backend, "Stop") > 0 {
 			red(t, "control.relaunch-preflight", "relaunch stopped a worker whose composer holds pending text (calls %v)", b.Calls)
 		}
 	})
@@ -553,9 +555,9 @@ func TestPortControlRelaunch(t *testing.T) {
 	// fm: tests/fm-control-relaunch.test.sh:408
 	t.Run("FM/fm-control-relaunch/relaunch_refuses_before_exit_when_the_composer_state_is_unproven", func(t *testing.T) {
 		epic := epicWith(t, "claude")
-		b := fake.New()
+		b := alive(true)
 		b.FailNext("Composer", errors.New("unreadable"))
-		if err := relaunch(t, epic, b, t.TempDir(), "note", sess); err == nil || called(b, "Stop") > 0 {
+		if err := relaunch(t, epic, b, gitWT(t), "note", sess); err == nil || !strings.Contains(err.Error(), "not proven empty") || called(b.Backend, "Stop") > 0 {
 			red(t, "control.relaunch-preflight", "relaunch stopped a worker whose composer could not be read (calls %v)", b.Calls)
 		}
 	})
@@ -564,7 +566,7 @@ func TestPortControlRelaunch(t *testing.T) {
 	t.Run("FM/fm-control-relaunch/relaunch_from_linked_home_preserves_recorded_worktree", func(t *testing.T) {
 		epic := epicWith(t, "claude")
 		b := &spawnRecorder{Backend: fake.New()}
-		wt := t.TempDir()
+		wt := gitWT(t)
 		must(t, relaunch(t, epic, b, wt, "note", backend.Session{}))
 		if b.wt.Path != wt || b.wt.Branch != "story/"+story {
 			red(t, "control.relaunch", "replacement spawned in %+v, want the recorded worktree %s on story/%s", b.wt, wt, story)
@@ -575,7 +577,7 @@ func TestPortControlRelaunch(t *testing.T) {
 	t.Run("FM/fm-control-relaunch/relaunch_preserves_durable_task_metadata", func(t *testing.T) {
 		epic := epicWith(t, "claude")
 		before, _ := os.ReadFile(filepath.Join(epic, "stories", story+".md"))
-		must(t, relaunch(t, epic, fake.New(), t.TempDir(), "note", backend.Session{}))
+		must(t, relaunch(t, epic, fake.New(), gitWT(t), "note", backend.Session{}))
 		after, _ := os.ReadFile(filepath.Join(epic, "stories", story+".md"))
 		if !bytes.Equal(before, after) {
 			red(t, "control.relaunch", "relaunch rewrote the story record")
@@ -584,7 +586,48 @@ func TestPortControlRelaunch(t *testing.T) {
 
 	// fm: tests/fm-control-relaunch.test.sh:490
 	t.Run("FM/fm-control-relaunch/relaunch_serializes_concurrent_durable_metadata_publication", func(t *testing.T) {
-		notImplemented(t, "control.per-story-lock", "relaunch and a concurrent record write must serialize on the story's lifecycle lock")
+		epic := epicWith(t, "claude")
+		b := &gatedSpawn{Backend: fake.New(), entered: make(chan struct{}), release: make(chan struct{})}
+		done := make(chan error, 1)
+		go func() { done <- relaunch(t, epic, b, gitWT(t), "continue after publication", backend.Session{}) }()
+		<-b.entered // the relaunch holds the lock and is mid-launch
+		written := make(chan error, 1)
+		go func() {
+			// A concurrent durable writer serializes on the same lock instead of interleaving with the relaunch.
+			rel, err := control.LockWait(epic, story, 5*time.Second)
+			if err == nil {
+				err = state.Append(epic, state.Event{Epic: filepath.Base(epic), Story: story, Attempt: 2, Actor: state.Leader,
+					From: state.Working, To: state.Working, Evidence: map[string]any{"x_request": "request-28"}, ExternalConfirmed: true})
+				rel()
+			}
+			written <- err
+		}()
+		select {
+		case <-written:
+			red(t, "control.per-story-lock", "a durable metadata writer was not blocked during relaunch delivery")
+		case <-time.After(100 * time.Millisecond):
+		}
+		close(b.release)
+		if err := <-done; err != nil {
+			red(t, "control.per-story-lock", "relaunch should complete before the serialized publication: %v", err)
+		}
+		if err := <-written; err != nil {
+			red(t, "control.per-story-lock", "the concurrent publication did not resume after the relaunch committed: %v", err)
+		}
+		events, _, err := state.Load(epic)
+		must(t, err)
+		working, published := -1, -1
+		for i, e := range events {
+			if e.To == state.Working && e.Evidence["verb"] == nil && e.Evidence["dispatch"] != nil {
+				working = i
+			}
+			if e.Evidence["x_request"] == "request-28" {
+				published = i
+			}
+		}
+		if working < 0 || published < working {
+			red(t, "control.per-story-lock", "relaunch and the concurrent publication interleaved (working at %d, publication at %d)", working, published)
+		}
 	})
 
 	// n/a disabled_relaunch_clears_prior_trace_context fm:tests/fm-control-relaunch.test.sh:564 - firstmate tracing context
@@ -593,7 +636,7 @@ func TestPortControlRelaunch(t *testing.T) {
 	t.Run("FM/fm-control-relaunch/relaunch_appends_the_progress_note_to_the_instructions", func(t *testing.T) {
 		epic := epicWith(t, "claude")
 		b := &spawnRecorder{Backend: fake.New()}
-		must(t, relaunch(t, epic, b, t.TempDir(), "phase 2 half done", backend.Session{}))
+		must(t, relaunch(t, epic, b, gitWT(t), "phase 2 half done", backend.Session{}))
 		if !strings.Contains(b.brief.Text, "phase 2 half done") || !strings.HasSuffix(b.brief.StoryPath, story+".md") {
 			red(t, "control.relaunch", "the replacement's instructions lack the progress note or story: %+v", b.brief)
 		}
@@ -611,6 +654,7 @@ func TestPortControlRelaunch(t *testing.T) {
 	// fm: tests/fm-control-relaunch.test.sh:628 (a reroute resume leaves the old harness's worker hooks behind)
 	t.Run("FM/fm-control-relaunch/harness_switch_moves_the_record_and_clears_prior_wiring", func(t *testing.T) {
 		c := workspaceCase(t, "harness: claude\n")
+		c.priorExited()
 		c.cox(t, "story", "resume", story, "--epic", c.epic, "--allow-unsandboxed")
 		if _, err := os.Stat(filepath.Join(c.wt, ".claude", "settings.local.json")); err != nil {
 			t.Fatalf("setup: claude dispatch wrote no worker hooks")
@@ -627,6 +671,7 @@ func TestPortControlRelaunch(t *testing.T) {
 	// fm: tests/fm-control-relaunch.test.sh:648
 	t.Run("FM/fm-control-relaunch/harness_switch_does_not_carry_the_old_profile_axes", func(t *testing.T) {
 		c := workspaceCase(t, "harness: claude\nmodel: claude-opus-4-8\n")
+		c.priorExited()
 		c.cox(t, "story", "resume", story, "--epic", c.epic, "--harness", "codex", "--allow-unsandboxed")
 		if l := c.launchLine(t); strings.Contains(l, "claude-opus-4-8") {
 			red(t, "control.relaunch", "a harness switch carried the old model: %q", l)
@@ -639,6 +684,7 @@ func TestPortControlRelaunch(t *testing.T) {
 	// fm: tests/fm-control-relaunch.test.sh:723
 	t.Run("FM/fm-control-relaunch/same_harness_relaunch_keeps_the_profile_axes", func(t *testing.T) {
 		c := workspaceCase(t, "harness: claude\nmodel: claude-opus-4-8\n")
+		c.priorExited()
 		c.cox(t, "control", story, "relaunch", "--note", "resume", "--epic", c.epic, "--allow-unsandboxed")
 		if l := c.launchLine(t); !strings.Contains(l, "claude-opus-4-8") {
 			red(t, "control.relaunch", "a same-harness relaunch dropped the recorded model: %q", l)
@@ -650,6 +696,7 @@ func TestPortControlRelaunch(t *testing.T) {
 	// fm: tests/fm-control-relaunch.test.sh:762
 	t.Run("FM/fm-control-relaunch/explicit_model_wins_over_the_recorded_one", func(t *testing.T) {
 		c := workspaceCase(t, "harness: claude\nmodel: claude-opus-4-8\n")
+		c.priorExited()
 		c.cox(t, "story", "resume", story, "--epic", c.epic, "--model", "claude-sonnet-5", "--allow-unsandboxed")
 		if l := c.launchLine(t); !strings.Contains(l, "claude-sonnet-5") {
 			red(t, "control.relaunch", "the explicit model did not win: %q", l)
@@ -678,7 +725,22 @@ func TestPortControlRelaunch(t *testing.T) {
 
 	// fm: tests/fm-control-relaunch.test.sh:800
 	t.Run("FM/fm-control-relaunch/wiring_removal_failure_refuses_before_replacement_arm", func(t *testing.T) {
-		notImplemented(t, "control.relaunch-wiring", "relaunch removes the prior harness's wiring before arming the replacement and refuses when the removal fails; cox never removes prior wiring")
+		epic := epicWith(t, "claude")
+		b := alive(true)
+		c := ctl(epic, b, "claude")
+		armed := false
+		c.Unwire = func() error { return errors.New("permission denied: .claude/settings.local.json") }
+		c.Arm = func() (string, error) { armed = true; return "g1.2.3", nil }
+		_, err := c.Relaunch(story, gitWT(t), "retry after wiring cleanup", sess, backend.HarnessSpec{Name: "claude"}, nil)
+		if err == nil || !strings.Contains(err.Error(), "could not retire claude wiring") {
+			red(t, "control.relaunch-wiring", "an undeletable prior hook did not fail closed naming the wiring cleanup: %v", err)
+		}
+		if armed || called(b.Backend, "Spawn") > 0 {
+			red(t, "control.relaunch-wiring", "the replacement was armed or launched after wiring cleanup failed (armed %v, calls %v)", armed, b.Calls)
+		}
+		if s := snap(t, epic); s.State != state.PendingExternal {
+			red(t, "control.relaunch-wiring", "the partial launch failure was not recorded: state %s", s.State)
+		}
 	})
 
 	// n/a turnend_auth_paths_are_owned_by_the_control_adapter fm:tests/fm-control-relaunch.test.sh:824 - firstmate library ownership of turn-end registry paths
@@ -690,6 +752,7 @@ func TestPortControlRelaunch(t *testing.T) {
 	// fm: tests/fm-control-relaunch.test.sh:1000
 	t.Run("FM/fm-control-relaunch/ship_relaunch_ignores_the_crew_harness_config", func(t *testing.T) {
 		c := workspaceCase(t, "harness: codex\n")
+		c.priorExited()
 		c.cox(t, "control", story, "relaunch", "--note", "resume", "--epic", c.epic, "--allow-unsandboxed")
 		if l := c.launchLine(t); !strings.Contains(l, "'codex'") {
 			red(t, "control.relaunch", "relaunch did not keep the recorded harness codex: %q", l)
@@ -699,6 +762,7 @@ func TestPortControlRelaunch(t *testing.T) {
 	// fm: tests/fm-control-relaunch.test.sh:1014
 	t.Run("FM/fm-control-relaunch/spawn_relaunch_without_a_harness_reuses_the_recorded_one", func(t *testing.T) {
 		c := workspaceCase(t, "harness: codex\n")
+		c.priorExited()
 		c.cox(t, "story", "resume", story, "--epic", c.epic, "--allow-unsandboxed")
 		if l := c.launchLine(t); !strings.Contains(l, "'codex'") {
 			red(t, "control.relaunch", "resume without --harness did not reuse the recorded codex: %q", l)
@@ -733,21 +797,56 @@ func TestPortControlRelaunch(t *testing.T) {
 
 	// fm: tests/fm-control-relaunch.test.sh:1178
 	t.Run("FM/fm-control-relaunch/checkpoint_refusal_leaves_the_record_byte_identical", func(t *testing.T) {
-		notImplemented(t, "control.relaunch-checkpoint", "relaunch accounts for the unlanded work (checkpoint) before stopping and a refusal leaves every record byte-identical; cox relaunch has no checkpoint step")
+		epic := epicWith(t, "claude")
+		b := alive(true)
+		wt := gitWT(t)
+		before, _ := os.ReadFile(state.EventsPath(epic))
+		must(t, os.RemoveAll(filepath.Join(wt, ".git")))
+		if err := relaunch(t, epic, b, wt, "x", sess); err == nil {
+			red(t, "control.relaunch-checkpoint", "a relaunch from a checkout with no git metadata was not refused")
+		}
+		if after, _ := os.ReadFile(state.EventsPath(epic)); !bytes.Equal(before, after) {
+			red(t, "control.relaunch-checkpoint", "a refused relaunch changed the durable record")
+		}
+		if called(b.Backend, "Stop") > 0 {
+			red(t, "control.relaunch-checkpoint", "a refused relaunch stopped the agent")
+		}
 	})
 
 	// fm: tests/fm-control-relaunch.test.sh:1190
 	t.Run("FM/fm-control-relaunch/checkpoint_refuses_uninspectable_head_and_status", func(t *testing.T) {
-		notImplemented(t, "control.relaunch-checkpoint", "an uninspectable HEAD or status refuses the relaunch before stopping")
+		realGit, err := exec.LookPath("git")
+		must(t, err)
+		bin := t.TempDir()
+		must(t, os.WriteFile(filepath.Join(bin, "git"), []byte(`#!/bin/sh
+for a in "$@"; do
+  case "$FAKE_GIT_FAILURE:$a" in head:--verify|head:symbolic-ref|status:status) exit 128 ;; esac
+done
+exec '`+realGit+`' "$@"
+`), 0o755))
+		t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+		for failure, want := range map[string]string{"head": "HEAD cannot be inspected", "status": "status cannot be inspected"} {
+			epic := epicWith(t, "claude")
+			b := alive(true)
+			wt := gitWT(t)
+			t.Setenv("FAKE_GIT_FAILURE", failure)
+			err := relaunch(t, epic, b, wt, "x", sess)
+			t.Setenv("FAKE_GIT_FAILURE", "")
+			if err == nil || !strings.Contains(err.Error(), want) {
+				red(t, "control.relaunch-checkpoint", "an uninspectable %s did not refuse naming the failed proof: %v", failure, err)
+			}
+			if called(b.Backend, "Stop") > 0 {
+				red(t, "control.relaunch-checkpoint", "%s inspection failure stopped the agent", failure)
+			}
+		}
 	})
 
 	// fm: tests/fm-control-relaunch.test.sh:1216
 	t.Run("FM/fm-control-relaunch/launch_failure_keeps_the_prior_record_and_reports_it", func(t *testing.T) {
 		epic := epicWith(t, "claude")
-		b := fake.New()
-		b.StopConfirmed = true
+		b := alive(true)
 		b.FailNext("Spawn", errors.New("launch failed"))
-		err := relaunch(t, epic, b, t.TempDir(), "note", sess)
+		err := relaunch(t, epic, b, gitWT(t), "note", sess)
 		if err == nil || !strings.Contains(err.Error(), "pending_external") || snap(t, epic).State != state.PendingExternal {
 			red(t, "control.relaunch", "a launch failure after the stop did not report and keep the real state: %v %s", err, snap(t, epic).State)
 		}
@@ -759,11 +858,10 @@ func TestPortControlRelaunch(t *testing.T) {
 	// fm: tests/fm-control-relaunch.test.sh:1289
 	t.Run("FM/fm-control-relaunch/stop_transport_failure_reconciles_a_dead_agent", func(t *testing.T) {
 		epic := epicWith(t, "claude")
-		b := fake.New()
+		b := alive(false)
 		b.FailNext("Stop", errors.New("transport error"))
-		b.Liveness = backend.Alive
-		if err := relaunch(t, epic, b, t.TempDir(), "note", sess); err == nil && called(b, "Probe") == 0 {
-			red(t, "control.stop-postcondition", "a failed prior stop was never reconciled against the agent's real state before spawning a second agent (calls %v)", b.Calls)
+		if err := relaunch(t, epic, b, gitWT(t), "note", sess); err == nil || called(b.Backend, "Spawn") > 0 || indexOf(b.Calls, "Probe", indexOf(b.Calls, "Stop", 0)) < 0 {
+			red(t, "control.stop-postcondition", "a failed prior stop was never reconciled against the agent's real state before spawning a second agent (err %v, calls %v)", err, b.Calls)
 		}
 	})
 
@@ -773,6 +871,7 @@ func TestPortControlRelaunch(t *testing.T) {
 	// busy record armed for it)
 	t.Run("FM/fm-control-relaunch/prepublication_abort_retires_replacement_wiring_and_busy_state", func(t *testing.T) {
 		c := workspaceCase(t, "harness: claude\n")
+		c.priorExited()
 		out, code := c.cox(t, "control", story, "relaunch", "--note", "resume", "--epic", c.epic, "--allow-unsandboxed")
 		if code == 0 {
 			t.Fatalf("setup: the fake launch was expected to fail: %s", out)
@@ -784,7 +883,22 @@ func TestPortControlRelaunch(t *testing.T) {
 
 	// fm: tests/fm-control-relaunch.test.sh:1353
 	t.Run("FM/fm-control-relaunch/journal_records_the_checkpoint_it_proved", func(t *testing.T) {
-		notImplemented(t, "control.relaunch-checkpoint", "the relaunch record names the exact unlanded work it preserved")
+		epic := epicWith(t, "claude")
+		wt := gitWT(t)
+		must(t, os.WriteFile(filepath.Join(wt, "uncommitted.txt"), []byte("scratch\n"), 0o644))
+		head, err := exec.Command("git", "-C", wt, "rev-parse", "HEAD").Output()
+		must(t, err)
+		must(t, relaunch(t, epic, alive(true), wt, "keeping the scratch file", sess))
+		ev := snap(t, epic).LastEvent.Evidence
+		if ev["worktree_head"] != strings.TrimSpace(string(head)) {
+			red(t, "control.relaunch-checkpoint", "the checkpoint should record the head it preserved: %v", ev["worktree_head"])
+		}
+		if ev["worktree_dirty"] != "yes" {
+			red(t, "control.relaunch-checkpoint", "the checkpoint should record that uncommitted work was present: %v", ev["worktree_dirty"])
+		}
+		if _, err := os.Stat(filepath.Join(wt, "uncommitted.txt")); err != nil {
+			red(t, "control.relaunch-checkpoint", "uncommitted work must survive a relaunch")
+		}
 	})
 
 	// n/a secondmate_relaunch_checkpoints_child_work_and_spares_the_charter fm:tests/fm-control-relaunch.test.sh:1370 - secondmates, firstmate-only
@@ -827,10 +941,8 @@ func TestPortControlRelaunch(t *testing.T) {
 	// fm: tests/fm-control-relaunch.test.sh:1625
 	t.Run("FM/fm-control-relaunch/spawn_relaunch_refuses_a_live_agent", func(t *testing.T) {
 		epic := epicWith(t, "claude")
-		b := fake.New()
-		b.StopConfirmed = false
-		b.Liveness = backend.Alive
-		if err := relaunch(t, epic, b, t.TempDir(), "note", sess); err == nil || called(b, "Spawn") > 0 {
+		b := alive(false)
+		if err := relaunch(t, epic, b, gitWT(t), "note", sess); err == nil || called(b.Backend, "Spawn") > 0 {
 			red(t, "control.stop-postcondition", "relaunch spawned a second agent while the prior one is alive and unconfirmed stopped (calls %v)", b.Calls)
 		}
 	})
@@ -839,7 +951,15 @@ func TestPortControlRelaunch(t *testing.T) {
 
 	// fm: tests/fm-control-relaunch.test.sh:1663
 	t.Run("FM/fm-control-relaunch/spawn_relaunch_keeps_its_early_meta_lock_continuous", func(t *testing.T) {
-		notImplemented(t, "control.per-story-lock", "the lifecycle lock is held continuously from record resolution to publication")
+		epic := epicWith(t, "claude")
+		b := &lockObserver{agent: alive(true), lock: control.LockPath(epic, story)}
+		must(t, relaunch(t, epic, b, gitWT(t), "note", sess))
+		if !b.started {
+			red(t, "control.per-story-lock", "test did not observe the relaunch-held lifecycle lock")
+		}
+		if b.recreated {
+			red(t, "control.per-story-lock", "relaunch released or recreated its already-held lifecycle lock (%v)", b.Calls)
+		}
 	})
 
 	// fm: tests/fm-control-relaunch.test.sh:1693 (a story whose close is authoritative is never relaunched)
@@ -906,6 +1026,41 @@ func TestPortControlRelaunch(t *testing.T) {
 // n/a herdr_stale_registration_no_longer_blocks_relaunch fm:tests/fm-control-herdr-smoke.test.sh:308 - real herdr binary
 // n/a herdr_unproven_composer_fails_closed fm:tests/fm-control-herdr-smoke.test.sh:325 - real herdr binary
 
+// agent is the fake backend with a live agent at the story's endpoint (fm alive_as claude): Probe reads Alive until a
+// Stop kills it (kills), and the composer reads empty.
+type agent struct {
+	*fake.Backend
+	kills bool
+}
+
+func alive(kills bool) *agent {
+	b := fake.New()
+	b.Liveness = backend.Alive
+	b.ComposerState = backend.ComposerEmpty
+	b.StopConfirmed = kills
+	return &agent{Backend: b, kills: kills}
+}
+
+func (a *agent) Stop(s backend.Session) (bool, error) {
+	ok, err := a.Backend.Stop(s)
+	if a.kills {
+		a.Liveness = backend.Settled
+	}
+	return ok, err
+}
+
+// gitWT is the story's recorded local copy: a git worktree on story/s1 with one commit (fm add_ship_task).
+func gitWT(t *testing.T) string {
+	t.Helper()
+	wt := t.TempDir()
+	for _, args := range [][]string{{"init", "-q", "-b", "main"}, {"-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "i"}, {"checkout", "-q", "-b", "story/s1"}} {
+		if out, err := exec.Command("git", append([]string{"-C", wt}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+	}
+	return wt
+}
+
 // holdLock takes the story's lifecycle lock the way a running control action holds it (fm: a live holder through the
 // same lock library) and returns its release.
 func holdLock(t *testing.T, epic string) func() {
@@ -922,6 +1077,62 @@ func (d *diesOnInterrupt) Interrupt(s backend.Session) error {
 	err := d.Backend.Interrupt(s)
 	d.Liveness = backend.Settled
 	return err
+}
+
+// gatedSpawn blocks the relaunch's launch until released, so a concurrent writer can be observed against it.
+type gatedSpawn struct {
+	*fake.Backend
+	entered, release chan struct{}
+}
+
+func (g *gatedSpawn) Spawn(wt backend.Worktree, h backend.HarnessSpec, b backend.Brief) (backend.Session, error) {
+	close(g.entered)
+	<-g.release
+	return g.Backend.Spawn(wt, h, b)
+}
+
+// lockObserver checks at every backend call of a relaunch that the lifecycle lock it saw first is still the same one
+// (fm: a sentinel dropped inside the held lock dir must survive to the launch).
+type lockObserver struct {
+	*agent
+	lock               string
+	started, recreated bool
+}
+
+func (o *lockObserver) observe() {
+	sentinel := filepath.Join(o.lock, "continuity-sentinel")
+	if !o.started {
+		if os.WriteFile(sentinel, nil, 0o600) == nil {
+			o.started = true
+		}
+		return
+	}
+	if _, err := os.Stat(sentinel); err != nil {
+		o.recreated = true
+	}
+}
+
+func (o *lockObserver) Probe(s backend.Session) (backend.Liveness, error) {
+	o.observe()
+	return o.agent.Probe(s)
+}
+func (o *lockObserver) Stop(s backend.Session) (bool, error) { o.observe(); return o.agent.Stop(s) }
+func (o *lockObserver) Spawn(wt backend.Worktree, h backend.HarnessSpec, b backend.Brief) (backend.Session, error) {
+	o.observe()
+	return o.agent.Spawn(wt, h, b)
+}
+
+// indexOf is the first index of op in calls at or after from, or -1.
+func indexOf(calls []string, op string, from int) int {
+	if from < 0 {
+		return -1
+	}
+	for i := from; i < len(calls); i++ {
+		if calls[i] == op {
+			return i
+		}
+	}
+	return -1
 }
 
 // spawnRecorder records the worktree and brief a relaunch spawns with.

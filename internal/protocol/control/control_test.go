@@ -15,6 +15,7 @@ import (
 	"github.com/nphattai/coxswain/internal/adapter/harness"
 	harnessfake "github.com/nphattai/coxswain/internal/adapter/harness/fake"
 	"github.com/nphattai/coxswain/internal/adapter/harness/registry"
+	"github.com/nphattai/coxswain/internal/protocol/busy"
 	"github.com/nphattai/coxswain/internal/protocol/inbox"
 	"github.com/nphattai/coxswain/internal/state"
 	"github.com/nphattai/coxswain/internal/watch"
@@ -27,7 +28,42 @@ func claude() harness.Harness {
 }
 
 func newCtl(epic string, b backend.Backend) *Controller {
-	return &Controller{EpicDir: epic, Backend: b, Harness: claude(), ParkWait: 40 * time.Millisecond, PollInterval: 5 * time.Millisecond, Warn: &bytes.Buffer{}}
+	return &Controller{EpicDir: epic, Backend: b, Harness: claude(), ParkWait: 40 * time.Millisecond, PollInterval: 5 * time.Millisecond, ExitWait: 50 * time.Millisecond, Warn: &bytes.Buffer{}}
+}
+
+// agent is the fake backend with a live agent at the story's endpoint (fm alive_as claude): Probe reads Alive until a
+// Stop kills it, when kills is set; a stubborn agent (kills=false) never stops.
+type agent struct {
+	*fake.Backend
+	kills bool
+}
+
+func alive(kills bool) *agent {
+	b := fake.New()
+	b.Liveness = backend.Alive
+	return &agent{Backend: b, kills: kills}
+}
+
+func (a *agent) Stop(s backend.Session) (bool, error) {
+	ok, err := a.Backend.Stop(s)
+	if a.kills {
+		a.Liveness = backend.Settled
+	}
+	return ok, err
+}
+
+// relaunchable seeds a working story with instructions and returns its git worktree (the relaunch preflight proves it).
+func relaunchable(t *testing.T, epic, story string) string {
+	t.Helper()
+	seedWorking(t, epic, story, 1)
+	if err := os.MkdirAll(filepath.Join(epic, "stories"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(epic, "stories", story+".md"), []byte("---\nid: "+story+"\n---\nbody\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wt, _ := initGitRepo(t)
+	return wt
 }
 
 // seed a working story at the given attempt.
@@ -92,9 +128,9 @@ func TestInterruptNotDeliveredStaysWorking(t *testing.T) {
 
 func TestRelaunchBumpsAttempt(t *testing.T) {
 	epic := t.TempDir()
-	seedWorking(t, epic, "s", 1)
+	wt := relaunchable(t, epic, "s")
 	b := fake.New()
-	sess, err := newCtl(epic, b).Relaunch("s", "/wt", "phase 2 half done", backend.Session{}, backend.HarnessSpec{Name: "claude"}, nil)
+	sess, err := newCtl(epic, b).Relaunch("s", wt, "phase 2 half done", backend.Session{}, backend.HarnessSpec{Name: "claude"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,15 +143,16 @@ func TestRelaunchBumpsAttempt(t *testing.T) {
 	}
 }
 
-// Relaunch closes the previous attempt's terminal (Stop) before spawning the new one, and records the closed handle in
-// the working event evidence (ADR 0012, M14).
+// Relaunch closes the previous attempt's terminal (Stop) and proves the agent settled before spawning the new one, and
+// records the closed handle in the working event evidence (ADR 0012, M14; fm do_relaunch).
 func TestRelaunchClosesPriorTerminal(t *testing.T) {
 	epic := t.TempDir()
-	seedWorking(t, epic, "s", 1)
-	b := fake.New()
+	wt := relaunchable(t, epic, "s")
+	b := alive(true)
 	b.StopConfirmed = true
+	b.ComposerState = backend.ComposerEmpty
 	prior := backend.Session{Kind: "orca-terminal", ID: "term_old", Handle: "term_old"}
-	if _, err := newCtl(epic, b).Relaunch("s", "/wt", "resume", prior, backend.HarnessSpec{Name: "claude"}, nil); err != nil {
+	if _, err := newCtl(epic, b).Relaunch("s", wt, "resume", prior, backend.HarnessSpec{Name: "claude"}, nil); err != nil {
 		t.Fatal(err)
 	}
 	stopAt, spawnAt := indexOf(b.Calls, "Stop"), indexOf(b.Calls, "Spawn")
@@ -123,7 +160,7 @@ func TestRelaunchClosesPriorTerminal(t *testing.T) {
 		t.Fatalf("prior terminal must be closed (Stop) before Spawn, calls=%v", b.Calls)
 	}
 	s := lastState(t, epic, "s")
-	if s.LastEvent.Evidence["closed_terminal"] != "term_old" || s.LastEvent.Evidence["closed_confirmed"] != true {
+	if s.LastEvent.Evidence["closed_terminal"] != "term_old" {
 		t.Fatalf("closed terminal not recorded in evidence: %+v", s.LastEvent.Evidence)
 	}
 }
@@ -131,9 +168,9 @@ func TestRelaunchClosesPriorTerminal(t *testing.T) {
 // With no prior session (first relaunch), Relaunch closes nothing and records no closed_terminal.
 func TestRelaunchNoPriorNoClose(t *testing.T) {
 	epic := t.TempDir()
-	seedWorking(t, epic, "s", 1)
+	wt := relaunchable(t, epic, "s")
 	b := fake.New()
-	if _, err := newCtl(epic, b).Relaunch("s", "/wt", "resume", backend.Session{}, backend.HarnessSpec{Name: "claude"}, nil); err != nil {
+	if _, err := newCtl(epic, b).Relaunch("s", wt, "resume", backend.Session{}, backend.HarnessSpec{Name: "claude"}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if contains(b.Calls, "Stop") {
@@ -156,10 +193,10 @@ func indexOf(ss []string, want string) int {
 // A reroute resume merges evidence.reroute onto the working event and still bumps the attempt (fake backend).
 func TestRelaunchRerouteEvidence(t *testing.T) {
 	epic := t.TempDir()
-	seedWorking(t, epic, "s", 1)
+	wt := relaunchable(t, epic, "s")
 	b := fake.New()
 	reroute := map[string]any{"reroute": map[string]any{"from": "claude", "to": "codex", "reason": "quota low"}}
-	if _, err := newCtl(epic, b).Relaunch("s", "/wt", "resume on codex", backend.Session{}, backend.HarnessSpec{Name: "codex"}, reroute); err != nil {
+	if _, err := newCtl(epic, b).Relaunch("s", wt, "resume on codex", backend.Session{}, backend.HarnessSpec{Name: "codex"}, reroute); err != nil {
 		t.Fatal(err)
 	}
 	s := lastState(t, epic, "s")
@@ -174,10 +211,10 @@ func TestRelaunchRerouteEvidence(t *testing.T) {
 
 func TestRelaunchSpawnFailStaysPending(t *testing.T) {
 	epic := t.TempDir()
-	seedWorking(t, epic, "s", 1)
+	wt := relaunchable(t, epic, "s")
 	b := fake.New()
 	b.FailNext("Spawn", nil)
-	_, err := newCtl(epic, b).Relaunch("s", "/wt", "note", backend.Session{}, backend.HarnessSpec{Name: "claude"}, nil)
+	_, err := newCtl(epic, b).Relaunch("s", wt, "note", backend.Session{}, backend.HarnessSpec{Name: "claude"}, nil)
 	if err == nil {
 		t.Fatal("expected spawn failure error")
 	}
@@ -190,7 +227,7 @@ func TestRelaunchSpawnFailStaysPending(t *testing.T) {
 func TestParkRefusesWithoutCheckpoint(t *testing.T) {
 	epic := t.TempDir()
 	seedWorking(t, epic, "s", 1)
-	b := fake.New()
+	b := alive(true)
 	err := newCtl(epic, b).Park("s", epic, backend.Session{ID: "x"})
 	if err == nil || !strings.Contains(err.Error(), "refusing to park blind") {
 		t.Fatalf("park must refuse without a checkpoint, got %v", err)
@@ -206,34 +243,35 @@ func TestParkRefusesWithoutCheckpoint(t *testing.T) {
 	}
 }
 
-func TestParkConfirmedAndAbandon(t *testing.T) {
+// Park completes only when the stopped agent is proven settled (fm do_exit): a stop that takes effect parks, an agent
+// that does not stop (the old abandon-only park) fails closed and keeps pending_external.
+func TestParkProvesTheStop(t *testing.T) {
 	for _, tc := range []struct {
-		name      string
-		confirmed bool
-		wantNote  bool
+		name    string
+		kills   bool
+		wantErr bool
 	}{
 		{"confirmed stop", true, false},
-		{"abandon only", false, true},
+		{"agent does not stop", false, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			wt, head := initGitRepo(t)
 			epic := t.TempDir()
 			seedWorking(t, epic, "s", 1)
 			writeCheckpoint(t, epic, "s", 1, head)
-			b := fake.New()
-			b.StopConfirmed = tc.confirmed
-			warn := &bytes.Buffer{}
-			ctl := &Controller{EpicDir: epic, Backend: b, Harness: claude(), ParkWait: time.Second, PollInterval: 5 * time.Millisecond, Warn: warn}
-			if err := ctl.Park("s", wt, backend.Session{ID: "x"}); err != nil {
-				t.Fatalf("park: %v", err)
-			}
+			b := alive(tc.kills)
+			b.StopConfirmed = tc.kills
+			ctl := &Controller{EpicDir: epic, Backend: b, Harness: claude(), ParkWait: time.Second, PollInterval: 5 * time.Millisecond, ExitWait: 50 * time.Millisecond, Warn: &bytes.Buffer{}}
+			err := ctl.Park("s", wt, backend.Session{ID: "x"})
 			s := lastState(t, epic, "s")
-			if s.State != state.Parked {
-				t.Fatalf("want parked, got %s", s.State)
+			if tc.wantErr {
+				if err == nil || !strings.Contains(err.Error(), "did not stop") || s.State != state.PendingExternal {
+					t.Fatalf("a stubborn agent must fail closed in pending_external, got %v %s", err, s.State)
+				}
+				return
 			}
-			gotNote := strings.Contains(warn.String(), "abandon")
-			if gotNote != tc.wantNote {
-				t.Fatalf("abandon warning = %v, want %v (%q)", gotNote, tc.wantNote, warn.String())
+			if err != nil || s.State != state.Parked {
+				t.Fatalf("park: %v, state %s", err, s.State)
 			}
 		})
 	}
@@ -259,7 +297,7 @@ func TestParkMatchesFullAndShortHead(t *testing.T) {
 			epic := t.TempDir()
 			seedWorking(t, epic, "s", 1)
 			writeCheckpoint(t, epic, "s", 1, head)
-			b := fake.New()
+			b := alive(true)
 			b.StopConfirmed = true
 			if err := newCtl(epic, b).Park("s", wt, backend.Session{ID: "x"}); err != nil {
 				t.Fatalf("park with %s head should match, got %v", tc.name, err)
@@ -276,7 +314,7 @@ func TestParkStopErrorKeepsOwnership(t *testing.T) {
 	epic := t.TempDir()
 	seedWorking(t, epic, "s", 1)
 	writeCheckpoint(t, epic, "s", 1, head)
-	b := fake.New()
+	b := alive(false)
 	b.FailNext("Stop", nil)
 	err := newCtl(epic, b).Park("s", wt, backend.Session{ID: "x"})
 	if err == nil {
@@ -288,25 +326,23 @@ func TestParkStopErrorKeepsOwnership(t *testing.T) {
 }
 
 // Stop can error even though the worker has actually settled (e.g. Orca closed the terminal itself). A Settled probe
-// overrides the Stop error and parks with a note; Alive or Unknown keeps pending_external (ownership held).
+// after the error parks with a note; an agent still alive keeps pending_external (ownership held).
 func TestParkStopErrorProbeSettled(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
-		live    backend.Liveness
+		kills   bool
 		wantErr bool
 	}{
-		{"stop error + settled -> parked", backend.Settled, false},
-		{"stop error + alive -> fail", backend.Alive, true},
-		{"stop error + unknown -> fail", backend.Unknown, true},
+		{"stop error + settled -> parked", true, false},
+		{"stop error + alive -> fail", false, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			wt, head := initGitRepo(t)
 			epic := t.TempDir()
 			seedWorking(t, epic, "s", 1)
 			writeCheckpoint(t, epic, "s", 1, head)
-			b := fake.New()
+			b := alive(tc.kills)
 			b.FailNext("Stop", nil)
-			b.Liveness = tc.live
 			err := newCtl(epic, b).Park("s", wt, backend.Session{ID: "x"})
 			s := lastState(t, epic, "s")
 			if tc.wantErr {
@@ -418,7 +454,7 @@ func TestParkIdleWorkerParksOnFreshCheckpoint(t *testing.T) {
 	seedWorking(t, epic, "s", 1)
 	future := time.Now().Add(time.Hour).UTC().Format(time.RFC3339) // newer than the working event
 	writeCheckpointAt(t, epic, "s", 1, "deadbeef0000000000000000000000000000dead", future)
-	b := fake.New()
+	b := alive(true)
 	b.ComposerState = backend.ComposerEmpty
 	b.StopConfirmed = true
 	// A one-hour ParkWait would hang the test if park fell through to the ensure-and-wait path; the fast path must skip it.
@@ -448,7 +484,7 @@ func TestParkBusyWorkerDoesNotFastPark(t *testing.T) {
 	seedWorking(t, epic, "s", 1)
 	future := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
 	writeCheckpointAt(t, epic, "s", 1, "deadbeef0000000000000000000000000000dead", future)
-	b := fake.New()
+	b := alive(true)
 	b.ComposerState = backend.ComposerBusy
 	if err := newCtl(epic, b).Park("s", t.TempDir(), backend.Session{ID: "x"}); err == nil || !strings.Contains(err.Error(), "refusing to park blind") {
 		t.Fatalf("a busy worker must not fast-park; want refuse, got %v", err)
@@ -546,5 +582,45 @@ func TestInterruptBackendKeystrokeWritesNoRecord(t *testing.T) {
 	}
 	if !contains(b.Calls, "Interrupt") || !contains(b.Calls, "Send") {
 		t.Fatalf("keystroke path must call Interrupt then Send: %v", b.Calls)
+	}
+}
+
+// fm do_exit: an agent the backend cannot classify is refused before any effect - no checkpoint steer, no Stop, no
+// pending_external - and a settled agent is already stopped (idempotent, no Stop).
+func TestParkClassifiesTheAgentFirst(t *testing.T) {
+	epic := t.TempDir()
+	seedWorking(t, epic, "s", 1)
+	b := fake.New() // Liveness Unknown
+	if err := newCtl(epic, b).Park("s", epic, backend.Session{ID: "x"}); err == nil || len(b.Calls) != 1 {
+		t.Fatalf("unknown agent must refuse after the probe alone, got %v calls %v", err, b.Calls)
+	}
+	if s := lastState(t, epic, "s"); s.State != state.Working {
+		t.Fatalf("a refused park moved the story to %s", s.State)
+	}
+	b.Liveness = backend.Settled
+	if err := newCtl(epic, b).Park("s", epic, backend.Session{ID: "x"}); err != nil || contains(b.Calls, "Stop") {
+		t.Fatalf("settled agent must park as already-stopped without a Stop, got %v calls %v", err, b.Calls)
+	}
+	if s := lastState(t, epic, "s"); s.State != state.Parked {
+		t.Fatalf("want parked, got %s", s.State)
+	}
+}
+
+// A relaunch whose spawn fails retires the busy record armed for the replacement, so a worker that never launched never
+// reads busy (fm prepublication rollback).
+func TestRelaunchAbortRetiresReplacementBusy(t *testing.T) {
+	epic := t.TempDir()
+	wt := relaunchable(t, epic, "s")
+	gen, err := busy.Arm(epic, "s", "claude", []string{"claude-hook", "dispatch", "interrupt", "recovery"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := fake.New()
+	b.FailNext("Spawn", nil)
+	if _, err := newCtl(epic, b).Relaunch("s", wt, "note", backend.Session{}, backend.HarnessSpec{Name: "claude", BusyGen: gen}, nil); err == nil {
+		t.Fatal("expected spawn failure")
+	}
+	if got := busy.Read(epic, "s"); got == busy.Busy {
+		t.Fatalf("an aborted relaunch left the replacement busy")
 	}
 }

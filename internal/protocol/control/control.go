@@ -10,7 +10,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/nphattai/coxswain/internal/adapter/backend"
@@ -33,7 +35,27 @@ type Controller struct {
 	Harness      harness.Harness
 	ParkWait     time.Duration // 0 => DefaultParkWait
 	PollInterval time.Duration // 0 => 5s; the checkpoint-wait poll
-	Warn         io.Writer     // warnings (abandon-only); nil => os.Stderr
+	ExitWait     time.Duration // 0 => DefaultExitWait; how long a stopped agent has to read settled
+	Warn         io.Writer     // warnings; nil => os.Stderr
+	// Unwire retires the prior incarnation's harness wiring (worker hooks) during a relaunch, after the prior agent is
+	// stopped and before the replacement is armed; an error refuses the relaunch. nil = nothing to retire here.
+	Unwire func() error
+	// Arm arms the replacement incarnation's busy record and wiring during a relaunch and returns its gen (threaded to
+	// the spawn as spec.BusyGen). nil = the caller armed it already and passed spec.BusyGen.
+	Arm func() (string, error)
+}
+
+// DefaultExitWait is how long park and relaunch wait for a stopped agent to read settled (fm FM_CONTROL_EXIT_WAIT).
+const DefaultExitWait = 30 * time.Second
+
+// exitPoll is the agent-state poll interval while waiting for a stop to take effect (fm FM_CONTROL_POLL).
+const exitPoll = 500 * time.Millisecond
+
+func (c *Controller) exitWait() time.Duration {
+	if c.ExitWait > 0 {
+		return c.ExitWait
+	}
+	return DefaultExitWait
 }
 
 func (c *Controller) parkWait() time.Duration {
@@ -184,20 +206,34 @@ func (c *Controller) Interrupt(story string, session backend.Session) error {
 	return postErr
 }
 
-// Park stops a worker for later resume. It refuses to park blind: a checkpoint must exist whose attempt and head match
-// the current attempt and HEAD. When it does not, park sends a "PARK: write checkpoint" steer and waits up to ParkWait
-// for one, re-checking each poll; a timeout is an error. Once the checkpoint is verified, park records
-// working->pending_external{intended_to:parked}, stops the worker, and completes to parked only on confirmation. An
-// abandon-only stop (adapter returns confirmed=false with no error: the dispatch was fenced but the stop is not
-// confirmed) still parks, with an evidence note and a stderr warning (M0 semantics). A hard stop error keeps ownership
-// UNLESS a follow-up probe reports Settled (the worker already stopped, e.g. Orca closed the terminal itself), in
-// which case it parks with a note; an Alive or Unknown probe keeps pending_external.
+// Park stops a worker for later resume (fm-control.sh do_exit, with Stop = terminal close per ADR 0012). The agent's
+// state is read first and must be positively classified: a settled agent is already stopped (idempotent success, no
+// second Stop), an unknown one is refused before any effect (an endpoint whose agent cannot be attributed never
+// receives a lifecycle command, nor is it claimed stopped). An alive agent must first leave a checkpoint whose attempt
+// and head match (steered and waited for up to ParkWait, unless an idle worker's fresh checkpoint already covers it);
+// then park records working->pending_external{intended_to:parked}, stops the worker, and completes to parked only when
+// the agent is proven settled within ExitWait. A Stop error is reconciled against the agent's real state; an agent that
+// does not stop fails closed and the story stays pending_external (ownership kept).
 func (c *Controller) Park(story, worktree string, session backend.Session) error {
 	release, snap, err := c.begin(story, session)
 	if err != nil {
 		return err
 	}
 	defer release()
+	switch live, perr := c.Backend.Probe(session); {
+	case perr == nil && live == backend.Settled:
+		c.retireBusy(story)
+		if snap.State == state.Parked {
+			return nil
+		}
+		if err := c.appendPending(story, snap, state.Parked, "park", nil); err != nil {
+			return err
+		}
+		return c.appendConfirmed(story, snap.Attempt, state.Parked, map[string]any{"result": "already-stopped"})
+	case perr == nil && live == backend.Alive:
+	default:
+		return fmt.Errorf("story %s's endpoint reads '%s' rather than a positively classified state; refusing to send a lifecycle command into an unattributed endpoint", story, live)
+	}
 	// An idle worker (empty composer) whose last checkpoint is newer than its last event has nothing left to write:
 	// parking on that checkpoint immediately beats steering it and waiting ParkWait for a checkpoint it will never
 	// produce (finding 14). Otherwise fall through to the normal ensure-and-wait path.
@@ -206,32 +242,48 @@ func (c *Controller) Park(story, worktree string, session backend.Session) error
 			return err
 		}
 	}
-	if err := c.appendPending(story, snap, state.Parked, "park"); err != nil {
+	if err := c.appendPending(story, snap, state.Parked, "park", nil); err != nil {
 		return err
 	}
-	confirmed, err := c.Backend.Stop(session)
+	note, err := c.stopAgent(story, session)
 	if err != nil {
-		// Stop can error even though the worker has actually settled (e.g. Orca closed the terminal itself).
-		// Trust a Settled probe over the Stop error rather than stranding a stopped worker in pending_external.
-		if live, perr := c.Backend.Probe(session); perr == nil && live == backend.Settled {
-			c.retireBusy(story)
-			return c.appendConfirmed(story, snap.Attempt, state.Parked, map[string]any{"note": "stop errored but probe settled"})
-		}
-		return fmt.Errorf("stop failed, story stays pending_external (ownership kept): %w", err)
+		return fmt.Errorf("%w; story stays pending_external (ownership kept)", err)
 	}
-	if confirmed {
-		c.retireBusy(story)
-		return c.appendConfirmed(story, snap.Attempt, state.Parked, nil)
+	ev := map[string]any{"result": "stopped"}
+	if note != "" {
+		ev["note"] = note
 	}
-	// Abandon-only: fenced but not confirmed stopped. Park anyway with a flag and a warning (M0).
-	fmt.Fprintf(c.warn(), "warn: %s parked via abandon: dispatch fenced, worker NOT confirmed stopped - check its terminal\n", story)
 	c.retireBusy(story)
-	return c.appendConfirmed(story, snap.Attempt, state.Parked, map[string]any{"note": "fenced, not confirmed stopped"})
+	return c.appendConfirmed(story, snap.Attempt, state.Parked, ev)
 }
 
-// retireBusy retires the harness-owned busy record for the parked incarnation (DESIGN wave-2 item 6c): it reads the
-// current gen and Retires against it, so a re-arm on the next resume gets a clean record and a parked story never leaves
-// a stale "busy" behind. Best-effort - a mismatch (a newer incarnation exists) or an absent record is fine.
+// stopAgent closes an alive agent's terminal and proves it stopped (do_exit's wait_agent_state ... dead): a Stop error is
+// reconciled by probing (a transport failure on an agent that did stop is still a stop), and otherwise the agent must
+// read Settled within ExitWait. It never claims a stop it could not observe; the note names a Stop error the probe
+// overrode.
+func (c *Controller) stopAgent(story string, session backend.Session) (string, error) {
+	if _, err := c.Backend.Stop(session); err != nil {
+		if live, perr := c.Backend.Probe(session); perr == nil && live == backend.Settled {
+			return "stop errored but probe settled", nil
+		}
+		return "", fmt.Errorf("stop failed and the agent is not proven stopped: %w", err)
+	}
+	deadline := time.Now().Add(c.exitWait())
+	for {
+		live, perr := c.Backend.Probe(session)
+		if perr == nil && live == backend.Settled {
+			return "", nil
+		}
+		if !time.Now().Before(deadline) {
+			return "", fmt.Errorf("exit-delivered %s exit-command=delivered agent-state=%s exit=unconfirmed; the agent did not stop within %s", story, live, c.exitWait())
+		}
+		time.Sleep(exitPoll)
+	}
+}
+
+// retireBusy retires the harness-owned busy record for the stopped incarnation (fm retire_busy_incarnation): it reads the
+// armed gen and Retires against it, so a re-arm on the next resume gets a clean record and a parked story never leaves a
+// stale "busy" behind. Best-effort - a mismatch (a newer incarnation exists) or an absent record is fine.
 func (c *Controller) retireBusy(story string) {
 	rec, ok := busy.ReadRecord(c.EpicDir, story)
 	if !ok {
@@ -242,48 +294,90 @@ func (c *Controller) retireBusy(story string) {
 	}
 }
 
-// Relaunch resumes a story in the same worktree at attempt+1. It closes the previous attempt's terminal (ADR 0012: Stop
-// = terminal close) before spawning a new session, so a relaunch never stacks a second live pane on the same worktree
-// (M14). It replays the brief with the progress note and spawns a new session. The spawn is the external effect:
-// from->pending_external{intended_to:working} at the new attempt, then pending_external->working (external_confirmed)
-// only when Spawn succeeds; a spawn error keeps pending_external. prior is the previous attempt's session (zero value
-// when none); extra is merged into the working event's evidence (e.g. a reroute {from,to,reason} when the leader resumes
-// on another harness); pass nil for a plain resume.
-func (c *Controller) Relaunch(story, worktree, note string, prior backend.Session, spec backend.HarnessSpec, extra map[string]any) (backend.Session, error) {
+// Relaunch resumes a story in the same worktree at attempt+1 (fm-control.sh do_relaunch). Everything that can refuse
+// runs before any record is written or any agent touched, so a refusal leaves the event log byte-identical: the story
+// must not be closed (completed, failed, canceled), its instructions must exist, the progress note is required (the
+// replacement inherits the local copy but none of the conversation), and the checkpoint must prove the unlanded work
+// (recorded worktree present and a git root, HEAD and status inspectable). The prior agent must be positively
+// classified: settled needs no stop; unknown is refused; alive must not hold pending or unproven composer text. Then it
+// records from->pending_external{intended_to: working, worktree_head, worktree_dirty}, stops the prior agent and proves it
+// settled (ExitWait), retires the prior harness's wiring (Unwire), arms the replacement (Arm), and spawns; the working
+// event is appended only when Spawn succeeds, otherwise the story stays pending_external. Any failure after the
+// replacement was armed - by Arm, or by the caller through spec.BusyGen - retires that incarnation's busy record, so a
+// worker that never launched never reads busy. prior is the previous attempt's session (zero value when none); extra is
+// merged into the working event's evidence (e.g. a reroute {from,to,reason}).
+func (c *Controller) Relaunch(story, worktree, note string, prior backend.Session, spec backend.HarnessSpec, extra map[string]any) (sess backend.Session, err error) {
+	armed := spec.BusyGen
+	defer func() {
+		if err != nil && armed != "" {
+			_ = busy.Retire(c.EpicDir, story, armed)
+		}
+	}()
 	release, snap, err := c.begin(story, prior)
 	if err != nil {
 		return backend.Session{}, err
 	}
 	defer release()
+	switch snap.State {
+	case state.Completed, state.Failed, state.Canceled:
+		return backend.Session{}, fmt.Errorf("story %s is %s; its close is authoritative, refusing to relaunch it", story, snap.State)
+	}
+	storyPath := storyFile(c.EpicDir, story)
+	if _, err := os.Stat(storyPath); err != nil {
+		return backend.Session{}, fmt.Errorf("story %s has no instructions at %s; refusing to relaunch a worker with nothing to work from", story, storyPath)
+	}
+	if strings.TrimSpace(note) == "" {
+		return backend.Session{}, fmt.Errorf("relaunch of story %s requires --note: the replacement worker inherits the local copy but none of the conversation, so it must be told what happened", story)
+	}
+	head, dirty, err := safeCheckpoint(story, worktree)
+	if err != nil {
+		return backend.Session{}, err
+	}
+	stop, err := c.relaunchPreStop(story, prior)
+	if err != nil {
+		return backend.Session{}, err
+	}
 	newAttempt := snap.Attempt + 1
-
 	ctxPath, err := brief.Build(c.EpicDir, story)
 	if err != nil {
 		return backend.Session{}, err
 	}
-	storyPath := storyFile(c.EpicDir, story)
-	// Record the pending transition at the new attempt.
 	if err := state.Append(c.EpicDir, state.Event{
 		Epic: snapEpic(c.EpicDir), Story: story, Attempt: newAttempt, Actor: state.Leader,
 		From: snap.State, To: state.PendingExternal,
-		Evidence: map[string]any{"intended_to": string(state.Working), "verb": "relaunch", "note": note}, ExternalConfirmed: false,
+		Evidence: map[string]any{"intended_to": string(state.Working), "verb": "relaunch", "note": note,
+			"worktree_head": head, "worktree_dirty": dirty}, ExternalConfirmed: false,
 	}); err != nil {
 		return backend.Session{}, err
 	}
-
-	// Close the previous attempt's terminal before spawning the new one. Best-effort: a close error is warned, not fatal
-	// (the spawn still proceeds); the closed handle and whether the close was confirmed are recorded in the evidence.
-	closedHandle, closedConfirmed := c.closePriorTerminal(story, prior)
-
+	pending := func(format string, args ...any) error {
+		return fmt.Errorf("relaunch of %s: %s; story stays pending_external", story, fmt.Sprintf(format, args...))
+	}
+	if stop {
+		if _, err := c.stopAgent(story, prior); err != nil {
+			return backend.Session{}, pending("%v", err)
+		}
+	}
+	if c.Unwire != nil {
+		if err := c.Unwire(); err != nil {
+			return backend.Session{}, pending("could not retire %s wiring: %v; the replacement was not armed", c.Harness.Card().Name, err)
+		}
+	}
+	if c.Arm != nil {
+		g, err := c.Arm()
+		if err != nil {
+			return backend.Session{}, pending("arm the replacement: %v", err)
+		}
+		armed, spec.BusyGen = g, g
+	}
 	b := backend.Brief{StoryPath: storyPath, Text: note}
-	sess, err := c.Backend.Spawn(backend.Worktree{Path: worktree, Branch: "story/" + story}, spec, b)
+	sess, err = c.Backend.Spawn(backend.Worktree{Path: worktree, Branch: "story/" + story}, spec, b)
 	if err != nil {
 		return backend.Session{}, fmt.Errorf("relaunch spawn failed, story stays pending_external: %w", err)
 	}
-	ev := map[string]any{"dispatch": sess.ID, "context": ctxPath, "note": note}
-	if closedHandle != "" {
-		ev["closed_terminal"] = closedHandle
-		ev["closed_confirmed"] = closedConfirmed
+	ev := map[string]any{"dispatch": sess.ID, "context": ctxPath, "note": note, "worktree_head": head, "worktree_dirty": dirty}
+	if stop {
+		ev["closed_terminal"] = sessionHandle(prior)
 	}
 	for k, v := range extra {
 		ev[k] = v
@@ -293,28 +387,87 @@ func (c *Controller) Relaunch(story, worktree, note string, prior backend.Sessio
 		From: state.PendingExternal, To: state.Working,
 		Evidence: ev, ExternalConfirmed: true,
 	}); err != nil {
+		armed = "" // the replacement is live; its record is not retired over a log write failure
 		return sess, err
 	}
 	return sess, nil
 }
 
-// closePriorTerminal stops the previous attempt's session (ADR 0012: Stop closes the terminal) and returns the closed
-// handle and whether the close was confirmed. A zero-value session (no prior attempt) is a no-op returning "". A close
-// error is warned, never fatal: the relaunch proceeds and the outcome is recorded in the working event evidence.
-func (c *Controller) closePriorTerminal(story string, prior backend.Session) (handle string, confirmed bool) {
-	handle = prior.Handle
-	if handle == "" {
-		handle = prior.ID
+// relaunchPreStop classifies the prior agent before anything is recorded (do_exit's first half): no prior session or a
+// settled agent needs no stop; an unknown one is refused (a relaunch never stacks a second agent on an endpoint it
+// cannot attribute); an alive one must not hold pending or unproven composer text, which closing its terminal would
+// silently discard. It reports whether the prior agent must be stopped.
+func (c *Controller) relaunchPreStop(story string, prior backend.Session) (bool, error) {
+	if sessionHandle(prior) == "" {
+		return false, nil
 	}
-	if handle == "" {
-		return "", false
+	live, perr := c.Backend.Probe(prior)
+	switch {
+	case perr == nil && live == backend.Settled:
+		return false, nil
+	case perr == nil && live == backend.Alive:
+	default:
+		return false, fmt.Errorf("story %s's endpoint reads '%s' rather than a positively classified state; refusing to relaunch over an unattributed endpoint", story, live)
 	}
-	confirmed, err := c.Backend.Stop(prior)
+	composer, err := c.Backend.Composer(prior)
+	switch {
+	case err != nil || composer == backend.ComposerUnknown || composer == "":
+		return false, fmt.Errorf("story %s's composer state is 'unknown', not proven empty; refusing to stop it because pending text could be lost. Clear the composer, then retry relaunch", story)
+	case composer == backend.ComposerPending:
+		return false, fmt.Errorf("story %s's composer visibly holds pending text; refusing to stop it because that text would be lost. Clear or submit the pending text, then retry relaunch", story)
+	}
+	return true, nil
+}
+
+// safeCheckpoint proves, before anything is stopped, that the work a relaunch must preserve is there and recoverable
+// afterwards (fm-control.sh safe_checkpoint): the recorded worktree exists and is a git worktree root, and its HEAD and
+// status are inspectable. It returns the head it proved (or "unborn") and whether uncommitted work is present.
+func safeCheckpoint(story, wt string) (head, dirty string, err error) {
+	if wt == "" {
+		return "", "", fmt.Errorf("story %s has no recorded worktree; refusing to relaunch without a recorded local copy to preserve", story)
+	}
+	if info, err := os.Stat(wt); err != nil || !info.IsDir() {
+		return "", "", fmt.Errorf("story %s's recorded worktree %s is missing; refusing to relaunch and lose track of its work", story, wt)
+	}
+	real, err := filepath.EvalSymlinks(wt)
 	if err != nil {
-		fmt.Fprintf(c.warn(), "warn: relaunch could not close prior terminal %s for %s: %v\n", handle, story, err)
-		return handle, false
+		return "", "", fmt.Errorf("story %s's recorded worktree %s cannot be resolved", story, wt)
 	}
-	return handle, confirmed
+	top, err := gitOut(wt, "rev-parse", "--show-toplevel")
+	if err != nil {
+		return "", "", fmt.Errorf("story %s's recorded worktree %s is not a git worktree; refusing to relaunch without a checkout whose unlanded work can be accounted for", story, wt)
+	}
+	if topReal, err := filepath.EvalSymlinks(top); err == nil {
+		top = topReal
+	}
+	if real != top {
+		return "", "", fmt.Errorf("story %s's recorded worktree %s is not a worktree root (root is %s); refusing to relaunch against an ambiguous checkout", story, wt, top)
+	}
+	if head, err = gitOut(wt, "rev-parse", "--verify", "HEAD"); err != nil {
+		ref, rerr := gitOut(wt, "symbolic-ref", "-q", "HEAD")
+		if rerr != nil {
+			return "", "", fmt.Errorf("story %s's worktree HEAD cannot be inspected; refusing to relaunch from an unreadable checkout", story)
+		}
+		if _, err := gitOut(wt, "show-ref", "--verify", "--quiet", ref); err == nil {
+			return "", "", fmt.Errorf("story %s's worktree HEAD exists but cannot be resolved; refusing to relaunch from an unreadable checkout", story)
+		} else if ee, ok := err.(*exec.ExitError); !ok || ee.ExitCode() != 1 {
+			return "", "", fmt.Errorf("story %s's worktree HEAD cannot be inspected; refusing to relaunch from an unreadable checkout", story)
+		}
+		head = "unborn"
+	}
+	status, err := gitOut(wt, "status", "--porcelain")
+	if err != nil {
+		return "", "", fmt.Errorf("story %s's worktree status cannot be inspected; refusing to relaunch without accounting for local changes", story)
+	}
+	if status != "" {
+		return head, "yes", nil
+	}
+	return head, "no", nil
+}
+
+func gitOut(dir string, args ...string) (string, error) {
+	out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).Output()
+	return strings.TrimSpace(string(out)), err
 }
 
 // Reconcile finishes a story left in pending_external by a crash between the two appends. It reads intended_to from the
@@ -407,12 +560,15 @@ func (c *Controller) checkpointMatches(story, worktree string, attempt int) bool
 	return checkpoint.HeadMatches(fm.Head, facts.Head)
 }
 
-// appendPending records from->pending_external with the intended destination and verb.
-func (c *Controller) appendPending(story string, snap *state.StorySnap, intended state.State, verb string) error {
+// appendPending records from->pending_external with the intended destination and verb (plus optional evidence).
+func (c *Controller) appendPending(story string, snap *state.StorySnap, intended state.State, verb string, extra map[string]any) error {
+	ev := map[string]any{"intended_to": string(intended), "verb": verb}
+	for k, v := range extra {
+		ev[k] = v
+	}
 	return state.Append(c.EpicDir, state.Event{
 		Epic: snapEpic(c.EpicDir), Story: story, Attempt: snap.Attempt, Actor: state.Leader,
-		From: snap.State, To: state.PendingExternal,
-		Evidence: map[string]any{"intended_to": string(intended), "verb": verb}, ExternalConfirmed: false,
+		From: snap.State, To: state.PendingExternal, Evidence: ev, ExternalConfirmed: false,
 	})
 }
 
