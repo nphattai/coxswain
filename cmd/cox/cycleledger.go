@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -17,10 +18,21 @@ import (
 // watcher gone mid-wait). A new watcher links itself as the successor of the last unlinked record. Diagnostic evidence,
 // never a supervision dependency: every write is bounded and best-effort.
 
-var (
-	cycleLogMaxBytes  = 262144
-	cycleLogKeepLines = 1000
-)
+// cycleLogCap is a positive integer knob with its default (fm-watch-arm.sh:84-88: empty, non-numeric or 0 => default).
+func cycleLogCap(name string, def int) int {
+	v := os.Getenv(name)
+	if strings.Trim(v, "0123456789") != "" {
+		return def
+	}
+	if n, err := strconv.Atoi(v); err == nil && n > 0 {
+		return n
+	}
+	return def
+}
+
+// cycleLogMaxBytes / cycleLogKeepLines are FM_WATCH_CYCLE_LOG_MAX_BYTES / FM_WATCH_CYCLE_LOG_KEEP_LINES.
+func cycleLogMaxBytes() int  { return cycleLogCap("COX_WATCH_CYCLE_LOG_MAX_BYTES", 262144) }
+func cycleLogKeepLines() int { return cycleLogCap("COX_WATCH_CYCLE_LOG_KEEP_LINES", 1000) }
 
 func cycleLogPath(epicDir string) string { return coxPath(epicDir, "watch-cycle-exits.log") }
 
@@ -87,15 +99,17 @@ func appendCycle(epicDir string, r cycleRecord) {
 		_, _ = f.WriteString(line)
 		_ = f.Close()
 		b, err := os.ReadFile(cycleLogPath(epicDir))
-		if err != nil || len(b) < cycleLogMaxBytes {
+		max, keep := cycleLogMaxBytes(), cycleLogKeepLines()
+		if err != nil || len(b) < max {
 			return
 		}
-		lines := strings.SplitAfter(string(b), "\n")
-		if len(lines) > cycleLogKeepLines {
-			lines = lines[len(lines)-cycleLogKeepLines:]
+		// tail -n KEEP | tail -c MAX, then only complete records.
+		lines := strings.SplitAfter(strings.TrimSuffix(string(b), "\n"), "\n")
+		if len(lines) > keep {
+			lines = lines[len(lines)-keep:]
 		}
-		kept := strings.Join(lines, "")
-		for len(kept) > cycleLogMaxBytes {
+		kept := strings.Join(lines, "") + "\n"
+		for len(kept) > max {
 			i := strings.IndexByte(kept, '\n')
 			if i < 0 {
 				kept = ""

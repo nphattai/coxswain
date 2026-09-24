@@ -89,6 +89,30 @@ func TestFold(t *testing.T) {
 	}
 }
 
+// TestOpenActivities pins firstmate's activity fixture (tests/fm-watch-triage.test.sh:398-419).
+func TestOpenActivities(t *testing.T) {
+	lines := []string{
+		"working [key=phase7]: Phase 7 started",
+		"working [key=phase6]: Phase 6 started",
+		"working [key=legal]: reviewing legal dependency",
+		"done [key=phase6]: Phase 6 completed",
+		"resolved [key=phase7]: Phase 7 completed and moved to Done",
+		"paused [key=legal]: awaiting external counsel",
+		"resolved [key=legal]: legal item returned to the queue",
+		"working [key=phase8]: Phase 8 started",
+	}
+	want := []Decision{{"phase8", "working", "Phase 8 started", 8}}
+	if got := OpenActivities(lines, Verbs{}); !reflect.DeepEqual(got, want) {
+		t.Fatalf("OpenActivities = %+v\nwant %+v", got, want)
+	}
+	if got := OpenActivities([]string{"working: legacy start", "done: legacy completion"}, Verbs{}); len(got) != 0 {
+		t.Errorf("a legacy terminal event did not supersede the default working phase: %+v", got)
+	}
+	if got := OpenActivities([]string{"working [key=bad key]: x", "", "paused: waiting"}, Verbs{}); len(got) != 1 || got[0].Key != DefaultKey {
+		t.Errorf("a malformed key opened a phase or the unkeyed pause was lost: %+v", got)
+	}
+}
+
 func TestClosingVerb(t *testing.T) {
 	lines := []string{
 		"working: started",

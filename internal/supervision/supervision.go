@@ -104,27 +104,41 @@ func Register(control, id string) error {
 
 // Registered reports whether the check's current bytes still match its trust record (fm_custom_check_registered).
 func Registered(control, id string) bool {
+	_, ok := RegisteredBytes(control, id)
+	return ok
+}
+
+// RegisteredBytes reads the check once and returns those bytes only when they are exactly what its trust record vouches
+// for, so a caller runs the bytes that were verified (fm_custom_check_snapshot_prepare hashes the private copy it runs).
+func RegisteredBytes(control, id string) ([]byte, bool) {
 	if !idRe.MatchString(id) {
-		return false
+		return nil, false
 	}
 	trust := filepath.Join(control, id+".check-trust")
 	if !privateRegular(trust, 0o600) {
-		return false
+		return nil, false
 	}
 	b, err := os.ReadFile(trust)
 	if err != nil {
-		return false
+		return nil, false
 	}
 	lines := strings.Split(strings.TrimSuffix(string(b), "\n"), "\n")
 	if len(lines) != 2 || lines[0] != trustVersion || !regexp.MustCompile(`^[0-9a-f]{64}$`).MatchString(lines[1]) {
-		return false
+		return nil, false
 	}
 	check := filepath.Join(control, id+".check.sh")
 	if !privateRegular(check, 0o700) {
-		return false
+		return nil, false
 	}
-	hash, err := sha256File(check)
-	return err == nil && hash == lines[1]
+	body, err := os.ReadFile(check)
+	if err != nil {
+		return nil, false
+	}
+	sum := sha256.Sum256(body)
+	if hex.EncodeToString(sum[:]) != lines[1] {
+		return nil, false
+	}
+	return body, true
 }
 
 // Unregister retires a check and its binding; a non-regular artifact is refused rather than removed.

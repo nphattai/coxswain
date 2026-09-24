@@ -35,3 +35,24 @@ func TestRegisterStatusUnregister(t *testing.T) {
 		t.Fatalf("unregister must retire the check, err=%v", err)
 	}
 }
+
+func TestRegisteredBytesReturnsTheVerifiedBytes(t *testing.T) {
+	control := t.TempDir()
+	check := filepath.Join(control, "poll.check.sh")
+	body := []byte("#!/usr/bin/env bash\necho ok\n")
+	if err := os.WriteFile(check, body, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := Register(control, "poll"); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := RegisteredBytes(control, "poll"); !ok || string(got) != string(body) {
+		t.Fatalf("want the registered bytes back, got %q %v", got, ok)
+	}
+	if err := os.WriteFile(check, []byte("#!/usr/bin/env bash\necho drifted\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := RegisteredBytes(control, "poll"); ok || got != nil {
+		t.Fatalf("drifted bytes were vouched for: %q", got)
+	}
+}

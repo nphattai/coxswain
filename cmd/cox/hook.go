@@ -9,11 +9,14 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 
 	"github.com/nphattai/coxswain/internal/adapter/backend"
@@ -471,6 +474,22 @@ func hookStopRewake(epicDir, harnessName string, runGuard bool) int {
 	if runGuard {
 		guard, foreign = guardSet(epicDir)
 	}
+	// HUP, INT and TERM end the waiter through its ledger record (fm-watch-arm.sh:342 handle_attached_signal), in every
+	// phase: caught before stdin is read and before the single-waiter lock is written, so a published lock always has
+	// its handler live.
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, watch.ExitSignals...)
+	cycles := newWaiterCycles()
+	release := func() {}
+	var releaseMu sync.Mutex
+	go func() {
+		s := <-sig
+		waiterSignal(cycles, s, func(code int) {
+			releaseMu.Lock()
+			release()
+			os.Exit(code)
+		})
+	}()
 	handle := os.Getenv("ORCA_TERMINAL_HANDLE")
 	payload := readStopPayload(os.Stdin)
 	if handle != "" {
@@ -479,14 +498,18 @@ func hookStopRewake(epicDir, harnessName string, runGuard bool) int {
 			return 0 // another waiter already runs for this terminal
 		}
 		if err := os.WriteFile(lock, []byte(fmt.Sprintf("%d\n%s\n", os.Getpid(), identityOf(os.Getpid()))), 0o644); err == nil {
-			defer func() {
+			releaseMu.Lock()
+			release = func() {
 				if pid, _, _ := lockHolder(lock); pid == os.Getpid() {
 					_ = os.Remove(lock)
 				}
-			}()
+			}
+			releaseMu.Unlock()
+			defer func() { releaseMu.Lock(); release(); releaseMu.Unlock() }()
 		}
 	}
 	return runStopRewake(rewakeCfg{
+		cycles:     cycles,
 		epics:      epics,
 		guardEpics: guard,
 		harness:    harnessName,
@@ -558,6 +581,9 @@ type rewakeCfg struct {
 	session string
 	// stopActive is the Stop payload's loop guard: in the default (codex, pi) mode a true value allows the stop.
 	stopActive bool
+	// cycles is the waiter's attached-cycle state, shared with the command's signal handler (waiterSignal); nil =>
+	// private to this run.
+	cycles *waiterCycles
 	// foreign is the open-story epics a different, still-live leader terminal owns (guardSet): never guarded here.
 	foreign []foreignEpic
 	// noGuard is the Pi waiter the guard follow-up's own settle arms (--guard=false): it waits for wakes only, without
@@ -567,6 +593,81 @@ type rewakeCfg struct {
 
 // foreignEpic is an epic whose recorded leader is another live terminal.
 type foreignEpic struct{ epic, owner string }
+
+// waiterSignalGrace bounds how long a signal waits for the waiter to decide which cycles it is attached to (the guard
+// may still be restarting a watcher); past it the waiter exits unattached, like firstmate's arm before its attach trap.
+var waiterSignalGrace = 2 * time.Second
+
+// waiterCycles is the stop-rewake waiter's attached watcher cycles, closed in the ledger exactly once.
+type waiterCycles struct {
+	mu       sync.Mutex
+	attached map[string]cycleRecord
+	known    chan struct{} // closed once the waiter has decided what it is attached to
+	once     sync.Once
+	closed   bool
+}
+
+func newWaiterCycles() *waiterCycles { return &waiterCycles{known: make(chan struct{})} }
+
+// decided records the attached cycles (the first call wins) and releases a waiting signal.
+func (c *waiterCycles) decided(attached map[string]cycleRecord) {
+	c.once.Do(func() {
+		c.mu.Lock()
+		c.attached = attached
+		c.mu.Unlock()
+		close(c.known)
+	})
+}
+
+// isAttached reports whether the waiter is attached to epic's cycle.
+func (c *waiterCycles) isAttached(epic string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	_, ok := c.attached[epic]
+	return ok
+}
+
+// close appends one record per attached cycle, once; code/signal override the "unknown" defaults. It reports whether
+// this call closed them (false: an earlier close already did).
+func (c *waiterCycles) close(code, signal, reason string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed {
+		return false
+	}
+	c.closed = true
+	epics := make([]string, 0, len(c.attached))
+	for ep := range c.attached {
+		epics = append(epics, ep)
+	}
+	sort.Strings(epics)
+	for _, ep := range epics {
+		r := c.attached[ep]
+		if code != "" {
+			r.exitCode, r.signal = code, signal
+		}
+		r.reason = reason
+		appendCycle(ep, r)
+	}
+	return true
+}
+
+// waiterSignal is handle_attached_signal (fm-watch-arm.sh:342): record every attached cycle as arm-interrupted with the
+// signal's status and exit 128+n. A waiter whose wait already closed its cycles is delivering its reopen; it is left to
+// finish rather than cut mid-write.
+func waiterSignal(c *waiterCycles, s os.Signal, exit func(int)) {
+	n := 0
+	if ss, ok := s.(syscall.Signal); ok {
+		n = int(ss)
+	}
+	select {
+	case <-c.known:
+	case <-time.After(waiterSignalGrace):
+	}
+	if c.close(strconv.Itoa(128+n), signalName(s), "arm-interrupted") {
+		exit(128 + n)
+	}
+}
 
 // reopen ends the idle wait by opening a new turn: codex reads a stdout block decision (exit 0), every other harness
 // reads exit 2 with the message on the text sink. msg is the human-readable instruction shown either way.
@@ -582,6 +683,16 @@ func (cfg rewakeCfg) reopen(msg string) int {
 // runStopRewake is the testable core: first guard every led epic's watcher (item 1), then peek every led epic's wake
 // queue each poll up to maxWait and decide the tick.
 func runStopRewake(cfg rewakeCfg) int {
+	// The waiter is the arm attached to each epic's live watcher cycle: it re-checks that watcher every poll, so one that
+	// dies or loses its lock mid-wait ends the wait loudly instead of at MAX_WAIT (firstmate fm-watch-arm.sh attached
+	// arm: "watcher: FAILED - cycle ended without an actionable reason"), and records each cycle close in the ledger,
+	// once: by the wait's own end, or by a signal (waiterSignal).
+	cycles := cfg.cycles
+	if cycles == nil {
+		cycles = newWaiterCycles()
+	}
+	defer cycles.decided(nil) // an early return attached nothing
+	closeCycles := func(reason string) { cycles.close("", "", reason) }
 	code, proceed, rearmed := cfg.guard()
 	if !proceed {
 		return code
@@ -593,29 +704,19 @@ func runStopRewake(cfg rewakeCfg) int {
 	if poll <= 0 {
 		poll = 15 * time.Second
 	}
-	// The waiter is the arm attached to each epic's live watcher cycle: it re-checks that watcher every poll, so one that
-	// dies or loses its lock mid-wait ends the wait loudly instead of at MAX_WAIT (firstmate fm-watch-arm.sh attached
-	// arm: "watcher: FAILED - cycle ended without an actionable reason"), and records each cycle close in the ledger.
 	attached := map[string]cycleRecord{}
 	for _, ep := range cfg.epics {
 		if pid, _ := watch.ReadPid(ep); pid > 0 && watcherHealthy(ep, time.Now()) {
 			attached[ep] = cycleRecord{armPid: os.Getpid(), watcherPid: pid, origin: "attached", startedAt: time.Now(), exitCode: "unknown", signal: "unknown", lockBefore: lockSnapshot(ep)}
 		}
 	}
-	closeCycles := func(reason string) {
-		for _, ep := range cfg.epics {
-			if r, ok := attached[ep]; ok {
-				r.reason = reason
-				appendCycle(ep, r)
-			}
-		}
-	}
+	cycles.decided(attached)
 	batch := time.Duration(0)
 	for elapsed := time.Duration(0); elapsed < cfg.maxWait; elapsed += poll {
 		if !cfg.noGuard {
 			var down []string
 			for _, ep := range cfg.epics {
-				if _, ok := attached[ep]; ok && !watcherHealthy(ep, time.Now()) && supervisionNeeds(ep).needed() {
+				if cycles.isAttached(ep) && !watcherHealthy(ep, time.Now()) && supervisionNeeds(ep).needed() {
 					down = append(down, ep)
 				}
 			}

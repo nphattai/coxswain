@@ -32,6 +32,9 @@ const (
 	KindIdleNoDone    Kind = "idle_no_done"
 	KindQuotaLow      Kind = "quota_low"    // a harness at/near quota exhaustion (M11)
 	KindQuotaHealth   Kind = "quota_health" // the automatic quota source stayed unknown for two polls (M11/M13b)
+	// KindCheck is a registered custom check's output, or a rejected unauthenticated check (firstmate's check row,
+	// fm-watch.sh:2544,2583): always actionable, so urgent.
+	KindCheck Kind = "check"
 
 	// Review wakes (M13): a lavish review comment lands as review_feedback (routine, batched); a review decision or a
 	// captain answer lands as review_decision (urgent, starts a turn). Per-Kind urgency, not a per-instance tag (the
@@ -54,6 +57,7 @@ var urgentKinds = map[Kind]bool{
 	KindWorkerDone: true, KindStuck: true, KindRunaway: true,
 	KindIdleNoDone: true, KindReviewDecision: true,
 	KindStale: true, KindUnknownProbe: true,
+	KindCheck: true,
 }
 
 // IsUrgent reports whether a wake of this kind should start a leader turn immediately.

@@ -1,5 +1,3 @@
-//go:build port
-
 // Port tests (wave 1, cox-supervision-port-busy-wake): firstmate's busy-state suites fm-busy-state,
 // fm-busy-adapter-wiring and fm-tmux-submit-busy translated case by case against cox's harness-owned busy record
 // (busy.Arm/Apply/Read/Retire and the capability-card trust table), the worker hooks dispatch writes, and the Pi
@@ -669,18 +667,23 @@ const driveScript = `import { pathToFileURL } from "node:url";
 import { existsSync, readFileSync } from "node:fs";
 const mod = await import(pathToFileURL(process.env.EXT_PATH).href);
 const handlers = {};
-mod.default({ on: (n, fn) => { handlers[n] = fn; }, sendUserMessage: () => {} });
+mod.default({ on: (n, fn) => { handlers[n] = fn; }, events: { on: (n, fn) => { handlers[n] = fn; return () => {}; } }, sendUserMessage: () => {} });
 const ctx = { isIdle: () => process.env.MODE !== "settle-continuing", cwd: process.cwd(), ui: { notify() {} }, abort() {} };
 switch (process.env.MODE) {
   case "agent-start": await handlers["agent_start"]({}, ctx); break;
   case "settle-idle": case "settle-continuing": await handlers["agent_settled"]({}, ctx); break;
   case "settle-then-start": await handlers["agent_settled"]({}, ctx); await handlers["agent_start"]({}, ctx); break;
+  case "turn-end": await handlers["turn_end"]?.({}, ctx); break;
+  case "progress": await handlers["codex-native:progress"]({ type: "commandExecution", phase: "completed" }); break;
   default: throw new Error("unknown mode " + process.env.MODE);
 }
 const want = Number(process.env.WANT);
-const deadline = Date.now() + (want > 0 ? 5000 : 300);
+// A bound, not a delay: the poll returns as soon as the applies land; a miss fails loudly instead of letting a late
+// child race the next drive.
+const deadline = Date.now() + (want > 0 ? 60000 : 300);
 const count = () => existsSync(process.env.DONE_LOG) ? readFileSync(process.env.DONE_LOG, "utf8").split("\n").filter(Boolean).length : 0;
 while (Date.now() < deadline && count() < want) await new Promise((r) => setTimeout(r, 20));
+if (count() < want) { console.error("drive: " + count() + " of " + want + " busy applies finished"); process.exit(1); }
 process.exit(0);
 `
 
@@ -731,8 +734,16 @@ func TestPortBusyAdapterWiring(t *testing.T) {
 	t.Run("FM/fm-busy-adapter-wiring/pi_extension_semantic_lifecycle", func(t *testing.T) {
 		p := newPiCase(t)
 		wantView(t, "pi-extension", p.epic, "s1", "busy dispatch")
-		// fm's progress and turn_end notification edges have no cox counterpart (the progress marker is the
-		// busy.progress-marker gap in fm-busy-state); the state edges below are the translated half.
+		// Native progress writes its separate marker (cox busy progress) and never changes semantic state.
+		p.drive("progress", p.gen, 1)
+		if _, ok := busy.ProgressAt(p.epic, "s1"); !ok {
+			red(t, "pi-extension", "native progress did not write its separate marker")
+		}
+		wantView(t, "pi-extension", p.epic, "s1", "busy dispatch")
+		// turn_end stays a notification, not a state edge. fm touches a .turn-ended marker; cox has none (its turn end
+		// is the busy record turning idle), so the translated half is that the semantic state does not move.
+		p.drive("turn-end", p.gen, 0)
+		wantView(t, "pi-extension", p.epic, "s1", "busy dispatch")
 		p.drive("settle-idle", p.gen, 1)
 		wantView(t, "pi-extension", p.epic, "s1", "idle pi-ext")
 		p.drive("agent-start", p.gen, 1)
@@ -741,7 +752,6 @@ func TestPortBusyAdapterWiring(t *testing.T) {
 		wantView(t, "pi-extension", p.epic, "s1", "busy pi-ext")
 		p.drive("settle-idle", p.gen, 1)
 		wantView(t, "pi-extension", p.epic, "s1", "idle pi-ext")
-		notImplemented(t, "busy.progress-marker", "native progress must write its own marker without changing semantic state, and turn_end stays a notification")
 	})
 
 	// fm: tests/fm-busy-adapter-wiring.test.sh:124

@@ -4,20 +4,20 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/nphattai/coxswain/internal/protocol/decision"
 )
 
 // Status-line grammar the watcher needs to triage a quiet worker, ported from firstmate bin/fm-classify-lib.sh
 // (status_line_verb, status_is_captain_relevant, status_is_paused, status_is_captain_held, status_paused_until; pinned
 // 1e0e773). A worker's status line is a status mail's subject (or a report's note); its verb is the word before the
-// first colon with any [tag] stripped. The decision fold ([key=] open/close) is wave 2b and not read here.
+// first colon with any [tag] stripped. Captain relevance and the decision fold ([key=] open/close) are read through
+// internal/protocol/decision, the one classifier the watcher and the drain share.
 
 const (
 	verbPaused      = "paused"       // FM_CLASSIFY_PAUSED_VERB_DEFAULT
 	verbCaptainHeld = "captain-held" // FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT
 )
-
-// captainRE is FM_CLASSIFY_CAPTAIN_RE_DEFAULT, matched case-insensitively against a line with no verb.
-var captainRE = regexp.MustCompile(`(?i)done:|needs-decision:|blocked:|failed:|PR ready|checks green|ready in branch|merged`)
 
 // untilRE is status_paused_until's token: `until <YYYY-MM-DDTHH:MM[:SS]Z>` after whitespace, UTC only.
 var untilRE = regexp.MustCompile(`(?i)\suntil\s+(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?Z)`)
@@ -55,28 +55,14 @@ func statusVerb(line string) string {
 // captainRelevant reports whether a status line is captain-relevant under the default captain regex.
 func captainRelevant(line string) bool { return captainRelevantRE(line, nil) }
 
-// captainRelevantRE is status_is_captain_relevant: working, resolved, captain-held and paused are never relevant; with
-// no override the terminal verbs done, needs-decision, blocked and failed always are; any other line matches the regex
-// (the override FM_CAPTAIN_RE, else the default) against the line with its before-colon tags removed. An override
-// replaces the default verb set entirely.
+// captainRelevantRE is status_is_captain_relevant with the FM_CAPTAIN_RE override (nil => the default set), read
+// through decision.CaptainRelevant: the one predicate the span fold and the drain share.
 func captainRelevantRE(line string, override *regexp.Regexp) bool {
-	if strings.TrimSpace(line) == "" {
-		return false
+	o := ""
+	if override != nil {
+		o = override.String()
 	}
-	verb := statusVerb(line)
-	switch verb {
-	case "working", "resolved", verbCaptainHeld, verbPaused:
-		return false
-	}
-	re := override
-	if re == nil {
-		switch verb {
-		case "done", "needs-decision", "blocked", "failed":
-			return true
-		}
-		re = captainRE
-	}
-	return re.MatchString(unstamped(line))
+	return decision.CaptainRelevant(line, o)
 }
 
 // unstamped drops the [tag] tokens before a line's first colon, so a stamped event still matches the regex.

@@ -11,6 +11,7 @@ import (
 
 	"github.com/nphattai/coxswain/internal/adapter/backend"
 	"github.com/nphattai/coxswain/internal/protocol/busy"
+	"github.com/nphattai/coxswain/internal/protocol/decision"
 	"github.com/nphattai/coxswain/internal/protocol/inbox"
 	"github.com/nphattai/coxswain/internal/state"
 	"github.com/nphattai/coxswain/internal/wake"
@@ -162,6 +163,56 @@ func statusFromMail(m backend.Message) string {
 // markActivity records worker activity (a heartbeat) for the activity signature.
 func (w *Watcher) markActivity(story, id string) { w.swrite("act", story, id) }
 
+// spanAdd appends a status line to this tick's span for the story (fm: the bytes appended since the seen offset).
+func (w *Watcher) spanAdd(story, line string) {
+	if w.spans == nil {
+		w.spans = map[string][]string{}
+	}
+	w.spans[story] = append(w.spans[story], line)
+}
+
+// captainOverride is the FM_CAPTAIN_RE override the span fold reads relevance with ("" => the default set).
+func (w *Watcher) captainOverride() string {
+	if w.CaptainRE == nil {
+		return ""
+	}
+	return w.CaptainRE.String()
+}
+
+// spanEvents is a story span's actionable events as a multiset (decision.Actionable, the one fold).
+type spanEvents map[string]int
+
+func (w *Watcher) spanEvents(story string, span []string) spanEvents {
+	events, _ := decision.Actionable(span, wake.StoryKind(w.EpicDir, story), w.captainOverride())
+	m := spanEvents{}
+	for _, e := range events {
+		m[e]++
+	}
+	return m
+}
+
+// take consumes the event a span line produced: the line itself, or its "reconciliation-required: " label for a
+// reserved key a foreign writer spoke. It returns the event text and whether the line was actionable.
+func (m spanEvents) take(line string) (string, bool) {
+	for _, e := range []string{line, reconPrefix + line} {
+		if m[e] > 0 {
+			m[e]--
+			return e, true
+		}
+	}
+	return "", false
+}
+
+const reconPrefix = "reconciliation-required: "
+
+// spanDecision reports a needs-decision/blocked line whose key parses (an unkeyed line is the default key): the only
+// lines the span fold can retire as closed or superseded.
+func spanDecision(line string) bool {
+	v := decision.Verb(line)
+	_, ok := decision.Key(line)
+	return ok && (v == "needs-decision" || v == "blocked")
+}
+
 // --- signals (fm scan_signals + signal_files_actionable + signal_crew_provably_working) ---
 
 type signal struct {
@@ -215,18 +266,22 @@ func (w *Watcher) reportPass(working map[string]bool) {
 		if !working[wk.Story] || !workerOrigin(wk) || wk.Evidence["msg"] != nil {
 			continue
 		}
+		line := ""
 		switch wk.Kind {
 		case wake.KindWorkerDone:
-			w.recordStatus(wk.Story, "done: "+wk.Note)
+			line = "done: " + wk.Note
 		case wake.KindStuck:
-			w.recordStatus(wk.Story, "blocked: "+wk.Note)
+			line = "blocked: " + wk.Note
 		case wake.KindInputRequired, wake.KindQuestion:
-			w.recordStatus(wk.Story, "needs-decision: "+wk.Note)
+			line = "needs-decision: " + wk.Note
 		case wake.KindStatus:
-			w.recordStatus(wk.Story, wk.Note)
-			note := wk.Note
-			w.addSignal(wk.Story, func(s *signal) { s.lines = append(s.lines, note) })
+			line = wk.Note
+			w.addSignal(wk.Story, func(s *signal) { s.lines = append(s.lines, line) })
+		default:
+			continue
 		}
+		w.recordStatus(wk.Story, line)
+		w.spanAdd(wk.Story, line)
 	}
 	if max > cursor {
 		w.swrite("cursor", "reports", strconv.Itoa(max))
@@ -298,19 +353,28 @@ func (w *Watcher) signalTriage(open map[string]bool) (int, error) {
 	// Actionable (fm signal_files_actionable / signal_crew_provably_working): a story in the batch already surfaced a
 	// captain-relevant event this tick, or some crew in it is not provably working.
 	class := map[string]string{}
-	relevant := map[string]string{} // a captain-relevant line wake.Classify left routine (fm signal_files_actionable)
+	relevant := map[string]string{} // an actionable span event wake.Classify left routine (fm signal_files_actionable)
+	held := map[string]string{}     // the span's side-band needs-decision flag with nothing surfaced for it (fm :2026)
 	actionable := false
 	for _, s := range stories {
 		if !open[s] {
 			continue
 		}
+		events, needsDecision := decision.Actionable(w.spans[s], wake.StoryKind(w.EpicDir, s), w.captainOverride())
+		isEvent := map[string]bool{}
+		for _, e := range events {
+			isEvent[e] = true
+		}
 		for _, l := range w.signals[s].lines {
-			if captainRelevantRE(l, w.CaptainRE) {
+			if isEvent[l] {
 				relevant[s] = l
+			}
+			if needsDecision && decision.IsCaptainHeld(l) {
+				held[s] = l
 			}
 		}
 		class[s] = w.crewClass(s)
-		actionable = actionable || w.surfaced[s] || class[s] != crewWorking || relevant[s] != ""
+		actionable = actionable || w.surfaced[s] || class[s] != crewWorking || relevant[s] != "" || held[s] != ""
 	}
 	appended := 0
 	for _, s := range stories {
@@ -323,6 +387,15 @@ func (w *Watcher) signalTriage(open map[string]bool) (int, error) {
 			// an actionable batch; a captain-relevant line the classifier left routine surfaces on its own.
 			for _, wk := range sg.statuses {
 				if _, err := wake.Append(w.EpicDir, wk); err != nil {
+					return appended, err
+				}
+				appended++
+			}
+			if l := held[s]; l != "" && open[s] && !w.surfaced[s] {
+				// A captain-held declaration is a leader-owed decision even while the crew works: fm marks its row
+				// payload "needs-decision:" (fm-watch.sh:2661), cox raises input_required.
+				if err := w.surface(s, wake.KindInputRequired, s+" holds a decision for the captain: "+l,
+					map[string]any{"payload": "needs-decision:" + s}); err != nil {
 					return appended, err
 				}
 				appended++
@@ -353,7 +426,16 @@ func (w *Watcher) signalTriage(open map[string]bool) (int, error) {
 					ev[k] = v
 				}
 			}
-			if err := w.surface(s, wake.KindIdleNoDone, note, ev); err != nil {
+			kind := wake.KindIdleNoDone
+			if held[s] != "" {
+				// fm-watch.sh:2661: a decision-owned span marks the row payload "needs-decision:".
+				kind = wake.KindInputRequired
+				if ev == nil {
+					ev = map[string]any{}
+				}
+				ev["payload"] = "needs-decision:" + s
+			}
+			if err := w.surface(s, kind, note, ev); err != nil {
 				return appended, err
 			}
 			appended++
@@ -592,6 +674,9 @@ func (w *Watcher) busyTurnOverAge(story string) bool {
 	last := time.Unix(rec.TS, 0)
 	if cp := w.lastCheckpointTime(story); cp.After(last) {
 		last = cp
+	}
+	if p, ok := busy.ProgressAt(w.EpicDir, story); ok && p.After(last) {
+		last = p // explicit native progress (fm: .progress newer than the turn marker)
 	}
 	return w.now().Sub(last) >= w.busyTurnMax()
 }
@@ -1033,7 +1118,16 @@ func (w *Watcher) heartbeatPass(open map[string]bool, dispatchStory map[string]s
 		return err
 	}
 	surfaced := w.loadSurfaced()
-	var found []string
+	// The backstop reads each story's unsurfaced span through the same fold as the signal pass (fm
+	// mark_all_captain_relevant_surfaced marks the endpoints status_span_first_actionable_record classified), so a
+	// decision its own span closed is never resurrected here.
+	type cand struct {
+		m           backend.Message
+		story, disp string
+		line        string
+	}
+	var cands []cand
+	spans := map[string][]string{}
 	for _, m := range w.mailbox {
 		if m.ID == "" || !seen[m.ID] || surfaced[m.ID] || m.Type == "heartbeat" {
 			continue
@@ -1043,17 +1137,30 @@ func (w *Watcher) heartbeatPass(open map[string]bool, dispatchStory map[string]s
 			disp = strings.TrimPrefix(m.From, "dispatch:")
 		}
 		story := dispatchStory[disp]
-		line := statusFromMail(m)
-		if !open[story] || !captainRelevantRE(line, w.CaptainRE) {
+		if !open[story] {
 			continue
 		}
-		if err := w.surface(story, wake.KindStale, "heartbeat backstop: "+story+" has a captain-relevant status that never reached the leader: "+line,
-			map[string]any{"msg": m.ID, "dispatch": disp}); err != nil {
+		line := statusFromMail(m)
+		cands = append(cands, cand{m, story, disp, line})
+		spans[story] = append(spans[story], line)
+	}
+	live := map[string]spanEvents{}
+	for story, span := range spans {
+		live[story] = w.spanEvents(story, span)
+	}
+	var found []string
+	for _, c := range cands {
+		line, ok := live[c.story].take(c.line)
+		if !ok {
+			continue
+		}
+		if err := w.surface(c.story, wake.KindStale, "heartbeat backstop: "+c.story+" has a captain-relevant status that never reached the leader: "+line,
+			map[string]any{"msg": c.m.ID, "dispatch": c.disp}); err != nil {
 			return err
 		}
 		w.appendedCount++
-		w.markSurfaced(m.ID) // recorded per append, so a later failure never re-surfaces this one
-		found = append(found, m.ID)
+		w.markSurfaced(c.m.ID) // recorded per append, so a later failure never re-surfaces this one
+		found = append(found, c.m.ID)
 	}
 	w.sstamp("heartbeat", "last")
 	if len(found) > 0 {

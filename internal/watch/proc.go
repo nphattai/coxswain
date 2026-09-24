@@ -37,6 +37,9 @@ func PollGrace(poll time.Duration) time.Duration {
 // procRoot is the Linux-compatible /proc the identity read prefers; a var so a test can point it at a fake tree.
 var procRoot = "/proc"
 
+// procCmdlineRetries bounds the re-reads of an empty /proc cmdline (x 5ms): a process mid-exec, never a kernel thread.
+const procCmdlineRetries = 40
+
 // ProcIdentity returns a stable identity for pid that changes when the pid is reused: from /proc (stat field 22, the
 // start time in clock ticks since boot, immune to wall-clock steps, plus the full NUL-separated cmdline) when readable,
 // else `ps -o lstart= -o command=` pinned to LC_ALL=C so the date format is locale invariant. An error means the
@@ -48,6 +51,13 @@ func ProcIdentity(pid int) (string, error) {
 	dir := filepath.Join(procRoot, strconv.Itoa(pid))
 	stat, serr := os.ReadFile(filepath.Join(dir, "stat"))
 	cmdline, cerr := os.ReadFile(filepath.Join(dir, "cmdline"))
+	// A process caught inside execve (after close-on-exec released its spawner, before the kernel set up the new image's
+	// arguments) reads an empty cmdline for a moment: re-read within a short bound before calling it unreadable.
+	for i := 0; i < procCmdlineRetries && serr == nil && cerr == nil && len(cmdline) == 0; i++ {
+		time.Sleep(5 * time.Millisecond)
+		stat, serr = os.ReadFile(filepath.Join(dir, "stat"))
+		cmdline, cerr = os.ReadFile(filepath.Join(dir, "cmdline"))
+	}
 	if serr == nil && cerr == nil {
 		// Fields after the last ')' (comm may contain spaces and parens); index 19 there is stat field 22.
 		s := string(stat)

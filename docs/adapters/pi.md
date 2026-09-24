@@ -56,7 +56,10 @@ This table is checked against `internal/adapter/harness/pi.Harness.Card()` by
   Dispatch/resume/relaunch arm a per-story record at `<epic>/.cox/sessions/<story>.busy.json` (`cox busy arm`) and thread
   its incarnation gen to the worker as `COX_BUSY_GEN`. The extension Applies `busy` on `agent_start` and `idle` on
   `agent_settled` (`cox busy apply`, `source=pi-ext`); `agent_settled` fires even on abort/failure, so the idle report
-  covers those paths. A stale gen (a hook that outlived its incarnation) is rejected; a missing gen means no write.
+  covers those paths. A native harness's in-turn progress (the `codex-native:progress` event bus channel) is recorded
+  as the separate progress marker (`cox busy progress`, at most once a second) and never changes the busy state;
+  `turn_end` is a notification, not a busy edge (firstmate `fm-spawn.sh` Pi extension).
+  A stale gen (a hook that outlived its incarnation) is rejected; a missing gen means no write.
   Every backend (`ringReady`, `Composer`) and the watcher's idle/blocked passes consult this record FIRST - `idle` rings
   / reads empty, `busy` skips, and only `unknown`/absent falls back to the backend's own signal. This is why a Pi worker,
   whose TUI the Orca screen classifier does not recognize, is still steered when idle (dogfood F-A). Claude/Codex hook

@@ -1,5 +1,3 @@
-//go:build port
-
 package main
 
 // Port tests, wave 1 (story cox-supervision-port-turnend): firstmate's turn-end guard, stale banner, watch checkpoint,
@@ -1275,7 +1273,8 @@ func fmPiNodeCase(t *testing.T, name string) {
 		t.Fatalf("node is required to run the Pi guard case %s: %v", name, err)
 	}
 	suite := filepath.Join("..", "..", "internal", "adapter", "harness", "pi", "extension", "cox-supervisor.test.ts")
-	cmd := exec.Command("node", "--test", "--test-timeout=60000", "--test-name-pattern=^"+regexp.QuoteMeta(name)+"$", suite)
+	// The TAP reporter explicitly: node's default reporter differs by version and TTY, and the summary lines are read.
+	cmd := exec.Command("node", "--test", "--test-reporter=tap", "--test-timeout=60000", "--test-name-pattern=^"+regexp.QuoteMeta(name)+"$", suite)
 	for _, kv := range os.Environ() {
 		if !strings.HasPrefix(kv, "COX_") && !strings.HasPrefix(kv, "ORCA_") {
 			cmd.Env = append(cmd.Env, kv)
@@ -1647,7 +1646,26 @@ func fmWatchCheckpoint(t *testing.T) {
 
 	// fm: tests/fm-watch-checkpoint.test.sh:49
 	t.Run("registered_check_uses_preserved_watcher_environment", func(t *testing.T) {
-		notImplemented(t, "supervision-need registry: a registered source/check needs supervision with no open story")
+		// The checkpoint's watcher is a real `cox watch` started with the knob in its environment; the registered check
+		// runs inside that environment and its output reaches the pull wait as a check wake.
+		epic := fmEpic(t)
+		mustWrite(t, filepath.Join(epic, controlDir, "env-check.check.sh"),
+			"#!/usr/bin/env bash\nprintf 'env check fired with COX_CHECK_INTERVAL=%s\\n' \"${COX_CHECK_INTERVAL:-missing}\"\n")
+		if err := os.Chmod(filepath.Join(epic, controlDir, "env-check.check.sh"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if code := watchCheck([]string{"register", "env-check", "--epic", epic}); code != 0 {
+			t.Fatalf("could not register the checkpoint custom check: exit %d", code)
+		}
+		t.Setenv("COX_CHECK_INTERVAL", "1")
+		fmRealWatcher(t, epic)
+		code, out := fmCapture(t, func() int { return wakeWait([]string{"--epic", epic, "--max", "5s"}) })
+		if code != 0 || !strings.Contains(out, "check:") {
+			t.Fatalf("the check wake was not passed through (exit %d): %q", code, out)
+		}
+		if !strings.Contains(out, "COX_CHECK_INTERVAL=1") {
+			t.Fatalf("the watcher environment was not preserved for the registered check: %q", out)
+		}
 	})
 
 	// fm: tests/fm-watch-checkpoint.test.sh:69

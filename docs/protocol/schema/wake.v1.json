@@ -12,7 +12,7 @@
     "ts": { "type": "string", "description": "RFC 3339 UTC timestamp" },
     "epic": { "type": "string" },
     "story": { "type": "string" },
-    "kind": { "enum": ["question", "input_required", "pr_ready", "worker_done", "stuck", "runaway", "stale", "unknown_probe", "status", "idle_no_done", "quota_low", "quota_health"] },
+    "kind": { "enum": ["question", "input_required", "pr_ready", "worker_done", "stuck", "runaway", "stale", "unknown_probe", "status", "idle_no_done", "quota_low", "quota_health", "review_feedback", "review_decision", "check"] },
     "note": { "type": "string" },
     "evidence": { "type": "object", "additionalProperties": true },
     "acked": { "type": "boolean" }

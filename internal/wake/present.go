@@ -143,7 +143,7 @@ func Histories(epicDir string) ([]History, error) {
 		}
 		h := byStory[ev.Story]
 		if h == nil {
-			h = &History{Story: ev.Story, Kind: storyKind(epicDir, ev.Story)}
+			h = &History{Story: ev.Story, Kind: StoryKind(epicDir, ev.Story)}
 			byStory[ev.Story] = h
 			order = append(order, ev.Story)
 		}
@@ -222,9 +222,9 @@ func questionAnswered(epicDir, story, id string) bool {
 	return false
 }
 
-// storyKind is the story's frontmatter kind (ADR 0018: unset reads as ship); a story with no story file is unknown,
+// StoryKind is the story's frontmatter kind (ADR 0018: unset reads as ship); a story with no story file is unknown,
 // which firstmate's terminal-supersession rule leaves alone.
-func storyKind(epicDir, story string) decision.Kind {
+func StoryKind(epicDir, story string) decision.Kind {
 	b, err := os.ReadFile(filepath.Join(epicDir, "stories", story+".md"))
 	if err != nil {
 		return decision.KindUnknown

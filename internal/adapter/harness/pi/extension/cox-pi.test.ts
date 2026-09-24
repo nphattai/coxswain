@@ -29,6 +29,13 @@ function fakePi() {
     sendUserMessage: (text: string, opts: unknown) => {
       sent.push({ text, opts });
     },
+    // Pi's shared event bus (ExtensionAPI.events); a channel handler is recorded under its channel name.
+    events: {
+      on: (channel: string, h: (data: unknown) => unknown) => {
+        handlers[channel] = (data) => h(data);
+        return () => {};
+      },
+    },
   };
   return { pi, handlers, sent };
 }
@@ -176,6 +183,26 @@ test("agent_start -> busy, agent_settled -> idle (worker, gen present)", async (
     const lines = readFileSync(log, "utf8");
     assert.match(lines, /busy apply w1 busy --gen g123 --source pi-ext --event agent_start --epic/, "agent_start must apply busy with the env gen");
     assert.match(lines, /busy apply w1 idle --gen g123 --source pi-ext --event agent_settled --epic/, "agent_settled must apply idle with the env gen");
+  });
+  rmSync(epic, { recursive: true, force: true });
+});
+
+// firstmate fm-busy-adapter-wiring pi_extension_semantic_lifecycle: native progress writes its own marker (busy
+// progress, throttled to one a second) and never a busy edge; turn_end is not wired to any busy edge.
+test("native progress -> busy progress (throttled), never a state edge; turn_end is only a notification", async () => {
+  const epic = mkdtempSync(join(tmpdir(), "coxpi-progress-"));
+  const log = join(epic, "cox.log");
+  const stub = logStub(epic, log);
+  await busyEnv({ story: "w1", epic, gen: "g123", bin: stub }, async () => {
+    const { pi, handlers } = fakePi();
+    makeExtension(pi as never);
+    assert.equal(handlers["turn_end"], undefined, "turn_end must not be wired to a busy edge");
+    await handlers["codex-native:progress"]?.({ type: "commandExecution", phase: "completed" }, {});
+    await handlers["codex-native:progress"]?.({ type: "commandExecution", phase: "completed" }, {});
+    await waitFor(() => existsSync(log) && readFileSync(log, "utf8").includes("busy progress"), 1500);
+    await new Promise((r) => setTimeout(r, 300));
+    const lines = readFileSync(log, "utf8").split("\n").filter((l) => l.startsWith("busy"));
+    assert.deepEqual(lines, [`busy progress w1 --gen g123 --epic ${epic}`], "one throttled progress write, no busy apply");
   });
   rmSync(epic, { recursive: true, force: true });
 });

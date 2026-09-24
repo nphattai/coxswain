@@ -1,5 +1,3 @@
-//go:build port
-
 // Port tests (wave 1, cox-supervision-port-busy-wake): firstmate's wake-queue and drain suites (fm-wake-queue,
 // fm-wake-drain-unread-status, fm-wake-drain-open-decisions, fm-wake-drain-open-decisions-cursor,
 // fm-wake-drain-outcome-backstop, fm-wake-daemon-lifecycle-e2e) and docs/wedge-alarm.md translated case by case against
@@ -26,6 +24,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -40,6 +39,7 @@ import (
 	"github.com/nphattai/coxswain/internal/protocol/report"
 	"github.com/nphattai/coxswain/internal/protocol/status"
 	"github.com/nphattai/coxswain/internal/state"
+	"github.com/nphattai/coxswain/internal/supervision"
 	"github.com/nphattai/coxswain/internal/wake"
 	"github.com/nphattai/coxswain/internal/watch"
 	"github.com/nphattai/coxswain/internal/workspace"
@@ -236,7 +236,27 @@ func TestPortWakeQueue(t *testing.T) {
 		staleEnqueueBeforeSuppressor(t, errors.New("probe: terminal gone"))
 	})
 
-	// n/a check_output_is_queued fm:tests/fm-wake-queue.test.sh:157 - registered custom checks (fm-check-register.sh) have no cox counterpart
+	// fm: tests/fm-wake-queue.test.sh:157
+	t.Run("FM/fm-wake-queue/check_output_is_queued", func(t *testing.T) {
+		epic := newEpic(t)
+		control := filepath.Join(epic, state.ControlDir)
+		check := filepath.Join(control, "task.check.sh")
+		must(t, os.WriteFile(check, []byte("#!/usr/bin/env bash\nprintf 'merged: https://example.test/pr/1\\n'\n"), 0o700))
+		must(t, supervision.Register(control, "task"))
+		t.Setenv("COX_CHECK_INTERVAL", "0")
+		w := &watch.Watcher{EpicDir: epic, Backend: fake.New()}
+		_, _ = w.Tick()
+		found := false
+		for _, wk := range drain(t, epic) {
+			found = found || wk.Kind == wake.KindCheck && wk.Note == "check: "+check+": merged: https://example.test/pr/1"
+		}
+		if !found {
+			red(t, "watch.check-sweep", "check wake was not queued")
+		}
+		if _, err := os.Stat(filepath.Join(control, "watch", "check", "last")); err != nil {
+			red(t, "watch.check-sweep", "check cadence marker was not written after queue append")
+		}
+	})
 
 	// fm: tests/fm-wake-queue.test.sh:181
 	t.Run("FM/fm-wake-queue/atomic_double_drain", func(t *testing.T) {
@@ -503,6 +523,12 @@ func staleEnqueueBeforeSuppressor(t *testing.T, probeErr error) {
 	must(t, os.WriteFile(hb, nil, 0o644))
 	old := time.Now().Add(-time.Hour)
 	must(t, os.Chtimes(hb, old, old))
+	// fm primes .hash-$key to the pane's current hash (fm-wake-queue.test.sh:105,137): the quiet interval is already
+	// running. cox's analog is the story's activity signature (no busy record, no activity: "-|").
+	sig := filepath.Join(epic, state.ControlDir, "watch", "sig", story)
+	must(t, os.MkdirAll(filepath.Dir(sig), 0o755))
+	must(t, os.WriteFile(sig, []byte("-|"), 0o644))
+	stale := filepath.Join(epic, state.ControlDir, "watch", "stale", story) // fm .stale-$key, the stale suppressor
 	b := fake.New()
 	b.Liveness = backend.Unknown
 	w := &watch.Watcher{EpicDir: epic, Backend: b, StaleMin: time.Minute}
@@ -512,19 +538,32 @@ func staleEnqueueBeforeSuppressor(t *testing.T, probeErr error) {
 	}
 	_, _ = w.Tick()
 	if info, err := os.Stat(hb); err == nil && time.Since(info.ModTime()) < time.Minute {
-		red(t, "watch.stale-enqueue-order", "the stale suppressor (heartbeat) advanced although the wake was never enqueued")
+		red(t, "watch.stale-enqueue-order", "the stale quiet clock (heartbeat) advanced although the wake was never enqueued")
+	}
+	if _, err := os.Stat(stale); err == nil {
+		red(t, "watch.stale-enqueue-order", "the stale suppressor advanced although the wake was never enqueued")
 	}
 	must(t, os.Remove(queuePath(epic)))
 	if probeErr != nil {
 		b.FailNext("Probe", probeErr)
 	}
 	_, _ = w.Tick()
+	// fm drains a "stale" row (fm-wake-queue.test.sh:113,148); a failed liveness probe is cox's unknown_probe (F08).
+	want := wake.KindStale
+	if probeErr != nil {
+		want = wake.KindUnknownProbe
+	}
 	found := false
+	var got []wake.Kind
 	for _, wk := range drain(t, epic) {
-		found = found || wk.Kind == wake.KindUnknownProbe
+		found = found || wk.Kind == want
+		got = append(got, wk.Kind)
 	}
 	if !found {
-		red(t, "watch.stale-enqueue-order", "the stale wake lost to a failed enqueue never surfaced on the next tick")
+		red(t, "watch.stale-enqueue-order", "the %s wake lost to a failed enqueue never surfaced on the next tick: %v", want, got)
+	}
+	if b, _ := os.ReadFile(stale); string(b) != "-|" {
+		red(t, "watch.stale-enqueue-order", "the stale suppressor was not advanced after the enqueue: %q", b)
 	}
 }
 
@@ -1305,6 +1344,13 @@ func TestPortWedgeAlarm(t *testing.T) {
 	// fm: docs/wedge-alarm.md:15
 	t.Run("FM/wedge-alarm/auto_resolves_to_osascript_on_macos", func(t *testing.T) {
 		_, got := wedgeRig(t, "auto", watch.DoorbellFailAlarm)
+		if runtime.GOOS != "darwin" {
+			// fm: other platforms have no built-in OS channel (a command: directive is the configured route).
+			if len(got) != 0 {
+				red(t, "watch.leader-alarm-channels", "auto resolved to %+v on %s, want no built-in channel", got, runtime.GOOS)
+			}
+			return
+		}
 		if len(got) != 1 || got[0].channel != "osascript" {
 			red(t, "watch.leader-alarm-channels", "auto resolved to %+v, want one osascript alarm on macOS", got)
 		}
@@ -1341,8 +1387,12 @@ func TestPortWedgeAlarm(t *testing.T) {
 			red(t, "watch.leader-alarm-default", "an absent alerts.channel resolves to %q: N failed leader doorbells raise no out-of-band alarm by default", ch)
 		}
 		_, got := wedgeRig(t, "", watch.DoorbellFailAlarm)
-		if len(got) != 1 {
-			red(t, "watch.leader-alarm-default", "an unset channel fired %d alarms after %d failed doorbells, want 1", len(got), watch.DoorbellFailAlarm)
+		want := 1 // fm: an absent config behaves as auto, default-on on macOS; elsewhere auto has no built-in channel
+		if runtime.GOOS != "darwin" {
+			want = 0
+		}
+		if len(got) != want {
+			red(t, "watch.leader-alarm-default", "an unset channel fired %d alarms after %d failed doorbells on %s, want %d", len(got), watch.DoorbellFailAlarm, runtime.GOOS, want)
 		}
 	})
 
@@ -1391,7 +1441,21 @@ func TestPortWedgeAlarm(t *testing.T) {
 		b, _ := os.ReadFile(pidFile)
 		var pid int
 		fmt.Sscan(strings.TrimSpace(string(b)), &pid)
-		if pid > 0 && syscall.Kill(pid, 0) == nil {
+		// A killed orphan is a zombie until init reaps it, and kill(pid, 0) succeeds on a zombie (Linux): allow the
+		// reap a bounded moment; a child that really survived is still alive after it.
+		alive := func() bool {
+			if pid <= 0 || syscall.Kill(pid, 0) != nil {
+				return false
+			}
+			stat, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid)) // Linux only; absent elsewhere
+			if i := strings.LastIndexByte(string(stat), ')'); err == nil && i >= 0 && strings.HasPrefix(string(stat[i+1:]), " Z") {
+				return false // killed, awaiting its reaper
+			}
+			return true
+		}
+		for end := time.Now().Add(3 * time.Second); alive() && time.Now().Before(end); time.Sleep(20 * time.Millisecond) {
+		}
+		if alive() {
 			_ = syscall.Kill(pid, syscall.SIGKILL)
 			red(t, "watch.leader-alarm", "the timed-out notifier's child (pid %d) outlived the timeout: only the shell was killed, not its process group", pid)
 		}

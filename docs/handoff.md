@@ -147,6 +147,16 @@ fixes. See [ADR 0014](decisions/0014-turn-boundary-guarded.md).
 A watcher whose epic dir, `.cox` tree, or own binary has vanished - or whose epic has a `.cox.closed` marker - evicts
 itself, and `cox doctor` lists any live `cox watch` process whose epic is outside every known workspace.
 
+### Registered checks and the cycle ledger
+
+`cox watch check register <id> --epic <dir>` binds `<epic>/.cox/<id>.check.sh` (a private 0700 file) to its bytes. The
+watcher then runs it, from a snapshot of exactly those bytes and in its own environment, every `COX_CHECK_INTERVAL`
+seconds (default 300), each run bounded by `COX_CHECK_TIMEOUT` seconds (default 30). Non-empty output is an urgent
+`check` wake; a check whose bytes drifted is never run and is reported instead (firstmate's check sweep). Each watcher
+cycle's close - the watcher's own exit, or the stop-rewake waiter attached to it - is one record in
+`<epic>/.cox/watch-cycle-exits.log`, capped by `COX_WATCH_CYCLE_LOG_MAX_BYTES` (default 262144) and
+`COX_WATCH_CYCLE_LOG_KEEP_LINES` (default 1000). A signalled waiter records `reason=arm-interrupted` and exits 128+n.
+
 ### Leader reachability and the alerts channel
 
 The watcher nudges the leader terminal for a standing unacked urgent backlog, rate-limited so an unchanged backlog is

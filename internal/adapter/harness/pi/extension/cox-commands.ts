@@ -63,6 +63,18 @@ export const coxArgs = {
     epic,
   ],
 
+  // busyProgress records native-harness activity for the armed incarnation (firstmate fm-busy-event.sh progress):
+  // `cox busy progress <story> --gen G --epic <dir>`. It touches the progress marker only; a stale gen is refused.
+  busyProgress: (epic: string, story: string, gen: string): string[] => [
+    "busy",
+    "progress",
+    story,
+    "--gen",
+    gen,
+    "--epic",
+    epic,
+  ],
+
   // interruptWait blocks until a durable interrupt record appears for the story (DESIGN wave-3 item 4): exit 0 = an
   // interrupt arrived (the record is marked handled by cox), exit 3 = timeout. The extension spawns it per turn and
   // aborts the running turn on exit 0. It is the worker-side counterpart to the leader's `cox hook stop-rewake` child.

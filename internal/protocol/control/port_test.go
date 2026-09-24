@@ -1,5 +1,3 @@
-//go:build port
-
 // Port tests (wave 1, cox-supervision-port-busy-wake): firstmate's control-plane suites fm-control, fm-control-relaunch
 // and fm-control-herdr-smoke translated case by case against cox's control channel (control.Controller Interrupt/Park/
 // Relaunch/Reconcile, the `cox control` and `cox story resume` verbs) and the harness-owned busy record. Firstmate

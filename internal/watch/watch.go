@@ -95,7 +95,11 @@ type Watcher struct {
 	// CaptainRE overrides the captain-relevance regex a quiet worker's last status line is read with (FM_CAPTAIN_RE);
 	// nil => the default verbs and tokens.
 	CaptainRE *regexp.Regexp
-	Now       func() time.Time
+	// CheckInterval / CheckTimeout pace the registered custom-check sweep (FM_CHECK_INTERVAL / FM_CHECK_TIMEOUT);
+	// 0 => COX_CHECK_INTERVAL / COX_CHECK_TIMEOUT seconds, else DefaultCheckInterval / DefaultCheckTimeout.
+	CheckInterval time.Duration
+	CheckTimeout  time.Duration
+	Now           func() time.Time
 
 	tickCount     int       // ticks since start, for pacing the reconcile pass
 	prevTick      time.Time // when the previous Tick ran (zero before the first)
@@ -104,12 +108,14 @@ type Watcher struct {
 	// Per-tick triage scratch (reset by Tick): the no-verb signal batch, the stories that surfaced, the probe cache and
 	// the declaration the current stale alarm binds its throttle to.
 	signals    map[string]*signal
+	spans      map[string][]string // this tick's status span per story (mail and terminal-plane reports), in order
 	surfaced   map[string]bool
 	mailbox    []backend.Message // this tick's mailbox read, for the heartbeat backstop
 	pendingAck string            // this tick's delivery, acked once every wake it produced is written
 	ci         map[string]ciResult
 	probes     map[string]probeResult
 	waitDecl   string
+	stop       <-chan struct{} // Run's stop channel; a running custom check is cancelled when it closes
 }
 
 func (w *Watcher) now() time.Time {
@@ -141,7 +147,7 @@ func orDur(v, def time.Duration) time.Duration {
 // appended (0 when nothing was actionable). It never blocks; Run wraps it in a poll loop.
 func (w *Watcher) Tick() (int, error) {
 	w.tickCount++
-	w.signals, w.surfaced, w.probes, w.mailbox, w.ci, w.pendingAck, w.appendedCount = nil, nil, nil, nil, nil, "", 0
+	w.signals, w.spans, w.surfaced, w.probes, w.mailbox, w.ci, w.pendingAck, w.appendedCount = nil, nil, nil, nil, nil, nil, "", 0
 	w.Sessions = LoadSessions(w.EpicDir) // pick up any story dispatched since the last tick (item 1)
 	dispatchStory, err := w.dispatchStoryMap()
 	if err != nil {
@@ -153,9 +159,17 @@ func (w *Watcher) Tick() (int, error) {
 	}
 	appended := 0
 
+	// Registered custom checks run before the signal scan (fm-watch.sh:2470: a check placed after it would starve
+	// behind a chatty crew).
+	n, err := w.checkPass()
+	if err != nil {
+		return appended, err
+	}
+	appended += n
+
 	// Per-tick urgency no longer gates the doorbell; nudgeLeader reads the standing unacked backlog and rate-limits the
 	// re-nudge itself (item 3, B-33), so the urg return of each pass is discarded here.
-	n, _, err := w.mailPass(dispatchStory)
+	n, _, err = w.mailPass(dispatchStory)
 	if err != nil {
 		return appended, err
 	}
@@ -372,6 +386,7 @@ func (w *Watcher) Run(stop <-chan struct{}, poll time.Duration) {
 	if poll <= 0 {
 		poll = DefaultPoll
 	}
+	w.stop = stop
 	for {
 		// Self-eviction (item 2, B-37): a watcher whose epic dir, .cox control tree, or own binary has vanished, or whose
 		// epic has been closed (.cox.closed), keeps polling a temp root forever otherwise. Check before Tick so the pass
@@ -469,8 +484,14 @@ func (w *Watcher) mailPass(dispatchStory map[string]string) (int, bool, error) {
 	if err != nil {
 		return 0, false, err
 	}
-	appended := 0
-	urgent := false
+	// fm reads each status file's span appended since the seen offset as one unit (status_span_first_actionable_record):
+	// collect every story's new lines first, fold each span once, then emit in message order.
+	type entry struct {
+		story, line, id string
+		wk              wake.Wake
+	}
+	var entries []entry
+	spans := map[string][]string{}
 	for _, m := range msgs {
 		if m.ID != "" && seen[m.ID] {
 			continue
@@ -491,7 +512,8 @@ func (w *Watcher) mailPass(dispatchStory map[string]string) (int, bool, error) {
 			w.markSeen(m.ID)
 			continue
 		}
-		w.recordStatus(story, statusFromMail(m))
+		line := statusFromMail(m)
+		w.recordStatus(story, line)
 		note := wakeNote(kind, m.Subject, m.Body)
 		wk := wake.Wake{
 			Epic: filepath.Base(w.EpicDir), Story: story, Kind: kind,
@@ -501,9 +523,32 @@ func (w *Watcher) mailPass(dispatchStory map[string]string) (int, bool, error) {
 		if full := wakeFull(kind, m.Subject, m.Body); full != note {
 			wk.Full = full // keep the untruncated text for `cox wake drain --full`
 		}
-		if !wake.IsUrgent(kind) {
+		entries = append(entries, entry{story, line, m.ID, wk})
+		spans[story] = append(spans[story], line)
+		w.spanAdd(story, line)
+	}
+	live := map[string]spanEvents{} // per story: the span's actionable events
+	for story, span := range spans {
+		live[story] = w.spanEvents(story, span)
+	}
+	appended := 0
+	urgent := false
+	for _, e := range entries {
+		story, wk := e.story, e.wk
+		if wake.IsUrgent(wk.Kind) {
+			if event, ok := live[story].take(e.line); ok {
+				if event != e.line {
+					// A reserved key spoken by a foreign writer opens nothing; it surfaces labeled for reconciliation.
+					wk.Note = truncate(reconPrefix+wk.Note, 400)
+				}
+			} else if spanDecision(e.line) {
+				// A needs-decision/blocked the same span already closed (or superseded) is not actionable: routine.
+				wk.Kind = wake.KindStatus
+			}
+		}
+		if !wake.IsUrgent(wk.Kind) {
 			// A no-verb signal: triaged with the rest of this tick's batch (absorbed only if provably working).
-			line, id := statusFromMail(m), m.ID
+			line, id := e.line, e.id
 			w.addSignal(story, func(s *signal) {
 				s.statuses = append(s.statuses, wk)
 				s.lines = append(s.lines, line)
@@ -516,12 +561,12 @@ func (w *Watcher) mailPass(dispatchStory map[string]string) (int, bool, error) {
 		}
 		appended++
 		urgent = true
-		w.markSurfaced(m.ID)
+		w.markSurfaced(e.id)
 		if w.surfaced == nil {
 			w.surfaced = map[string]bool{}
 		}
 		w.surfaced[story] = true
-		w.markSeen(m.ID)
+		w.markSeen(e.id)
 	}
 	// The delivery is acked by Tick only after the signal triage has durably written every wake (and the heartbeat
 	// backstop has read this delivery), never before: the 2026-09-15 lesson.

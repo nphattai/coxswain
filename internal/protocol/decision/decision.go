@@ -289,6 +289,30 @@ func Fold(lines []string, kind Kind, v Verbs) []Decision {
 	return open
 }
 
+// OpenActivities folds a status history into the keyed activity phases still open, most-recently-opened last
+// (fm-classify-lib.sh:1869 status_open_activities): a working or paused line opens (or replaces) its key's phase, and a
+// done, failed, needs-decision, blocked, resolve or captain-held line under the same key closes it. A line with a
+// malformed key is ignored; an unkeyed line is the default key.
+func OpenActivities(lines []string, v Verbs) []Decision {
+	var open []Decision
+	for i, line := range lines {
+		if trimSpace(line) == "" {
+			continue
+		}
+		key, ok := Key(line)
+		if !ok {
+			continue
+		}
+		switch verb := Verb(line); verb {
+		case "working", PausedVerb:
+			open = append(drop(open, key), Decision{Key: key, Verb: verb, Note: Note(line), Line: i + 1})
+		case "done", "failed", "needs-decision", "blocked", v.resolve(), v.held():
+			open = drop(open, key)
+		}
+	}
+	return open
+}
+
 // Open reports whether key has a record in an open set.
 func Open(open []Decision, key string) (Decision, bool) {
 	for _, d := range open {
