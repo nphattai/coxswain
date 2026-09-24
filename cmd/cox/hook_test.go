@@ -601,6 +601,45 @@ func TestPromptDrainHeaderNamesEpicDir(t *testing.T) {
 // A leader with no saved checkpoint gets the session-start digest (cox bearings, firstmate fm-session-start.sh; this
 // supersedes F-6's "no session-start text") but never a checkpoint or a "start from the story" notice; with a checkpoint
 // saved, it is injected.
+// The session-start digest never forks the deferred forge worker from a test binary: re-executing cox.test would run
+// the suite again as an orphan that spawns more of itself (the 519-orphan fork bomb). The digest names the refusal.
+func TestSessionStartDigestDoesNotForkUnderTest(t *testing.T) {
+	ws := t.TempDir()
+	mustWrite(t, filepath.Join(ws, "cox", "workspace.json"), `{"repos":[{"alias":"a","path":"/x","production":"main"}]}`)
+	if err := os.MkdirAll(filepath.Join(ws, "proj", "epics", "e1", ".cox"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	wt := t.TempDir()
+	gitInitRepo(t, wt)
+	// A stable leader identity, so the digest owns the lease and reaches the deferred step (without one it is
+	// read-only and never detaches; locally a claude ancestor would supply one, a CI runner has none).
+	t.Setenv("ORCA_TERMINAL_HANDLE", "term-fork-test")
+	t.Setenv("COX_EPIC", "")
+	t.Setenv("COX_STORY", "")
+	t.Setenv("COX_BIN", "")
+	t.Chdir(ws)
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	prev := os.Stdout
+	os.Stdout = w
+	code := cmdHook([]string{"session-start", "--worktree", wt})
+	os.Stdout = prev
+	_ = w.Close()
+	out, _ := io.ReadAll(r)
+	if code != 0 {
+		t.Fatalf("session-start exit %d", code)
+	}
+	if !strings.Contains(string(out), "deferred forge worker could not start (deferred worker not started under a test binary)") {
+		t.Fatalf("the digest must name the refused deferred worker, got %q", out)
+	}
+	time.Sleep(200 * time.Millisecond)
+	if ps, _ := exec.Command("pgrep", "-f", "bearings deferred --root "+ws).Output(); len(strings.TrimSpace(string(ps))) > 0 {
+		t.Fatalf("session-start forked a deferred worker under the test binary: pids %s", ps)
+	}
+}
+
 func TestLeaderSessionStartSilentWithoutCheckpoint(t *testing.T) {
 	ws := t.TempDir()
 	mustWrite(t, filepath.Join(ws, "cox", "workspace.json"), `{"repos":[{"alias":"a","path":"/x","production":"main"}]}`)
