@@ -189,6 +189,19 @@ export default function (pi: ExtensionAPI): void {
     );
   }
 
+  // Native progress (firstmate fm-spawn.sh:4240-4250): a native harness can make progress inside one Pi turn. It is
+  // recorded as the separate progress marker (`cox busy progress`), throttled to one write a second, so a long turn is
+  // not mistaken for a wedge; it never changes the semantic busy state or fabricates a completed turn. turn_end stays
+  // a notification: it is not wired to any busy edge.
+  let lastProgress = 0;
+  pi.events?.on?.("codex-native:progress", () => {
+    if (!busyGen || !epic || !story) return;
+    const now = Date.now();
+    if (now - lastProgress < 1000) return;
+    lastProgress = now;
+    execCox(cox, coxArgs.busyProgress(epic, story, busyGen), process.env, () => {}); // best-effort, like applyBusy
+  });
+
   let child: ChildProcess | null = null;
   const latch = new TurnEndLatch();
 

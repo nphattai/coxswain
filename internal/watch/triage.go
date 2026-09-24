@@ -675,6 +675,9 @@ func (w *Watcher) busyTurnOverAge(story string) bool {
 	if cp := w.lastCheckpointTime(story); cp.After(last) {
 		last = cp
 	}
+	if p, ok := busy.ProgressAt(w.EpicDir, story); ok && p.After(last) {
+		last = p // explicit native progress (fm: .progress newer than the turn marker)
+	}
 	return w.now().Sub(last) >= w.busyTurnMax()
 }
 

@@ -2460,13 +2460,14 @@ func TestPortTriageC(t *testing.T) {
 	t.Run(s+"busy_pane_native_progress_resets_age", func(t *testing.T) {
 		// fm: tests/fm-watch-triage.test.sh:4501
 		// cox: busyTurnMaxPass
-		// Native progress without a completed turn = a fresh busy event on the same incarnation.
+		// Native progress without a completed turn: fm touches only <id>.progress (cox busy progress), never the record.
 		r := newPortRig(t)
 		r.w.BusyTurnMax = time.Hour
 		r.busySet(busy.Busy)
 		r.pCAgeBusy(2 * time.Hour)
 		r.tick()
-		r.pCApply(busy.Busy, "PostToolUse")
+		rec, _ := busy.ReadRecord(r.epic, portStory)
+		portMust(t, busy.Progress(r.epic, portStory, rec.Gen))
 		wantAbsorbed(t, r.tick(), "fresh native progress resets the busy age")
 		for _, f := range []string{"since", "esc"} {
 			if _, err := os.Stat(filepath.Join(r.w.watchDir(), f, portStory)); err == nil {
