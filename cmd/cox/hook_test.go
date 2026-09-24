@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -460,8 +461,8 @@ func TestPromptDrainWarnsDuplicateLeader(t *testing.T) {
 
 // --- item 1: turn-boundary watcher guard ---
 
-// A dead watcher for an epic with an open story is restarted (the startWatcher-equivalent) and the turn ends cleanly
-// (exit 0): the fresh watcher now delivers wakes, so the leader is not blind.
+// A dead watcher for an epic with an open story is restarted (the startWatcher-equivalent). A confirmed restart ends the
+// guard silently (firstmate: the Stop auto-arm's healthy close is clean, no notice) and the idle wait runs.
 func TestGuardRestartsDeadWatcher(t *testing.T) {
 	epic := t.TempDir() // no watch.pid => the watcher is dead
 	var out bytes.Buffer
@@ -471,13 +472,13 @@ func TestGuardRestartsDeadWatcher(t *testing.T) {
 		launch: func(ep string) error { launched = ep; return nil },
 	})
 	if code != 0 {
-		t.Fatalf("a restarted watcher must end the turn with exit 0, got %d", code)
+		t.Fatalf("a restarted watcher must not block the turn, got %d", code)
 	}
 	if launched != epic {
 		t.Fatalf("the guard must restart the dead watcher, launched=%q", launched)
 	}
-	if !bytes.Contains(out.Bytes(), []byte("restarted")) {
-		t.Fatalf("expected a restart notice, got %q", out.String())
+	if out.Len() != 0 {
+		t.Fatalf("a confirmed restart must be silent, got %q", out.String())
 	}
 }
 
@@ -485,10 +486,9 @@ func TestGuardRestartsDeadWatcher(t *testing.T) {
 // repair line so the leader runs cox watch --replace.
 func TestGuardBlocksWhenRestartRefused(t *testing.T) {
 	epic := t.TempDir()
-	blocks := filepath.Join(t.TempDir(), "blocks")
 	var out bytes.Buffer
 	code := runStopRewake(rewakeCfg{
-		epics: []string{epic}, guardEpics: []string{epic}, out: &out, sleep: noSleep, blocksPath: blocks,
+		epics: []string{epic}, guardEpics: []string{epic}, out: &out, sleep: noSleep,
 		launch: func(string) error { return errWatchRefused },
 	})
 	if code != 2 {
@@ -497,27 +497,6 @@ func TestGuardBlocksWhenRestartRefused(t *testing.T) {
 	want := "cox watch --epic " + epic + " --replace"
 	if !strings.Contains(out.String(), want) {
 		t.Fatalf("expected the repair line %q, got %q", want, out.String())
-	}
-}
-
-// The block budget bounds the wedge: once it is exhausted (a 4th block in one turn) the guard lets the turn end (exit 0)
-// with a warning, so a permanently broken watcher can never wedge the leader.
-func TestGuardWedgeReleaseAfterBudget(t *testing.T) {
-	epic := t.TempDir()
-	blocks := filepath.Join(t.TempDir(), "blocks")
-	if err := os.WriteFile(blocks, []byte("3"), 0o644); err != nil { // three blocks already spent this turn
-		t.Fatal(err)
-	}
-	var out bytes.Buffer
-	code := runStopRewake(rewakeCfg{
-		epics: []string{epic}, guardEpics: []string{epic}, out: &out, sleep: noSleep, blocksPath: blocks,
-		launch: func(string) error { return errWatchRefused },
-	})
-	if code != 0 {
-		t.Fatalf("the 4th block in a turn must exit 0 to avoid a wedge, got %d", code)
-	}
-	if !bytes.Contains(out.Bytes(), []byte("wedge")) {
-		t.Fatalf("expected a wedge-release warning, got %q", out.String())
 	}
 }
 
@@ -717,31 +696,6 @@ func TestLaunchWatcherConfirmsFreshTick(t *testing.T) {
 	}
 }
 
-// Finding 8 / AC5: a turn a stop-rewake reopen opened (Pi runs prompt-drain on it) keeps the block budget; only a user
-// turn resets it. On beedd57 every Pi reopen reset it, so a dead watcher reopened 49 model turns with no warning.
-func TestPromptDrainReopenKeepsBlockBudget(t *testing.T) {
-	ws := t.TempDir()
-	mustWrite(t, filepath.Join(ws, "cox", "workspace.json"), `{"repos":[{"alias":"a","path":"/x","production":"main"}]}`)
-	t.Chdir(ws)
-	t.Setenv("TMPDIR", t.TempDir())
-	t.Setenv("ORCA_TERMINAL_HANDLE", "pi-test")
-	blocks := rewakeBlocksPath("pi-test")
-	mustWrite(t, blocks, "2")
-	openStdin(t)
-	if code := cmdHook([]string{"prompt-drain", "--harness", "pi", "--reopen"}); code != 0 {
-		t.Fatalf("prompt-drain --reopen exit %d", code)
-	}
-	if b, err := os.ReadFile(blocks); err != nil || strings.TrimSpace(string(b)) != "2" {
-		t.Fatalf("a reopen-opened turn must keep the block budget, got %q %v", b, err)
-	}
-	if code := cmdHook([]string{"prompt-drain", "--harness", "pi"}); code != 0 {
-		t.Fatalf("prompt-drain exit %d", code)
-	}
-	if _, err := os.Stat(blocks); !os.IsNotExist(err) {
-		t.Fatalf("a user turn must reset the block budget, stat err=%v", err)
-	}
-}
-
 // Pi re-arms its own idle waiter on exit 0, so stop-rewake under --harness pi never ticks (a tick would cost a model
 // turn); claude keeps ticking.
 func TestStopRewakePiNeverTicks(t *testing.T) {
@@ -751,5 +705,24 @@ func TestStopRewakePiNeverTicks(t *testing.T) {
 	code := runStopRewake(rewakeCfg{epics: []string{epic}, harness: "pi", maxWait: 0, batchMax: time.Second, poll: time.Second, out: &out, sleep: noSleep})
 	if code != 0 || out.Len() != 0 {
 		t.Fatalf("pi: MAX_WAIT must exit 0 with no tick, got %d %q", code, out.String())
+	}
+}
+
+// R4 (firstmate fm_autoarm_claim_open): the single-waiter lock only defers a Stop to a waiter it can still prove -
+// live pid, matching recorded identity, not stuck. A bare pid (the pre-port format, or a reused pid) never passes, so a
+// stale lock over a live unrelated process can no longer end a turn blind.
+func TestRewakeWaiterAliveNeedsIdentity(t *testing.T) {
+	lock := filepath.Join(t.TempDir(), "cox-rewake-x.lock")
+	mustWrite(t, lock, strconv.Itoa(os.Getpid()))
+	if rewakeWaiterAlive(lock, nil) {
+		t.Fatal("a bare live pid must not pass for a live waiter")
+	}
+	mustWrite(t, lock, fmt.Sprintf("%d\nsomeone-else\n", os.Getpid()))
+	if rewakeWaiterAlive(lock, nil) {
+		t.Fatal("a mismatched identity (pid reuse) must not pass for a live waiter")
+	}
+	mustWrite(t, lock, fmt.Sprintf("%d\n%s\n", os.Getpid(), identityOf(os.Getpid())))
+	if !rewakeWaiterAlive(lock, nil) {
+		t.Fatal("this process's own identity-matched fresh lock is a live waiter")
 	}
 }

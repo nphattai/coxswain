@@ -61,9 +61,9 @@ func cmdHook(args []string) int {
 	case "stop-rewake":
 		return hookStopRewake(*epicDir, *harnessName, *runGuard)
 	case "precompact":
-		return hookLeaderCheckpoint("precompact", *epicDir, *story, *worktree, *harnessName, hookPreCompact)
+		return hookLeaderCheckpoint("precompact", *epicDir, *story, *worktree, hookPreCompact)
 	case "session-start":
-		return hookLeaderCheckpoint("session-start", *epicDir, *story, *worktree, *harnessName, hookSessionStart)
+		return hookLeaderCheckpoint("session-start", *epicDir, *story, *worktree, hookSessionStart)
 	default:
 		fmt.Fprintf(os.Stderr, "cox hook: unknown hook %q\n", name)
 		return 2
@@ -181,7 +181,7 @@ func mustCwd() string {
 // narrows to that one checkpoint. Otherwise it resolves the workspace and runs the hook for the leader checkpoint
 // (_leader) of every active epic, best-effort: one epic's checkpoint failure must not crash the leader's turn. Outside a
 // workspace it prints one line and exits 0.
-func hookLeaderCheckpoint(name, epicDir, story, worktree, harnessName string, fn func(epicDir, story, worktree string) int) int {
+func hookLeaderCheckpoint(name, epicDir, story, worktree string, fn func(epicDir, story, worktree string) int) int {
 	if epicDir != "" && story != "" {
 		return fn(epicDir, story, worktree)
 	}
@@ -194,10 +194,6 @@ func hookLeaderCheckpoint(name, epicDir, story, worktree, harnessName string, fn
 	// take over is surfaced as the repair line in the session context.
 	if name == "session-start" {
 		guardWatchersSessionStart(guardEpics(epicDir), os.Stdout, os.Stderr)
-		// The leader's session-start digest (w2-bearings, firstmate fm-session-start.sh) for the workspace.
-		if ws, err := findWorkspaceRoot("."); err == nil {
-			_ = bearingsSessionStart(ws, sessionStartSource(os.Stdin), harnessName, os.Stdout)
-		}
 	}
 	st := story
 	if st == "" {
@@ -488,17 +484,6 @@ func hookStopRewake(epicDir, harnessName string, runGuard bool) int {
 	})
 }
 
-// sessionStartSource is the SessionStart envelope's source (startup, resume, compact, clear), "startup" when absent.
-func sessionStartSource(in io.Reader) string {
-	var p struct {
-		Source string `json:"source"`
-	}
-	if json.Unmarshal(hookStdin(in), &p) == nil && p.Source != "" {
-		return p.Source
-	}
-	return "startup"
-}
-
 // stopPayload is the Stop hook envelope fields the guard reads: the session the block budget is keyed on and the loop
 // guard (firstmate reads `stopHookActive` first when it is a boolean, else `stop_hook_active`).
 type stopPayload struct {
@@ -720,11 +705,20 @@ func launchWatcher(epicDir string) error {
 	}
 }
 
-// watcherHealthy is firstmate's PID-strict fm_watcher_healthy: watch.pid names a live process whose identity matches
-// the .cox/watch.identity sidecar (an identityless or reused pid is not a watcher) and watch/lasttick is younger than
-// the poll-derived grace max(300s, poll+60s) (fm_poll_derived_grace; supersedes ADR 0014's 3 x poll). A live watcher
-// whose beacon has gone stale is wedged, exactly as a dead one is.
-func watcherHealthy(epicDir string, now time.Time) bool { return watch.Healthy(epicDir, now, 0) }
+// watcherHealthy reports whether the epic's watcher is alive AND fresh: its watch.pid names a live process and
+// watch/lasttick was written within 3 tick intervals (watch.DefaultPoll, the same constant the loop uses). A live
+// watcher whose beacon has gone stale is unhealthy (wedged), exactly as a dead one is (item 1).
+func watcherHealthy(epicDir string, now time.Time) bool {
+	pid := readPid(watchPidPath(epicDir))
+	if pid <= 0 || !processAlive(pid) {
+		return false
+	}
+	info, err := os.Stat(filepath.Join(epicDir, controlDir, "watch", "lasttick"))
+	if err != nil {
+		return false
+	}
+	return now.Sub(info.ModTime()) < 3*watch.DefaultPoll
+}
 
 // rewakeRepairMsg is the reopen text naming every blocked epic and the exact repair command.
 func rewakeRepairMsg(blocked []string) string {

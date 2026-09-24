@@ -13,6 +13,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -113,14 +114,15 @@ func (r fmGuardResult) blocked() bool { return !r.proceed && r.code == 2 }
 func fmLaunchRefused(string) error { return errWatchRefused }
 
 // fmGuard runs the turn-boundary guard for epic exactly as hookStopRewake computes it (guardEpics over the explicit
-// epic), with launch standing in for launchWatcher so no real `cox watch` is spawned. blocks is the per-terminal budget
-// file ("" = no ORCA_TERMINAL_HANDLE). A nil launch fails the case if the guard tries to restart.
-func fmGuard(t *testing.T, epic string, launch func(string) error, blocks string) fmGuardResult {
+// epic; for Claude the Stop auto-arm then the --claude guard), with launch standing in for launchWatcher so no real
+// `cox watch` is spawned. The block budget lives in the epic's control dir (firstmate's state dir). A nil launch fails
+// the case if the guard tries to restart.
+func fmGuard(t *testing.T, epic string, launch func(string) error) fmGuardResult {
 	t.Helper()
 	var out bytes.Buffer
 	r := fmGuardResult{}
 	cfg := rewakeCfg{
-		epics: []string{epic}, guardEpics: guardEpics(epic), out: &out, stdout: &out, sleep: noSleep, blocksPath: blocks,
+		epics: []string{epic}, guardEpics: guardEpics(epic), out: &out, stdout: &out, sleep: noSleep,
 		launch: func(ep string) error {
 			r.launched = append(r.launched, ep)
 			if launch == nil {
@@ -135,8 +137,81 @@ func fmGuard(t *testing.T, epic string, launch func(string) error, blocks string
 	return r
 }
 
-// fmBlocks is a fresh per-terminal block-budget file path.
-func fmBlocks(t *testing.T) string { return filepath.Join(t.TempDir(), "cox-rewake-test.blocks") }
+// fmBudgetPath is the epic's Claude block budget (firstmate state/.turnend-claude-blocks).
+func fmBudgetPath(epic string) string { return coxPath(epic, turnendBudgetName) }
+
+// fmSeedBudget is seed_claude_budget: count consumed continuations charged against ledger epoch, for session "unknown"
+// (the session fmGuard and fmClaudeGuard run as; firstmate's sess-claude-mode).
+func fmSeedBudget(t *testing.T, epic string, count int, epoch string) {
+	t.Helper()
+	mustWrite(t, fmBudgetPath(epic), fmt.Sprintf("session=unknown\ncount=%d\nepoch=%s\n", count, epoch))
+}
+
+// fmLedger writes the auto-arm ledger entry (line 1, optional identity line 2); old ages it to 2020 (touch -t).
+func fmLedger(t *testing.T, epic, line, identity string, old bool) {
+	t.Helper()
+	body := line + "\n"
+	if identity != "" {
+		body += identity + "\n"
+	}
+	p := coxPath(epic, autoarmEpochName)
+	mustWrite(t, p, body)
+	if old {
+		fmAge(t, p)
+	}
+}
+
+// fmAge sets path's mtime to 2020-01-01 (firstmate `touch -t 202001010000`).
+func fmAge(t *testing.T, path string) {
+	t.Helper()
+	at := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	if err := os.Chtimes(path, at, at); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// fmSeedFailure is seed_claude_failure: the consumed failure notice and an old epoch-3 entry with outcome.
+func fmSeedFailure(t *testing.T, epic, outcome string) {
+	t.Helper()
+	mustWrite(t, coxPath(epic, failureNoticeName), "")
+	fmLedger(t, epic, "epoch=3 owner_pid=999 outcome="+outcome+" updated_at=1", "", true)
+}
+
+// fmRecordAutoarmOwner is record_autoarm_owner: a lock-holding claim (the owner lock with the autoarm role), with the
+// pid identity it recorded when identity is set.
+func fmRecordAutoarmOwner(t *testing.T, epic string, pid int, identity string) {
+	t.Helper()
+	mustWrite(t, coxPath(epic, autoarmLockName), fmt.Sprintf("%d\nautoarm\n%s\n", pid, identity))
+}
+
+// fmIdentity is fm_test_pid_identity.
+func fmIdentity(t *testing.T, pid int) string {
+	t.Helper()
+	id, err := watch.ProcIdentity(pid)
+	if err != nil {
+		t.Fatalf("could not compute a pid identity for %d: %v", pid, err)
+	}
+	return id
+}
+
+// fmClaudeGuard is run_hook_claude: the --claude guard alone (no auto-arm) for epic, as session "unknown".
+func fmClaudeGuard(t *testing.T, epic string) (int, string) {
+	t.Helper()
+	open, _ := watch.OpenStories(epic)
+	var out bytes.Buffer
+	code := runClaudeGuard(epic, "unknown", len(open), &out, &out)
+	return code, out.String()
+}
+
+// fmAutoarm is run_integrated_autoarm: the Stop auto-arm alone for epic, with launch as the watcher restart.
+func fmAutoarm(t *testing.T, epic string, launch func(string) error) (int, string) {
+	t.Helper()
+	var out bytes.Buffer
+	code, _ := runClaudeAutoarm(epic, launch, &out)
+	return code, out.String()
+}
+
+func fmExists(path string) bool { _, err := os.Stat(path); return err == nil }
 
 // TestFM is the translated matrix. Suites run in the order the story lists them.
 func TestFM(t *testing.T) {
@@ -192,9 +267,9 @@ func fmWorkspace(t *testing.T, slug string, stories ...string) (ws, epic string)
 // fmStopHook runs the real `cox hook stop-rewake --epic <epic>` entry point (hookStopRewake) as the claude leader
 // terminal "fm-leader": a per-test TMPDIR holds the single-waiter lock and the block budget, the watcher binary is a
 // stub that exits at once (so a restart always fails, never spawning cox), and REWAKE_MAX_WAIT=0 so a guard that lets
-// the turn go on returns without waiting. lockPid > 0 pre-writes the single-waiter lock naming that pid; blocks > 0
-// pre-writes the spent budget. stdin is /dev/null. Returns the exit code and everything written to stderr+stdout.
-func fmStopHook(t *testing.T, epic string, lockPid, blocks int) (int, string) {
+// the turn go on returns without waiting. lockPid > 0 pre-writes the single-waiter lock naming that bare pid. stdin is
+// /dev/null. Returns the exit code and everything written to stderr+stdout.
+func fmStopHook(t *testing.T, epic string, lockPid int) (int, string) {
 	t.Helper()
 	tmp := t.TempDir()
 	t.Setenv("TMPDIR", tmp)
@@ -203,9 +278,6 @@ func fmStopHook(t *testing.T, epic string, lockPid, blocks int) (int, string) {
 	stubWatcher(t, 2*time.Second, "exit 1")
 	if lockPid > 0 {
 		mustWrite(t, filepath.Join(tmp, "cox-rewake-fm-leader.lock"), strconv.Itoa(lockPid))
-	}
-	if blocks > 0 {
-		mustWrite(t, rewakeBlocksPath("fm-leader"), strconv.Itoa(blocks))
 	}
 	return fmCapture(t, func() int { return hookStopRewake(epic, "claude", true) })
 }
@@ -234,13 +306,9 @@ func fmCapture(t *testing.T, fn func() int) (int, string) {
 	return code, string(b)
 }
 
-// fmBlockCount reads the per-terminal block budget file (0 when absent).
-func fmBlockCount(path string) int {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return 0
-	}
-	n, _ := strconv.Atoi(strings.TrimSpace(string(b)))
+// fmBlockCount reads the budget's count line (firstmate sed -n '2s/^count=//p'), 0 when absent.
+func fmBlockCount(epic string) int {
+	_, n, _, _ := readBudget(fmBudgetPath(epic))
 	return n
 }
 
@@ -376,14 +444,14 @@ func fmTurnendGuard(t *testing.T) {
 	// fm: tests/fm-turnend-guard.test.sh:300
 	t.Run("hook_silent_when_no_work_in_flight", func(t *testing.T) {
 		epic := fmEpic(t)
-		fmWantSilent(t, fmGuard(t, epic, nil, fmBlocks(t)), "no open story")
+		fmWantSilent(t, fmGuard(t, epic, nil), "no open story")
 	})
 
 	// fm: tests/fm-turnend-guard.test.sh:309
 	t.Run("hook_blocks_when_fresh_beacon_has_no_live_lock", func(t *testing.T) {
 		epic := fmEpic(t, "s1")
 		fmBeacon(t, epic, 0) // fresh beacon, no watch.pid at all
-		fmWantBlock(t, fmGuard(t, epic, fmLaunchRefused, fmBlocks(t)), epic, "fresh beacon with no live watcher")
+		fmWantBlock(t, fmGuard(t, epic, fmLaunchRefused), epic, "fresh beacon with no live watcher")
 	})
 
 	// fm: tests/fm-turnend-guard.test.sh:320
@@ -396,31 +464,45 @@ func fmTurnendGuard(t *testing.T) {
 		epic := fmEpic(t, "s1")
 		fmWatchPid(t, epic, fmDeadPid(t))
 		fmBeacon(t, epic, 0)
-		fmWantBlock(t, fmGuard(t, epic, fmLaunchRefused, fmBlocks(t)), epic, "dead watcher pid despite a fresh beacon")
+		fmWantBlock(t, fmGuard(t, epic, fmLaunchRefused), epic, "dead watcher pid despite a fresh beacon")
 	})
 
 	// fm: tests/fm-turnend-guard.test.sh:344
 	t.Run("hook_silent_with_live_lock_and_fresh_beacon", func(t *testing.T) {
 		epic := fmEpic(t, "s1")
 		fmHealthy(t, epic)
-		fmWantSilent(t, fmGuard(t, epic, nil, fmBlocks(t)), "live watcher with a fresh beacon")
+		fmWantSilent(t, fmGuard(t, epic, nil), "live watcher with a fresh beacon")
 	})
 
 	// fm: tests/fm-turnend-guard.test.sh:365
 	t.Run("hook_non_claude_health_ignores_claude_budget_contention", func(t *testing.T) {
+		// Firstmate's default-mode (non-Claude) harnesses over a live watcher while another Claude session holds the
+		// budget lock with notice and alarm state: the healthy path must not touch any of it. The Claude rule is
+		// hook_claude_mode_allow_resets_budget (a healthy Claude stop clears the budget); leader ruling 2026-09-24.
 		epic := fmEpic(t, "s1")
 		fmHealthy(t, epic)
-		blocks := fmBlocks(t)
-		mustWrite(t, blocks, "3")
-		for _, h := range []string{"codex", "pi", "claude"} {
+		mustWrite(t, fmBudgetPath(epic), "session=claude-episode\ncount=3\nepoch=9\n")
+		mustWrite(t, coxPath(epic, failureNoticeName), "notice-state\n")
+		mustWrite(t, coxPath(epic, failureAlarmName), "alarm-state\n")
+		holder := fmLiveChild(t)
+		lockBody := fmt.Sprintf("%d\n", holder)
+		mustWrite(t, coxPath(epic, turnendBudgetLockN), lockBody)
+		for _, h := range []string{"codex", "pi"} {
 			var out bytes.Buffer
-			cfg := rewakeCfg{epics: []string{epic}, guardEpics: guardEpics(epic), harness: h, out: &out, stdout: &out, sleep: noSleep, blocksPath: blocks,
+			cfg := rewakeCfg{epics: []string{epic}, guardEpics: guardEpics(epic), harness: h, out: &out, stdout: &out, sleep: noSleep,
 				launch: func(string) error { t.Errorf("%s: healthy path restarted the watcher", h); return nil }}
 			if _, proceed := cfg.guardWatchers(); !proceed || out.Len() != 0 {
 				t.Fatalf("%s healthy path must allow silently, proceed=%v out=%q", h, proceed, out.String())
 			}
-			if n := fmBlockCount(blocks); n != 3 {
-				t.Fatalf("%s healthy path mutated the block budget: %d", h, n)
+			for name, want := range map[string]string{
+				turnendBudgetName:  "session=claude-episode\ncount=3\nepoch=9\n",
+				failureNoticeName:  "notice-state\n",
+				failureAlarmName:   "alarm-state\n",
+				turnendBudgetLockN: lockBody,
+			} {
+				if b, _ := os.ReadFile(coxPath(epic, name)); string(b) != want {
+					t.Fatalf("%s healthy path mutated %s: %q", h, name, b)
+				}
 			}
 		}
 	})
@@ -431,13 +513,13 @@ func fmTurnendGuard(t *testing.T) {
 		fmWatchPid(t, epic, os.Getpid()) // live pid
 		fmBeacon(t, epic, time.Since(time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)))
 		// The real launchWatcher: a live pid is refused (never --replace'd) without spawning anything.
-		fmWantBlock(t, fmGuard(t, epic, launchWatcher, fmBlocks(t)), epic, "live watcher with an ancient beacon")
+		fmWantBlock(t, fmGuard(t, epic, launchWatcher), epic, "live watcher with an ancient beacon")
 	})
 
 	// fm: tests/fm-turnend-guard.test.sh:434
 	t.Run("hook_blocks_when_unhealthy_in_primary", func(t *testing.T) {
 		epic := fmEpic(t, "s1")
-		fmWantBlock(t, fmGuard(t, epic, fmLaunchRefused, fmBlocks(t)), epic, "open story with no watcher")
+		fmWantBlock(t, fmGuard(t, epic, fmLaunchRefused), epic, "open story with no watcher")
 	})
 
 	// fm: tests/fm-turnend-guard.test.sh:445
@@ -450,7 +532,7 @@ func fmTurnendGuard(t *testing.T) {
 		if len(g) != 1 || g[0] != epic {
 			t.Fatalf("the workspace epic with open work must be guarded from the leader cwd, got %v", g)
 		}
-		fmWantBlock(t, fmGuard(t, epic, fmLaunchRefused, fmBlocks(t)), epic, "workspace epic with no watcher")
+		fmWantBlock(t, fmGuard(t, epic, fmLaunchRefused), epic, "workspace epic with no watcher")
 	})
 
 	// n/a: hook_x_mode_reason_sources_cadence (fm: tests/fm-turnend-guard.test.sh:457) - relay/X-mode cadence config is firstmate-only.
@@ -486,19 +568,19 @@ func fmTurnendGuard(t *testing.T) {
 		if len(g) != 1 || g[0] != override {
 			t.Fatalf("COX_EPIC must select the guarded epic over the cwd workspace, got %v", g)
 		}
-		fmWantBlock(t, fmGuard(t, override, fmLaunchRefused, fmBlocks(t)), override, "override epic with no watcher")
+		fmWantBlock(t, fmGuard(t, override, fmLaunchRefused), override, "override epic with no watcher")
 	})
 
 	// fm: tests/fm-turnend-guard.test.sh:516
 	t.Run("hook_loop_guard_allows_retry", func(t *testing.T) {
-		// Default (non-Claude) mode: the stop_hook_active retry always allows, so one turn is forced at most once. Cox
-		// reads no Stop envelope and bounds reopens only by the 3-block budget, so a codex retry blocks again.
+		// Default (non-Claude) mode: the stop_hook_active retry always allows, so one turn is forced at most once. The
+		// retry carries firstmate's payload {"stop_hook_active":true} (cfg.stopActive, read by readStopPayload).
 		epic := fmEpic(t, "s1")
-		blocks := fmBlocks(t)
 		var out bytes.Buffer
-		cfg := rewakeCfg{epics: []string{epic}, guardEpics: guardEpics(epic), harness: "codex", out: &out, stdout: &out, sleep: noSleep, blocksPath: blocks, launch: fmLaunchRefused}
+		cfg := rewakeCfg{epics: []string{epic}, guardEpics: guardEpics(epic), harness: "codex", out: &out, stdout: &out, sleep: noSleep, launch: fmLaunchRefused}
 		cfg.guardWatchers() // the forced continuation
 		out.Reset()
+		cfg.stopActive = true
 		if _, proceed := cfg.guardWatchers(); proceed || out.Len() != 0 {
 			// proceed=false with output is a second block; a loop-guarded retry must end the turn silently.
 			t.Fatalf("the loop-guarded retry (stop_hook_active=true) must allow the stop silently, got out=%q", out.String())
@@ -522,7 +604,7 @@ func fmTurnendGuard(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Setenv("ORCA_TERMINAL_HANDLE", "term_worker")
-		fmWantSilent(t, fmGuard(t, epic, nil, fmBlocks(t)), "worker terminal over an unwatched leader epic")
+		fmWantSilent(t, fmGuard(t, epic, nil), "worker terminal over an unwatched leader epic")
 	})
 
 	// n/a: hook_silent_without_jq (fm: tests/fm-turnend-guard.test.sh:691) - the jq dependency is shell-only; cox's hooks are one Go binary.
@@ -533,7 +615,7 @@ func fmTurnendGuard(t *testing.T) {
 	t.Run("hook_runs_fast", func(t *testing.T) {
 		epic := fmEpic(t, "s1")
 		start := time.Now()
-		fmGuard(t, epic, fmLaunchRefused, fmBlocks(t))
+		fmGuard(t, epic, fmLaunchRefused)
 		if d := time.Since(start); d >= 3*time.Second {
 			t.Fatalf("guard took %s, want well under a second (3s CI margin)", d)
 		}
@@ -591,232 +673,468 @@ func fmTurnendGuard(t *testing.T) {
 	})
 
 	// --- --claude cooperative mode ---
+	// Firstmate's run_hook_claude is the --claude guard alone (fmClaudeGuard) and run_integrated_autoarm the Stop
+	// auto-arm alone (fmAutoarm); cox's stop-rewake runs both in one process (fmGuard). The ledger, owner lock, notice,
+	// alarm and budget live in the epic's control dir under firstmate's names (autoarm.go).
 
 	// fm: tests/fm-turnend-guard.test.sh:1257
 	t.Run("hook_claude_mode_reblocks_stop_hook_active_when_unhealthy", func(t *testing.T) {
-		// A loop-guarded (rewake-opened) stop while unhealthy and unrecovered re-blocks.
 		epic := fmEpic(t, "s1")
-		blocks := fmBlocks(t)
-		fmGuard(t, epic, fmLaunchRefused, blocks)
-		fmWantBlock(t, fmGuard(t, epic, fmLaunchRefused, blocks), epic, "second stop in the same unhealthy episode")
+		code, out := fmClaudeGuard(t, epic)
+		if code != 2 || !strings.Contains(out, "TURN WOULD END BLIND") || !strings.Contains(out, "Stop-owned auto-arm did not claim") {
+			t.Fatalf("--claude must re-block a loop-guarded stop while unhealthy with no auto-arm claim, got %d %q", code, out)
+		}
+		fmWantBlock(t, fmGuardResult{code: code, out: out}, epic, "the re-block carries the repair line")
 	})
 
 	// n/a: hook_claude_mode_reblocks_x_mode_without_tasks (fm: tests/fm-turnend-guard.test.sh:1268) - relay/X-mode polling is firstmate-only.
 
 	// fm: tests/fm-turnend-guard.test.sh:1279
 	t.Run("hook_claude_mode_allows_when_autoarm_owner_alive", func(t *testing.T) {
-		// A live auto-arm owner (cox: a restart the guard itself confirms) allows the stop.
 		epic := fmEpic(t, "s1")
-		blocks := fmBlocks(t)
-		mustWrite(t, blocks, "3")
-		r := fmGuard(t, epic, func(string) error { return nil }, blocks)
-		if r.blocked() || r.code != 0 {
-			t.Fatalf("a confirmed restart must end the turn without a block, got %+v", r)
+		fmSeedFailure(t, epic, "failed-suppressed")
+		fmSeedBudget(t, epic, 3, "2")
+		fmRecordAutoarmOwner(t, epic, fmLiveChild(t), "")
+		code, out := fmClaudeGuard(t, epic)
+		count := fmBlockCount(epic)
+		code2, out2 := fmClaudeGuard(t, epic)
+		count2 := fmBlockCount(epic)
+		if code != 0 || code2 != 0 || out != "" || out2 != "" {
+			t.Fatalf("a live auto-arm owner must allow silently, twice: %d %q / %d %q", code, out, code2, out2)
 		}
-		// Firstmate also advances the failure progression exactly once per new live arming epoch (3 -> 4) and keeps
-		// it idempotent on re-observation; cox keeps no arming-epoch ledger.
-		notImplemented(t, "auto-arm epoch ledger: a live arming epoch advances the failure progression once, idempotently")
+		if count != 4 || count2 != 4 {
+			t.Fatalf("a new live auto-arm epoch must advance the progression 3 -> 4 once, got %d then %d", count, count2)
+		}
+		if !fmExists(coxPath(epic, failureNoticeName)) || fmExists(coxPath(epic, failureAlarmName)) {
+			t.Fatal("a live auto-arm owner cleared the failure episode or emitted the attended alarm")
+		}
 	})
 
 	// fm: tests/fm-turnend-guard.test.sh:1305
 	t.Run("hook_claude_mode_repeated_failed_to_arming_interleavings_reach_fail_open", func(t *testing.T) {
-		// Failed -> arming interleavings make bounded monotonic progress: each arming step (cox: a restart the guard
-		// confirms) ends its Stop with exit 0 while advancing the failure progression by exactly one, so repeated
-		// arm-then-die cycles still reach the fail-open. Cox's confirmed restart never touches the budget.
 		epic := fmEpic(t, "s1")
-		blocks := fmBlocks(t)
+		mustWrite(t, coxPath(epic, failureNoticeName), "")
+		fmLedger(t, epic, fmt.Sprintf("epoch=3 owner_pid=999 outcome=failed updated_at=%d", time.Now().Unix()), "", false)
+		if code, _ := fmClaudeGuard(t, epic); code != 0 {
+			t.Fatalf("the first verified failed epoch must own its automatic handoff, got %d", code)
+		}
+		epoch := 3
 		for i := 1; i <= 4; i++ {
-			r := fmGuard(t, epic, func(string) error { return nil }, blocks)
-			if r.code != 0 || r.blocked() {
-				t.Fatalf("arming step %d must own its Stop (exit 0), got %+v", i, r)
+			epoch++
+			pid, _ := fmLiveChildExit(t, "exec sleep 60")
+			fmRecordAutoarmOwner(t, epic, pid, "")
+			fmLedger(t, epic, fmt.Sprintf("epoch=%d owner_pid=%d outcome=arming updated_at=%d", epoch, pid, time.Now().Unix()), "", false)
+			if code, out := fmClaudeGuard(t, epic); code != 0 {
+				t.Fatalf("active arming epoch %d must own its Stop while advancing the failure budget, got %d %q", i, code, out)
 			}
-			if n := fmBlockCount(blocks); n != i {
-				t.Fatalf("arming step %d must advance the failure progression to %d, count=%d", i, i, n)
+			if n := fmBlockCount(epic); n != i {
+				t.Fatalf("arming epoch %d produced non-monotonic count %d", i, n)
 			}
+			_ = os.Remove(coxPath(epic, autoarmLockName))
+			epoch++
+			fmLedger(t, epic, fmt.Sprintf("epoch=%d owner_pid=999 outcome=failed-suppressed updated_at=%d", epoch, time.Now().Unix()), "", false)
+		}
+		code, out := fmClaudeGuard(t, epic)
+		if code != 0 || !strings.Contains(out, "SUPERVISION IS GENUINELY DOWN") || !fmExists(coxPath(epic, failureAlarmName)) {
+			t.Fatalf("repeated failed-to-arming interleavings must reach the one attended fail-open, got %d %q", code, out)
 		}
 	})
 
 	// fm: tests/fm-turnend-guard.test.sh:1339
 	t.Run("hook_claude_mode_terminal_boundary_excludes_starting_owner", func(t *testing.T) {
-		notImplemented(t, "auto-arm owner lock: the terminal fail-open boundary excludes a concurrently starting owner")
+		// Firstmate pauses the guard inside its terminal-check hold (a fake cat on the role read) and starts an auto-arm
+		// there; cox holds the same owner lock in the terminal-check role from a live process, starts the auto-arm, then
+		// releases it and lets the guard finish.
+		epic := fmEpic(t, "s1")
+		mustWrite(t, coxPath(epic, failureNoticeName), "")
+		fmLedger(t, epic, fmt.Sprintf("epoch=3 owner_pid=999 outcome=failed-suppressed updated_at=%d", time.Now().Unix()), "", false)
+		fmSeedBudget(t, epic, 4, "3")
+		holder, _ := fmLiveChildExit(t, "exec sleep 60")
+		mustWrite(t, coxPath(epic, autoarmLockName), fmt.Sprintf("%d\nterminal-check\n", holder))
+		armed := false
+		code, out := fmAutoarm(t, epic, func(string) error { armed = true; return errWatchRefused })
+		if code != 0 || out != "" || armed {
+			t.Fatalf("an owner starting inside the terminal window must lose the boundary (inert, no arm), got %d %q armed=%v", code, out, armed)
+		}
+		_ = os.Remove(coxPath(epic, autoarmLockName))
+		code, out = fmClaudeGuard(t, epic)
+		if code != 0 || !strings.Contains(out, "SUPERVISION IS GENUINELY DOWN") {
+			t.Fatalf("the terminal boundary guard must complete with the one-time alarm, got %d %q", code, out)
+		}
+		if fmExists(coxPath(epic, autoarmLockName)) {
+			t.Fatal("the terminal boundary left its owner lock behind")
+		}
 	})
 
 	// fm: tests/fm-turnend-guard.test.sh:1392
 	t.Run("hook_claude_mode_allows_on_fresh_rewake_epoch", func(t *testing.T) {
-		// The stop whose rewake is already owned does not start a duplicate continuation: cox's single-waiter lock
-		// names a live waiter for this terminal, so stop-rewake exits 0 at once.
 		epic := fmEpic(t, "s1")
-		code, out := fmStopHook(t, epic, os.Getpid(), 0)
-		if code != 0 || out != "" {
-			t.Fatalf("an owned rewake must allow silently, got %d %q", code, out)
+		fmLedger(t, epic, fmt.Sprintf("epoch=3 owner_pid=999 outcome=rewake updated_at=%d", time.Now().Unix()), "", false)
+		if code, out := fmClaudeGuard(t, epic); code != 0 || out != "" {
+			t.Fatalf("--claude must allow the stop whose rewake the auto-arm already owns, got %d %q", code, out)
 		}
 	})
 
 	// fm: tests/fm-turnend-guard.test.sh:1408
 	t.Run("hook_claude_mode_blocks_on_abandoned_autoarm_claim", func(t *testing.T) {
-		// An owner lock left behind by a finished claim, still naming a live (unrelated) pid, must not pass for
-		// recovery under way. Cox's single-waiter lock trusts kill -0 alone.
 		epic := fmEpic(t, "s1", "s2")
-		code, out := fmStopHook(t, epic, fmLiveChild(t), 0)
-		if code != 2 {
-			t.Fatalf("an abandoned waiter lock over a live unrelated pid must not end the turn blind, got %d %q", code, out)
+		pid := fmLiveChild(t)
+		fmRecordAutoarmOwner(t, epic, pid, "")
+		fmLedger(t, epic, fmt.Sprintf("epoch=464 owner_pid=%d outcome=rewake updated_at=1", pid), "", true)
+		code, out := fmClaudeGuard(t, epic)
+		if code != 2 || !strings.Contains(out, "TURN WOULD END BLIND") {
+			t.Fatalf("an owner lock left behind by a finished claim must not pass for recovery under way, got %d %q", code, out)
 		}
 		fmWantOpenCount(t, out, 2)
 	})
 
 	// fm: tests/fm-turnend-guard.test.sh:1432
 	t.Run("hook_claude_mode_blocks_on_pid_reused_arming_claim", func(t *testing.T) {
-		// The lock's pid now belongs to an unrelated live process (this test process stands in for it); only a recorded
-		// process identity tells that from a real waiter. Cox records a bare pid.
 		epic := fmEpic(t, "s1", "s2")
+		pid := fmLiveChild(t)
+		// The claim recorded ITS OWN identity; this test process stands in for the unrelated process that inherited it.
+		fmRecordAutoarmOwner(t, epic, pid, fmIdentity(t, os.Getpid()))
+		fmLedger(t, epic, fmt.Sprintf("epoch=464 owner_pid=%d outcome=arming updated_at=1", pid), "", true)
 		fmBeacon(t, epic, 0)
-		code, out := fmStopHook(t, epic, os.Getpid(), 0)
-		if code != 2 {
-			t.Fatalf("a pid-reused waiter lock must not pass for recovery under way, got %d %q", code, out)
+		code, out := fmClaudeGuard(t, epic)
+		if code != 2 || !strings.Contains(out, "TURN WOULD END BLIND") {
+			t.Fatalf("a claim whose recorded identity no longer matches its live pid must not pass for recovery, got %d %q", code, out)
 		}
 		fmWantOpenCount(t, out, 2)
 	})
 
 	// fm: tests/fm-turnend-guard.test.sh:1459
 	t.Run("hook_claude_mode_blocks_on_stuck_arming_claim", func(t *testing.T) {
-		// A live owner frozen past grace with an equally stale beacon is not recovery under way.
 		epic := fmEpic(t, "s1", "s2")
-		fmWatchPid(t, epic, fmDeadPid(t))
+		pid := fmLiveChild(t)
+		fmRecordAutoarmOwner(t, epic, pid, fmIdentity(t, pid))
+		fmLedger(t, epic, fmt.Sprintf("epoch=464 owner_pid=%d outcome=arming updated_at=1", pid), "", true)
 		fmBeacon(t, epic, time.Since(time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)))
-		code, out := fmStopHook(t, epic, fmLiveChild(t), 0)
-		if code != 2 {
-			t.Fatalf("a live but stuck waiter with a stale beacon must not end the turn blind, got %d %q", code, out)
+		code, out := fmClaudeGuard(t, epic)
+		if code != 2 || !strings.Contains(out, "TURN WOULD END BLIND") {
+			t.Fatalf("a live owner stuck arming past grace with a stale beacon must not pass for recovery, got %d %q", code, out)
 		}
 		fmWantOpenCount(t, out, 2)
 	})
 
-	// n/a: hook_claude_mode_allows_on_open_generation_claim (fm: tests/fm-turnend-guard.test.sh:1484) - a live generation claim owning recovery with no watcher lock is the Claude auto-arm model (watcher only between turns), firstmate-only; cox runs a persistent watcher, whose healthy case is hook_silent_with_live_lock_and_fresh_beacon.
+	// fm: tests/fm-turnend-guard.test.sh:1484
+	t.Run("hook_claude_mode_allows_on_open_generation_claim", func(t *testing.T) {
+		// Wave 1 marked this n/a (the auto-arm model); cox now keeps firstmate's generation ledger, so it translates.
+		epic := fmEpic(t, "s1")
+		pid := fmLiveChild(t)
+		fmLedger(t, epic, fmt.Sprintf("epoch=464 owner_pid=%d outcome=arming updated_at=1", pid), fmIdentity(t, pid), true)
+		fmBeacon(t, epic, 0)
+		if fmExists(coxPath(epic, autoarmLockName)) {
+			t.Fatal("this case must start with no owner lock at all")
+		}
+		if code, out := fmClaudeGuard(t, epic); code != 0 || out != "" {
+			t.Fatalf("--claude must allow when a live open generation claim owns recovery, got %d %q", code, out)
+		}
+	})
 
 	// fm: tests/fm-turnend-guard.test.sh:1506
 	t.Run("hook_claude_mode_blocks_on_stuck_generation_claim", func(t *testing.T) {
-		// A live, identity-matched owner whose entry and beacon are past grace no longer allows a blind stop.
 		epic := fmEpic(t, "s1", "s2")
-		fmWatchPid(t, epic, os.Getpid())
+		pid := fmLiveChild(t)
+		fmLedger(t, epic, fmt.Sprintf("epoch=464 owner_pid=%d outcome=arming updated_at=1", pid), fmIdentity(t, pid), true)
 		fmBeacon(t, epic, time.Since(time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)))
-		r := fmGuard(t, epic, launchWatcher, fmBlocks(t))
-		fmWantBlock(t, r, epic, "live watcher stuck with a stale beacon")
-		fmWantOpenCount(t, r.out, 2)
+		code, out := fmClaudeGuard(t, epic)
+		if code != 2 || !strings.Contains(out, "TURN WOULD END BLIND") {
+			t.Fatalf("a stuck generation claim must not pass for recovery under way, got %d %q", code, out)
+		}
+		fmWantOpenCount(t, out, 2)
 	})
 
 	// fm: tests/fm-turnend-guard.test.sh:1530
 	t.Run("hook_claude_mode_terminal_fail_open_clears_abandoned_claim", func(t *testing.T) {
-		// Budget spent + an abandoned live-pid claim: the guard must clear the claim and take the loud attended
-		// fail-open, not step aside silently.
 		epic := fmEpic(t, "s1")
-		lock := fmLiveChild(t)
-		code, out := fmStopHook(t, epic, lock, 4)
-		if code != 0 || !strings.Contains(out, "wedge") {
-			t.Fatalf("the terminal path must end the turn with the loud fail-open warning, got %d %q", code, out)
+		mustWrite(t, coxPath(epic, failureNoticeName), "")
+		fmSeedBudget(t, epic, 4, "3")
+		pid := fmLiveChild(t)
+		fmRecordAutoarmOwner(t, epic, pid, "")
+		fmLedger(t, epic, fmt.Sprintf("epoch=3 owner_pid=%d outcome=failed-suppressed updated_at=1", pid), "", true)
+		code, out := fmClaudeGuard(t, epic)
+		if code != 0 || !strings.Contains(out, "SUPERVISION IS GENUINELY DOWN") {
+			t.Fatalf("the verified attended fail-open must still end the turn once it is spent, got %d %q", code, out)
 		}
-		if _, err := os.Stat(filepath.Join(os.Getenv("TMPDIR"), "cox-rewake-fm-leader.lock")); err == nil && rewakeWaiterAlive(filepath.Join(os.Getenv("TMPDIR"), "cox-rewake-fm-leader.lock")) {
-			t.Fatal("the terminal path left the abandoned waiter lock in place")
+		if !fmExists(coxPath(epic, failureAlarmName)) {
+			t.Fatal("the abandoned-claim terminal path did not consume the one-time alarm")
+		}
+		if fmExists(coxPath(epic, autoarmLockName)) || fmExists(coxPath(epic, autoarmLockName)+".steal") {
+			t.Fatal("the abandoned-claim terminal path left the stale claim or its steal mutex in place")
 		}
 	})
 
 	// fm: tests/fm-turnend-guard.test.sh:1552
 	t.Run("hook_claude_mode_preserves_fresh_failed_progression", func(t *testing.T) {
-		notImplemented(t, "auto-arm epoch ledger: the first verified failed epoch owns its handoff without spending the block budget")
+		epic := fmEpic(t, "s1")
+		mustWrite(t, coxPath(epic, failureNoticeName), "")
+		fmLedger(t, epic, fmt.Sprintf("epoch=3 owner_pid=999 outcome=failed updated_at=%d", time.Now().Unix()), "", false)
+		if code, out := fmClaudeGuard(t, epic); code != 0 || out != "" {
+			t.Fatalf("the first fresh failed epoch must count as its automatic continuation, got %d %q", code, out)
+		}
+		if !fmExists(fmBudgetPath(epic)) || fmBlockCount(epic) != 0 {
+			t.Fatalf("the owned first failed epoch must preserve a zero blocked-stop count, got %d", fmBlockCount(epic))
+		}
+		fmLedger(t, epic, fmt.Sprintf("epoch=4 owner_pid=999 outcome=failed-suppressed updated_at=%d", time.Now().Unix()), "", false)
+		if code, _ := fmClaudeGuard(t, epic); code != 2 {
+			t.Fatalf("a later fresh failed epoch must consume the bounded progression, got %d", code)
+		}
+		if fmExists(coxPath(epic, failureAlarmName)) || fmBlockCount(epic) != 1 {
+			t.Fatalf("the later failed epoch must advance the count to 1 without the alarm, got %d", fmBlockCount(epic))
+		}
 	})
 
 	// fm: tests/fm-turnend-guard.test.sh:1573
 	t.Run("hook_claude_mode_integrated_monotonic_fail_open", func(t *testing.T) {
-		// Fresh auto-arm failures: the first failed epoch owns its Stop without spending the budget, later ones block
-		// within it, and only a VERIFIED exhausted failure reaches the one attended fail-open. Cox's restart records no
-		// failure evidence for the guard to verify, so the progression cannot be expressed past the in-budget blocks.
 		epic := fmEpic(t, "s1")
-		blocks := fmBlocks(t)
-		for i := 1; i <= 3; i++ {
-			if r := fmGuard(t, epic, fmLaunchRefused, blocks); !r.blocked() {
-				t.Fatalf("failed epoch %d must block within the budget, got %+v", i, r)
+		code, out := fmAutoarm(t, epic, fmLaunchRefused)
+		if code != 2 || !strings.Contains(out, "automatic supervision mechanism is broken") {
+			t.Fatalf("the first exhausted auto-arm cycle must emit its one failure notice, got %d %q", code, out)
+		}
+		if code, _ := fmClaudeGuard(t, epic); code != 0 || fmBlockCount(epic) != 0 {
+			t.Fatalf("the first failed epoch must own its Stop handoff with a zero count, got %d count=%d", code, fmBlockCount(epic))
+		}
+		for i := 1; i <= 4; i++ {
+			if code, out := fmAutoarm(t, epic, fmLaunchRefused); code != 2 || out != "" {
+				t.Fatalf("failed epoch %d must retain the automatic retry handoff without repeating the notice, got %d %q", i, code, out)
+			}
+			code, out := fmClaudeGuard(t, epic)
+			if i < 4 {
+				if code != 2 || strings.Contains(out, "GENUINELY DOWN") {
+					t.Fatalf("failed epoch %d must consume a bounded blind-stop block, got %d %q", i, code, out)
+				}
+			} else if code != 0 || !strings.Contains(out, "GENUINELY DOWN") || !fmExists(coxPath(epic, failureAlarmName)) {
+				t.Fatalf("the bounded failure progression must reach the attended fail-open, got %d %q", code, out)
 			}
 		}
-		notImplemented(t, "verified-failure evidence: the restart records an exhausted failure (and its one notice) that the guard checks before failing open")
+		if code, out := fmAutoarm(t, epic, fmLaunchRefused); code != 0 || out != "" {
+			t.Fatalf("the auto-arm must not re-trigger continuation after the final fail-open, got %d %q", code, out)
+		}
+		if code, out := fmClaudeGuard(t, epic); code != 2 || strings.Contains(out, "GENUINELY DOWN") {
+			t.Fatalf("a later unhealthy stop in the same episode must remain attended, got %d %q", code, out)
+		}
+		fmHealthy(t, epic)
+		if code, out := fmAutoarm(t, epic, fmLaunchRefused); code != 0 || out != "" {
+			t.Fatalf("positive watcher recovery must make the auto-arm silent, got %d %q", code, out)
+		}
+		for _, n := range []string{failureNoticeName, failureAlarmName, turnendBudgetName} {
+			if fmExists(coxPath(epic, n)) {
+				t.Fatalf("positive recovery left %s", n)
+			}
+		}
+		fmDead(t, epic)
+		if code, _ := fmClaudeGuard(t, epic); code != 2 || fmBlockCount(epic) != 1 {
+			t.Fatalf("a guard after recovery must start a fresh budget at 1, got %d count=%d", code, fmBlockCount(epic))
+		}
+		if code, out := fmAutoarm(t, epic, fmLaunchRefused); code != 2 || !strings.Contains(out, "automatic supervision mechanism is broken") {
+			t.Fatalf("a later failure after positive recovery must start a new episode notice, got %d %q", code, out)
+		}
 	})
 
 	// fm: tests/fm-turnend-guard.test.sh:1644
 	t.Run("hook_claude_mode_frozen_epoch_reaches_bounded_fail_open", func(t *testing.T) {
-		// An inert auto-arm freezes the ledger: the budget must still count every consecutive re-block against the
-		// unchanged epoch (cox counts every block), and the verified failure then reaches the bounded fail-open.
-		epic := fmEpic(t, "s1")
-		blocks := fmBlocks(t)
-		for i := 1; i <= 3; i++ {
-			if r := fmGuard(t, epic, fmLaunchRefused, blocks); !r.blocked() || fmBlockCount(blocks) != i {
-				t.Fatalf("frozen-epoch re-block %d must block and be charged (count %d), got %+v count=%d", i, i, r, fmBlockCount(blocks))
+		ws, epic := fmWorkspace(t, "e1", "s1")
+		t.Chdir(ws)
+		if code, _ := fmAutoarm(t, epic, fmLaunchRefused); code != 2 {
+			t.Fatalf("the exhausted auto-arm cycle must emit its one failure notice before going quiet, got %d", code)
+		}
+		if code, _ := fmClaudeGuard(t, epic); code != 0 {
+			t.Fatalf("the first failed epoch must own its Stop handoff, got %d", code)
+		}
+		epochLine, _ := os.ReadFile(coxPath(epic, autoarmEpochName))
+		for i := 1; i <= 4; i++ {
+			// The auto-arm outside the epic's live leader never runs (firstmate: outside the lock owner's ancestry, inert):
+			// cox never selects a foreign-led epic for this terminal, so the ledger stays frozen.
+			if err := state.WriteLeader(epic, "term_owner"); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("ORCA_TERMINAL_HANDLE", "term_other")
+			fmProbe(t, true)
+			if g := guardEpics(epic); len(g) != 0 {
+				t.Fatalf("an auto-arm outside the live leader must stay inert at stop %d, guarded %v", i, g)
+			}
+			_ = os.Remove(filepath.Join(epic, controlDir, "leader"))
+			if b, _ := os.ReadFile(coxPath(epic, autoarmEpochName)); string(b) != string(epochLine) {
+				t.Fatalf("the ledger epoch advanced at stop %d", i)
+			}
+			code, out := fmClaudeGuard(t, epic)
+			if i < 4 {
+				if code != 2 || !strings.Contains(out, "TURN WOULD END BLIND") || strings.Contains(out, "GENUINELY DOWN") || fmExists(coxPath(epic, failureAlarmName)) {
+					t.Fatalf("frozen-epoch stop %d must still re-block within the budget, got %d %q", i, code, out)
+				}
+			} else if code != 0 || !strings.Contains(out, "GENUINELY DOWN") || !fmExists(coxPath(epic, failureAlarmName)) {
+				t.Fatalf("the frozen-epoch progression must reach the attended fail-open, got %d %q", code, out)
 			}
 		}
-		notImplemented(t, "verified-failure evidence: the restart records an exhausted failure (and its one notice) that the guard checks before failing open")
+		if code, out := fmClaudeGuard(t, epic); code != 2 || strings.Contains(out, "GENUINELY DOWN") {
+			t.Fatalf("a later unhealthy stop after the frozen-epoch alarm must remain attended, got %d %q", code, out)
+		}
+		fmHealthy(t, epic)
+		if code, out := fmClaudeGuard(t, epic); code != 0 || out != "" {
+			t.Fatalf("a healthy watcher must still allow the stop after a frozen-epoch alarm, got %d %q", code, out)
+		}
+		for _, n := range []string{turnendBudgetName, failureNoticeName, failureAlarmName} {
+			if fmExists(coxPath(epic, n)) {
+				t.Fatalf("positive recovery left %s", n)
+			}
+		}
+		fmDead(t, epic)
+		if code, _ := fmClaudeGuard(t, epic); code != 2 || fmBlockCount(epic) != 1 {
+			t.Fatalf("the post-recovery episode must restart its budget at 1, got %d count=%d", code, fmBlockCount(epic))
+		}
 	})
 
 	// fm: tests/fm-turnend-guard.test.sh:1713
 	t.Run("hook_claude_mode_frozen_epoch_without_verified_failure_spends_budget_and_keeps_blocking", func(t *testing.T) {
-		// With no verified failure the budget runs out yet every stop keeps blocking.
 		epic := fmEpic(t, "s1")
-		blocks := fmBlocks(t)
+		const line = "epoch=7 owner_pid=999 outcome=clean updated_at=1"
+		fmLedger(t, epic, line, "", true)
 		for i := 1; i <= 5; i++ {
-			if r := fmGuard(t, epic, fmLaunchRefused, blocks); !r.blocked() {
-				t.Fatalf("unverified stop %d must keep blocking, got %+v", i, r)
+			code, out := fmClaudeGuard(t, epic)
+			if code != 2 || strings.Contains(out, "systemMessage") {
+				t.Fatalf("frozen unverified stop %d must keep blocking, got %d %q", i, code, out)
+			}
+			if b, _ := os.ReadFile(coxPath(epic, autoarmEpochName)); strings.TrimSpace(string(b)) != line {
+				t.Fatalf("the guard rewrote the frozen ledger at stop %d", i)
 			}
 		}
-		if n := fmBlockCount(blocks); n <= 3 {
-			t.Fatalf("the budget must run out, count=%d", n)
+		if n := fmBlockCount(epic); n <= 3 {
+			t.Fatalf("the block budget must run out against a frozen epoch, count=%d", n)
+		}
+		if fmExists(coxPath(epic, failureAlarmName)) {
+			t.Fatal("an unverified frozen epoch recorded an attended alarm")
 		}
 	})
 
 	// fm: tests/fm-turnend-guard.test.sh:1732
 	t.Run("hook_claude_mode_recovery_contention_is_not_ordinary_allow", func(t *testing.T) {
-		notImplemented(t, "block-budget episode reset: a healthy guard resets the episode under a lock, preserving it on contention")
+		epic := fmEpic(t, "s1")
+		fmSeedBudget(t, epic, 3, "2")
+		mustWrite(t, coxPath(epic, failureNoticeName), "")
+		mustWrite(t, coxPath(epic, failureAlarmName), "")
+		fmHealthy(t, epic)
+		holder, holderExited := fmLiveChildExit(t, "exec sleep 60")
+		mustWrite(t, coxPath(epic, turnendBudgetLockN), fmt.Sprintf("%d\n", holder))
+		if code, out := fmClaudeGuard(t, epic); code != 2 || out != "" {
+			t.Fatalf("a healthy guard must continue silently when the episode reset lock is busy, got %d %q", code, out)
+		}
+		for _, n := range []string{turnendBudgetName, failureNoticeName, failureAlarmName} {
+			if !fmExists(coxPath(epic, n)) {
+				t.Fatalf("guard contention partially cleared %s", n)
+			}
+		}
+		p, _ := os.FindProcess(holder)
+		_ = p.Kill()
+		<-holderExited
+		if code, _ := fmClaudeGuard(t, epic); code != 0 {
+			t.Fatalf("the healthy guard must allow after completing the episode reset, got %d", code)
+		}
+		for _, n := range []string{turnendBudgetName, failureNoticeName, failureAlarmName} {
+			if fmExists(coxPath(epic, n)) {
+				t.Fatalf("a successful guard reset left %s", n)
+			}
+		}
 	})
 
 	// fm: tests/fm-turnend-guard.test.sh:1766
 	t.Run("hook_claude_mode_concurrent_recovery_resets_are_idempotent", func(t *testing.T) {
-		notImplemented(t, "block-budget episode reset: a healthy guard resets the episode under a lock, preserving it on contention")
+		// The auto-arm runs as its own process (TestPortAutoarmChild) concurrently with this process's guard.
+		epic := fmEpic(t, "s1")
+		fmSeedBudget(t, epic, 3, "2")
+		mustWrite(t, coxPath(epic, failureNoticeName), "")
+		mustWrite(t, coxPath(epic, failureAlarmName), "")
+		fmHealthy(t, epic)
+		child := exec.Command(os.Args[0], "-test.run=^TestPortAutoarmChild$", "-test.count=1")
+		child.Env = append(os.Environ(), "FM_AUTOARM_EPIC="+epic)
+		var childOut bytes.Buffer
+		child.Stdout = &childOut
+		if err := child.Start(); err != nil {
+			t.Fatal(err)
+		}
+		guardCode, _ := fmClaudeGuard(t, epic)
+		_ = child.Wait()
+		autoCode := -1
+		if _, err := fmt.Sscanf(childOut.String()[strings.Index(childOut.String(), "AUTOARM ")+len("AUTOARM "):], "%d", &autoCode); err != nil {
+			t.Fatalf("auto-arm child output %q", childOut.String())
+		}
+		switch fmt.Sprintf("%d:%d", autoCode, guardCode) {
+		case "0:0", "0:2", "2:0":
+		default:
+			t.Fatalf("concurrent reset callers returned unsafe statuses auto=%d guard=%d", autoCode, guardCode)
+		}
+		for _, n := range []string{turnendBudgetName, failureNoticeName, failureAlarmName, autoarmLockName, turnendBudgetLockN} {
+			if fmExists(coxPath(epic, n)) {
+				t.Fatalf("concurrent recovery left %s", n)
+			}
+		}
 	})
 
 	// fm: tests/fm-turnend-guard.test.sh:1802
 	t.Run("hook_claude_mode_stale_rewake_epoch_blocks", func(t *testing.T) {
-		// An ancient rewake (a waiter lock whose pid is gone) is not this event's recovery.
 		epic := fmEpic(t, "s1")
-		code, out := fmStopHook(t, epic, fmDeadPid(t), 0)
-		if code != 2 || !strings.Contains(out, fmRepairLine(epic)) {
-			t.Fatalf("a stale waiter lock must not allow a blind stop (block with the repair line), got %d %q", code, out)
+		fmLedger(t, epic, "epoch=3 owner_pid=999 outcome=rewake updated_at=1", "", true)
+		if code, _ := fmClaudeGuard(t, epic); code != 2 {
+			t.Fatalf("--claude must not treat an ancient rewake epoch as this event's recovery, got %d", code)
 		}
 	})
 
 	// fm: tests/fm-turnend-guard.test.sh:1813
 	t.Run("hook_claude_mode_budget_without_verified_failure_keeps_blocking", func(t *testing.T) {
-		// Budget exhaustion alone cannot permit a blind stop.
 		epic := fmEpic(t, "s1")
-		blocks := fmBlocks(t)
+		var out string
 		for i := 1; i <= 4; i++ {
-			if r := fmGuard(t, epic, fmLaunchRefused, blocks); !r.blocked() {
-				t.Fatalf("block %d must exit 2 (budget exhaustion without a verified failure must not fail open), got %+v", i, r)
+			var code int
+			if code, out = fmClaudeGuard(t, epic); code != 2 {
+				t.Fatalf("--claude block %d must exit 2 within the budget, got %d %q", i, code, out)
 			}
 		}
-		if n := fmBlockCount(blocks); n <= 3 {
+		if n := fmBlockCount(epic); n <= 3 {
 			t.Fatalf("four consecutive blocks must spend the budget, count=%d", n)
+		}
+		if strings.Contains(out, "systemMessage") || fmExists(coxPath(epic, failureAlarmName)) {
+			t.Fatalf("budget exhaustion without a verified failure must not fail open, got %q", out)
 		}
 	})
 
 	// fm: tests/fm-turnend-guard.test.sh:1828
 	t.Run("hook_claude_mode_verified_failure_alarm_is_loud_and_once", func(t *testing.T) {
-		// The premise is a verified exhausted failure with its notice consumed plus a spent budget; cox has no
-		// failure evidence to seed, so the same fixture would be the unverified case below.
-		notImplemented(t, "verified-failure evidence: the restart records an exhausted failure (and its one notice) that the guard checks before failing open")
+		epic := fmEpic(t, "s1")
+		fmSeedFailure(t, epic, "failed-suppressed")
+		fmSeedBudget(t, epic, 3, "2")
+		code, out := fmClaudeGuard(t, epic)
+		if code != 0 {
+			t.Fatalf("a verified failure with an exhausted budget must take the attended fail-open, got %d %q", code, out)
+		}
+		for _, want := range []string{"SUPERVISION IS GENUINELY DOWN", "Keep this session attended", "diagnose the automatic Stop-hook and watcher startup"} {
+			if !strings.Contains(out, want) {
+				t.Fatalf("the fail-open alarm must carry %q, got %q", want, out)
+			}
+		}
+		if strings.Contains(out, "cox watch --epic") {
+			t.Fatalf("the fail-open alarm assigned a manual watcher launch: %q", out)
+		}
+		if !fmExists(coxPath(epic, failureAlarmName)) {
+			t.Fatal("the fail-open did not consume the episode alarm")
+		}
+		if code, out := fmClaudeGuard(t, epic); code != 2 || strings.Contains(out, "GENUINELY DOWN") {
+			t.Fatalf("a consumed attended alarm must make later unhealthy stops block again, got %d %q", code, out)
+		}
 	})
 
 	// fm: tests/fm-turnend-guard.test.sh:1847
 	t.Run("hook_claude_mode_fail_open_requires_notice_and_failure_epoch", func(t *testing.T) {
-		// A spent budget alone (no verified failure evidence) must keep blocking.
-		epic := fmEpic(t, "s1")
-		blocks := fmBlocks(t)
-		mustWrite(t, blocks, "3")
-		if r := fmGuard(t, epic, fmLaunchRefused, blocks); !r.blocked() {
-			t.Fatalf("an exhausted budget without a verified failure must remain blocking, got %+v", r)
+		noNotice := fmEpic(t, "s1")
+		fmLedger(t, noNotice, "epoch=3 owner_pid=999 outcome=failed-suppressed updated_at=1", "", true)
+		fmSeedBudget(t, noNotice, 3, "2")
+		if code, _ := fmClaudeGuard(t, noNotice); code != 2 {
+			t.Fatalf("an exhausted failure epoch without the consumed notice must remain blocking, got %d", code)
+		}
+		noticeOnly := fmEpic(t, "s1")
+		mustWrite(t, coxPath(noticeOnly, failureNoticeName), "")
+		fmSeedBudget(t, noticeOnly, 3, "2")
+		if code, _ := fmClaudeGuard(t, noticeOnly); code != 2 {
+			t.Fatalf("a consumed notice without an exhausted failure epoch must remain blocking, got %d", code)
 		}
 	})
 
@@ -825,14 +1143,23 @@ func fmTurnendGuard(t *testing.T) {
 	// fm: tests/fm-turnend-guard.test.sh:1880
 	t.Run("hook_claude_mode_allow_resets_budget", func(t *testing.T) {
 		epic := fmEpic(t, "s1")
-		blocks := fmBlocks(t)
-		if r := fmGuard(t, epic, fmLaunchRefused, blocks); !r.blocked() || fmBlockCount(blocks) == 0 {
-			t.Fatalf("first block must record the budget, got %+v", r)
+		if code, _ := fmClaudeGuard(t, epic); code != 2 || !fmExists(fmBudgetPath(epic)) {
+			t.Fatalf("the first --claude block must exit 2 and record the budget, got %d", code)
 		}
+		mustWrite(t, coxPath(epic, failureNoticeName), "")
+		mustWrite(t, coxPath(epic, failureAlarmName), "")
 		fmHealthy(t, epic)
-		fmWantSilent(t, fmGuard(t, epic, nil, blocks), "healthy again")
-		if _, err := os.Stat(blocks); err == nil {
-			t.Fatalf("a healthy allow must reset the block budget, count=%d", fmBlockCount(blocks))
+		if code, _ := fmClaudeGuard(t, epic); code != 0 {
+			t.Fatalf("--claude must allow once the watcher is healthy again, got %d", code)
+		}
+		for _, n := range []string{turnendBudgetName, failureNoticeName, failureAlarmName} {
+			if fmExists(coxPath(epic, n)) {
+				t.Fatalf("positive watcher recovery must reset %s", n)
+			}
+		}
+		fmDead(t, epic)
+		if code, _ := fmClaudeGuard(t, epic); code != 2 {
+			t.Fatalf("a later unhealthy chain must re-block from a fresh budget, got %d", code)
 		}
 	})
 
@@ -842,7 +1169,7 @@ func fmTurnendGuard(t *testing.T) {
 		// restarted watcher's first tick (a stub that ticks after 0.4s inside a 3s window).
 		epic := fmEpic(t, "s1")
 		stubWatcher(t, 3*time.Second, `sleep 0.4; mkdir -p "$3/.cox/watch" && date > "$3/.cox/watch/lasttick" && exec sleep 30`)
-		r := fmGuard(t, epic, launchWatcher, fmBlocks(t))
+		r := fmGuard(t, epic, launchWatcher)
 		if r.blocked() || r.code != 0 || r.out != "" {
 			t.Fatalf("a late but confirmed restart must end the Stop silently (no forced continuation, no output), got %+v", r)
 		}
@@ -866,7 +1193,7 @@ func fmTurnendGuard(t *testing.T) {
 		epic := fmEpic(t, "s1")
 		fmWatchPid(t, epic, os.Getpid())
 		fmBeacon(t, epic, 400*time.Second)
-		fmWantBlock(t, fmGuard(t, epic, launchWatcher, fmBlocks(t)), epic, "400s-old beacon")
+		fmWantBlock(t, fmGuard(t, epic, launchWatcher), epic, "400s-old beacon")
 	})
 }
 
@@ -1274,6 +1601,18 @@ func TestPortClaimChild(t *testing.T) {
 	release()
 }
 
+// TestPortAutoarmChild is not a translated case: it is the separate auto-arm process the concurrent-recovery case
+// runs (firstmate runs the auto-arm and the guard as two processes; cox's locks key on the pid). Without
+// FM_AUTOARM_EPIC it does nothing.
+func TestPortAutoarmChild(t *testing.T) {
+	epic := os.Getenv("FM_AUTOARM_EPIC")
+	if epic == "" {
+		return
+	}
+	code, _ := runClaudeAutoarm(epic, fmLaunchRefused, io.Discard)
+	fmt.Printf("AUTOARM %d\n", code)
+}
+
 // fmClaimRace starts n processes that all call claimWatchPid on epic at the same instant and returns how many won.
 func fmClaimRace(t *testing.T, epic string, n int) int {
 	t.Helper()
@@ -1311,7 +1650,7 @@ func fmWait(t *testing.T, epic string, polls int, onPoll func(i int)) (int, stri
 	var out bytes.Buffer
 	i := 0
 	cfg := rewakeCfg{
-		epics: []string{epic}, guardEpics: guardEpics(epic), out: &out, stdout: &out, blocksPath: fmBlocks(t),
+		epics: []string{epic}, guardEpics: guardEpics(epic), out: &out, stdout: &out,
 		maxWait: time.Duration(polls) * time.Second, batchMax: time.Hour, poll: time.Second,
 		sleep:  func(time.Duration) { i++; onPoll(i) },
 		launch: func(ep string) error { t.Errorf("the waiter restarted the watcher for %s", ep); return errWatchRefused },
@@ -1566,7 +1905,7 @@ func fmWatcherLock(t *testing.T) {
 				fmBeacon(t, epic, 0) // a fresh-looking leftover beacon must not read as healthy
 			}
 			fmTickingWatcher(t, 10*time.Second)
-			r := fmGuard(t, epic, launchWatcher, fmBlocks(t))
+			r := fmGuard(t, epic, launchWatcher)
 			if len(r.launched) != 1 || r.blocked() {
 				t.Fatalf("%s: the guard must start a watcher and confirm it, got %+v", row, r)
 			}
@@ -1588,7 +1927,7 @@ func fmWatcherLock(t *testing.T) {
 		// The restarted watcher's first pass yields an actionable wake: the same Stop must surface it.
 		epic := fmEpic(t, "s1")
 		var out bytes.Buffer
-		cfg := rewakeCfg{epics: []string{epic}, guardEpics: guardEpics(epic), out: &out, stdout: &out, sleep: noSleep, blocksPath: fmBlocks(t),
+		cfg := rewakeCfg{epics: []string{epic}, guardEpics: guardEpics(epic), out: &out, stdout: &out, sleep: noSleep,
 			maxWait: time.Second, batchMax: time.Hour, poll: time.Second,
 			launch: func(ep string) error { seedWake(t, ep, wake.KindWorkerDone); return nil }}
 		if code := runStopRewake(cfg); code != 2 || !strings.Contains(out.String(), "worker_done") {
@@ -1608,7 +1947,7 @@ func fmWatcherLock(t *testing.T) {
 			time.Sleep(300 * time.Millisecond)
 			_ = os.WriteFile(filepath.Join(epic, controlDir, "watch", "lasttick"), []byte(time.Now().UTC().Format(time.RFC3339)), 0o644)
 		}()
-		r := fmGuard(t, epic, launchWatcher, fmBlocks(t))
+		r := fmGuard(t, epic, launchWatcher)
 		<-ticked
 		if r.blocked() {
 			t.Fatalf("the restart must wait for the live peer's beacon and attach, not fail at once: %+v", r)
@@ -1621,7 +1960,7 @@ func fmWatcherLock(t *testing.T) {
 		pid, exited := fmLiveChildExit(t, "exec sleep 300")
 		fmWatchPid(t, epic, pid)
 		fmBeacon(t, epic, time.Since(time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)))
-		fmWantBlock(t, fmGuard(t, epic, launchWatcher, fmBlocks(t)), epic, "live unconfirmable holder, stale beacon")
+		fmWantBlock(t, fmGuard(t, epic, launchWatcher), epic, "live unconfirmable holder, stale beacon")
 		if !fmStillRunning(exited) {
 			t.Fatal("the guard killed the unrelated live holder")
 		}
@@ -1724,7 +2063,7 @@ func fmWatchArm(t *testing.T) {
 		seedWake(t, epic, wake.KindStatus)
 		seedWake(t, epic, wake.KindStatus)
 		var out bytes.Buffer
-		cfg := rewakeCfg{epics: []string{epic}, guardEpics: guardEpics(epic), out: &out, stdout: &out, sleep: noSleep, blocksPath: fmBlocks(t),
+		cfg := rewakeCfg{epics: []string{epic}, guardEpics: guardEpics(epic), out: &out, stdout: &out, sleep: noSleep,
 			maxWait: time.Second, batchMax: time.Hour, poll: time.Second, launch: func(string) error { return nil }}
 		code := runStopRewake(cfg)
 		if w, _ := wake.Drain(epic, true); len(w) != 2 {
@@ -1741,7 +2080,7 @@ func fmWatchArm(t *testing.T) {
 		fmDead(t, epic)
 		seedWake(t, epic, wake.KindStatus)
 		var out bytes.Buffer
-		cfg := rewakeCfg{epics: []string{epic}, guardEpics: guardEpics(epic), out: &out, stdout: &out, sleep: noSleep, blocksPath: fmBlocks(t),
+		cfg := rewakeCfg{epics: []string{epic}, guardEpics: guardEpics(epic), out: &out, stdout: &out, sleep: noSleep,
 			maxWait: time.Second, batchMax: time.Hour, poll: time.Second,
 			launch: func(string) error { time.Sleep(1500 * time.Millisecond); return nil }}
 		if code := runStopRewake(cfg); code != 2 || !strings.Contains(out.String(), "cox wake drain") {
@@ -1916,7 +2255,7 @@ func fmDocTurnendGuard(t *testing.T) {
 		}
 		t.Setenv("ORCA_TERMINAL_HANDLE", "term_other")
 		fmProbe(t, true)
-		r := fmGuard(t, epic, nil, fmBlocks(t))
+		r := fmGuard(t, epic, nil)
 		if r.blocked() {
 			t.Fatalf("a foreign live owner must not be blocked on (an unbounded loop), got %+v", r)
 		}
@@ -1936,7 +2275,7 @@ func fmDocTurnendGuard(t *testing.T) {
 		}
 		t.Setenv("ORCA_TERMINAL_HANDLE", "term_new")
 		fmProbe(t, false)
-		fmWantBlock(t, fmGuard(t, epic, fmLaunchRefused, fmBlocks(t)), epic, "dead recorded owner, unwatched epic")
+		fmWantBlock(t, fmGuard(t, epic, fmLaunchRefused), epic, "dead recorded owner, unwatched epic")
 	})
 
 	// fm: docs/turnend-guard.md:71
@@ -2013,7 +2352,7 @@ func fmDocWatcherContinuity(t *testing.T) {
 		r := fmGuard(t, epic, func(ep string) error {
 			fmHealthy(t, ep) // a peer watcher came up while this restart lost the race
 			return errWatchRefused
-		}, fmBlocks(t))
+		})
 		if r.blocked() {
 			t.Fatalf("a failed restart with a live fresh watcher in place must be benign (recheck, continue silently), got %+v", r)
 		}
