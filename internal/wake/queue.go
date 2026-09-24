@@ -10,6 +10,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/nphattai/coxswain/internal/state"
 )
 
 // ControlDir mirrors state.ControlDir; the queue lives beside the event log.
@@ -332,13 +334,24 @@ func Ack(epicDir string, gen int) (AckResult, error) {
 	if err != nil {
 		return res, err
 	}
+	named := false
 	for _, w := range all {
+		named = named || w.Gen == gen
 		switch {
 		case w.Gen <= cur:
 		case w.Gen <= gen:
 			res.Consumed++
 		case w.Gen > res.Current:
 			res.Current = w.Gen
+		}
+	}
+	if named {
+		if h, err := Handled(epicDir); err != nil {
+			return res, err
+		} else if gen > h {
+			if err := state.AtomicWrite(handledPath(epicDir), []byte(strconv.Itoa(gen)+"\n"), 0o644); err != nil {
+				return res, fmt.Errorf("write wake handled: %w", err)
+			}
 		}
 	}
 	if gen <= cur {

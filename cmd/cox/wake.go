@@ -43,11 +43,10 @@ func wakeDrain(args []string) int {
 	if *epicDir == "" {
 		return usageErr("cox wake drain --epic <dir> [--peek] [--full]")
 	}
-	wakes, err := wake.Drain(*epicDir, *peek)
-	if err != nil {
+	alive := func() bool { return watcherHealthy(*epicDir, time.Now()) }
+	if err := wake.Present(*epicDir, os.Stdout, os.Stderr, wake.PresentOptions{Peek: *peek, Full: *full, WatcherAlive: alive}); err != nil {
 		return fail("%v", err)
 	}
-	printWakes(wakes, *full)
 	return 0
 }
 
