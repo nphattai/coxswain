@@ -15,6 +15,26 @@ The exact record contract is [`schema/wake.v1.json`](schema/wake.v1.json). Queue
 `internal/wake/queue.go`; classification is owned by `internal/wake/classify.go`; delivery policy is owned by
 `internal/watch/` and the harness hooks.
 
+## Queue robustness and presentation
+
+- One unusable row (unparseable, or no positive `gen`) never wedges the queue. `Load` skips it, and the next
+  non-peek drain retires it and reports it on stderr.
+- A row with no `schema` tag is a legacy row and is adopted as `v1`. A row with another explicit schema is kept but not
+  loaded.
+- The drain collapses only obvious duplicates: same story and kind, where the later payload equals the earlier one or
+  extends it past a word boundary. Every distinct unread report still surfaces.
+- An acknowledgement that consumes nothing names the current wake and the exact `cox wake ack-through` command.
+- Every drain also prints the status sections in [Status lines and open decisions](decision.v1.md), and a
+  `WATCHER DOWN` banner when stories are in flight and no live watcher holds the epic.
+
+Superseded by cox-supervision-port wave 2 (firstmate `1e0e773` translated):
+
+- The free-text status regex ported from v1 `bin/watch.sh` (`blocked` or `need a decision` anywhere in the text) is
+  replaced by the firstmate status-line grammar. Prose never raises a wake.
+- `stale` and `unknown_probe` are urgent, not routine (leader ruling 2026-09-24).
+- A corrupt queue line is retired instead of failing every drain, and a schema-less row is adopted instead of
+  skipped.
+
 ## Example
 
 ```json

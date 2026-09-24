@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -33,9 +34,11 @@ import (
 
 	"github.com/nphattai/coxswain/internal/adapter/backend"
 	"github.com/nphattai/coxswain/internal/adapter/backend/fake"
+	"github.com/nphattai/coxswain/internal/protocol/decision"
 	"github.com/nphattai/coxswain/internal/protocol/inbox"
 	"github.com/nphattai/coxswain/internal/protocol/question"
 	"github.com/nphattai/coxswain/internal/protocol/report"
+	"github.com/nphattai/coxswain/internal/protocol/status"
 	"github.com/nphattai/coxswain/internal/state"
 	"github.com/nphattai/coxswain/internal/wake"
 	"github.com/nphattai/coxswain/internal/watch"
@@ -283,16 +286,22 @@ func TestPortWakeQueue(t *testing.T) {
 	// n/a acknowledged_stall_publication_survives_pre_marker_crash fm:tests/fm-wake-queue.test.sh:844 - secondmate wake-loop stall publication, firstmate-only
 	// n/a empty_prefix_mate_preserves_other_mate_receipt fm:tests/fm-wake-queue.test.sh:883 - secondmate homes, firstmate-only
 
-	// fm: tests/fm-wake-queue.test.sh:934 (work in flight and no live watcher: the drain must warn; cox has the watcher
-	// beacon at .cox/watch/lasttick, which the drain never reads)
+	// fm: tests/fm-wake-queue.test.sh:934 (work in flight and no live watcher: the drain warns; a live watcher whose
+	// beacon (.cox/watch/lasttick) is fresh keeps it silent)
 	t.Run("FM/fm-wake-queue/drain_asserts_watcher_liveness", func(t *testing.T) {
 		epic := newEpic(t)
 		_, se, code := cox(t, "wake", "drain", "--epic", epic)
 		if code != 0 {
 			t.Fatalf("drain exit %d: %s", code, se)
 		}
-		if !strings.Contains(strings.ToLower(se), "watcher") {
+		if !strings.Contains(strings.ToLower(se), "watcher") || !strings.Contains(se, "WATCHER DOWN") {
 			red(t, "wake.drain-liveness", "drain with a working story and no live watcher printed no watcher-down warning (stderr %q)", se)
+		}
+		must(t, os.WriteFile(filepath.Join(epic, state.ControlDir, "watch.pid"), []byte(fmt.Sprint(os.Getpid())), 0o644))
+		must(t, os.MkdirAll(filepath.Join(epic, state.ControlDir, "watch"), 0o755))
+		must(t, os.WriteFile(filepath.Join(epic, state.ControlDir, "watch", "lasttick"), nil, 0o644))
+		if _, se, _ := cox(t, "wake", "drain", "--epic", epic); strings.Contains(se, "WATCHER DOWN") {
+			red(t, "wake.drain-liveness", "drain false-alarmed with a live watcher and fresh beacon: %q", se)
 		}
 	})
 
@@ -665,16 +674,38 @@ func TestPortWakeDrainUnreadStatus(t *testing.T) {
 		}
 	})
 
-	// fm: tests/fm-wake-drain-unread-status.test.sh:364
+	// fm: tests/fm-wake-drain-unread-status.test.sh:364 (the open-decision fold runs independently of unread status: a
+	// buried decision and an unread note surface together, and a resolution clears the decision everywhere)
 	t.Run("FM/fm-wake-drain-unread-status/open_decisions_fold_is_unchanged", func(t *testing.T) {
 		epic := newEpic(t)
-		ask(t, epic, "pick REST or RPC")
+		id := ask(t, epic, "pick REST or RPC")
 		must(t, wake.AckThrough(epic, drain(t, epic)[0].Gen))
 		_, err := report.Report(epic, story, 1, report.KindStatus, "routine note", nil)
 		must(t, err)
 		out, _, _ := cox(t, "wake", "drain", "--epic", epic)
-		if !strings.Contains(out, "pick REST or RPC") {
-			notImplemented(t, "wake.drain-open-decisions", "the drain folds open questions independently of unread status; `cox wake drain` prints only unacked wakes, so an acked open question is gone")
+		wantLine(t, out, "s1 [key="+id+"] needs-decision: pick REST or RPC", "OPEN DECISIONS no longer surfaces a buried question")
+		wantLine(t, out, "routine note", "the unread note was not surfaced alongside the still-open decision")
+		wantLine(t, out, "OPEN DECISIONS: close one by answering it: cox reply", "OPEN DECISIONS lost its answerer-closes hint")
+
+		for _, l := range []string{"needs-decision [key=api-shape]: pick REST or RPC", "working: continuing other work", "note: re-read acknowledgement"} {
+			_, err := report.Report(epic, "task6", 1, report.KindStatus, l, nil)
+			must(t, err)
+		}
+		out, _, _ = cox(t, "wake", "drain", "--epic", epic)
+		wantLine(t, out, "task6 [key=api-shape] needs-decision: pick REST or RPC", "OPEN DECISIONS no longer surfaces a buried needs-decision")
+		wantLine(t, out, "task6: note: re-read acknowledgement", "the unread note was not surfaced alongside the still-open decision")
+
+		_, err = report.Report(epic, "task6", 1, report.KindStatus, "resolved [key=api-shape]: went with REST", nil)
+		must(t, err)
+		_, se, code := cox(t, "reply", story, id, "REST", "--epic", epic)
+		if code != 0 {
+			t.Fatalf("cox reply: %s", se)
+		}
+		ws := drain(t, epic)
+		must(t, wake.AckThrough(epic, ws[len(ws)-1].Gen))
+		out, _, _ = cox(t, "wake", "drain", "--epic", epic)
+		if strings.Contains(out, "OPEN DECISIONS") || strings.Contains(out, "pick REST or RPC") {
+			red(t, "wake.drain-open-decisions", "an explicitly resolved decision still printed as open: %s", out)
 		}
 	})
 
@@ -704,6 +735,73 @@ func TestPortWakeDrainUnreadStatus(t *testing.T) {
 	})
 }
 
+// statusLine logs a worker status event with no wake row, the cox shape of a firstmate status-file line no queue row
+// carries (status.Report with no mailbox: the event lands, nothing is queued).
+func statusLine(t *testing.T, epic, story, line string) {
+	t.Helper()
+	must(t, status.Report(epic, story, 1, "status", line, nil, ""))
+}
+
+// storyFile writes stories/<story>.md with the given frontmatter kind (firstmate: <task>.meta kind=).
+func storyFile(t *testing.T, epic, story, kind string) {
+	t.Helper()
+	must(t, os.MkdirAll(filepath.Join(epic, "stories"), 0o755))
+	must(t, os.WriteFile(filepath.Join(epic, "stories", story+".md"), []byte("---\nid: "+story+"\nkind: "+kind+"\n---\n"), 0o644))
+}
+
+// historyOf returns one story's folded status history.
+func historyOf(t *testing.T, epic, story string) wake.History {
+	t.Helper()
+	hs, err := wake.Histories(epic)
+	must(t, err)
+	for _, h := range hs {
+		if h.Story == story {
+			return h
+		}
+	}
+	return wake.History{Story: story}
+}
+
+// wantLine asserts the drain output carries sub.
+func wantLine(t *testing.T, out, sub, msg string) {
+	t.Helper()
+	if !strings.Contains(out, sub) {
+		red(t, "wake.drain", "%s: %q not in:\n%s", msg, sub, out)
+	}
+}
+
+// lineStarting returns the first output line that starts with prefix.
+func lineStarting(out, prefix string) string {
+	for _, l := range strings.Split(out, "\n") {
+		if strings.HasPrefix(l, prefix) {
+			return l
+		}
+	}
+	return ""
+}
+
+// backstopBody is the STATUS OUTCOME BACKSTOP section's items (firstmate backstop_body).
+func backstopBody(out string) string {
+	var b []string
+	in := false
+	for _, l := range strings.Split(out, "\n") {
+		switch {
+		case strings.HasPrefix(l, "STATUS OUTCOME BACKSTOP ("):
+			in = true
+		case in && (strings.HasPrefix(l, "OPEN DECISIONS") || strings.HasPrefix(l, "STATUS OUTCOME BACKSTOP:")):
+			in = false
+		case in:
+			b = append(b, l)
+		}
+	}
+	return strings.Join(b, "\n")
+}
+
+// failWriter is an output consumer that fails every write.
+type failWriter struct{}
+
+func (failWriter) Write([]byte) (int, error) { return 0, errors.New("consumer closed") }
+
 // openQuestionOnDrain reports whether the real `cox wake drain` output names an open question after its wake was acked.
 func openQuestionOnDrain(t *testing.T, epic, text string) bool {
 	t.Helper()
@@ -723,8 +821,15 @@ func TestPortWakeDrainOpenDecisions(t *testing.T) {
 		ws := drain(t, epic)
 		must(t, wake.AckThrough(epic, ws[len(ws)-1].Gen))
 		if !openQuestionOnDrain(t, epic, "pick REST or RPC") {
-			notImplemented(t, "wake.drain-open-decisions", "an unanswered question buried under later reports must still report as open on every drain")
+			red(t, "wake.drain-open-decisions", "an unanswered question buried under later reports did not report as open")
 		}
+		for _, l := range []string{"needs-decision [key=api-shape]: pick REST or RPC", "working: continuing other work", "resolved [key=other]: unrelated decision closed"} {
+			statusLine(t, epic, "task1", l)
+		}
+		out, _, _ := cox(t, "wake", "drain", "--epic", epic)
+		wantLine(t, out, "OPEN DECISIONS", "buried decision produced no OPEN DECISIONS section")
+		wantLine(t, out, "task1 [key=api-shape] needs-decision: pick REST or RPC", "buried needs-decision was not surfaced with its task, key, and note")
+		wantLine(t, out, "OPEN DECISIONS: close one by answering it:", "open section is missing the answerer-closes hint")
 	})
 
 	// fm: tests/fm-wake-drain-open-decisions.test.sh:40 (answering closes it: the question leaves the open set)
@@ -743,7 +848,7 @@ func TestPortWakeDrainOpenDecisions(t *testing.T) {
 
 	// n/a reserved_key_namespace_is_owned_by_its_library fm:tests/fm-wake-drain-open-decisions.test.sh:57 - reserved decision keys owned by firstmate libraries (pending-reply-*)
 
-	// fm: tests/fm-wake-drain-open-decisions.test.sh:88
+	// fm: tests/fm-wake-drain-open-decisions.test.sh:88 (no story file: kind unknown, so done: supersedes nothing)
 	t.Run("FM/fm-wake-drain-open-decisions/later_unrelated_terminal_line_does_not_close_it", func(t *testing.T) {
 		epic := newEpic(t)
 		ask(t, epic, "pick REST or RPC")
@@ -755,8 +860,12 @@ func TestPortWakeDrainOpenDecisions(t *testing.T) {
 			red(t, "question.open-set", "a later done report closed the open question: %v", ids)
 		}
 		if !openQuestionOnDrain(t, epic, "pick REST or RPC") {
-			notImplemented(t, "wake.drain-open-decisions", "the still-open question must print on the drain after a later terminal report")
+			red(t, "wake.drain-open-decisions", "the still-open question did not print on the drain after a later terminal report")
 		}
+		statusLine(t, epic, "task3", "needs-decision [key=api-shape]: pick REST or RPC")
+		statusLine(t, epic, "task3", "done: unrelated later milestone")
+		out, _, _ := cox(t, "wake", "drain", "--epic", epic)
+		wantLine(t, out, "task3 [key=api-shape] needs-decision: pick REST or RPC", "a later unrelated terminal line incorrectly cleared the open decision")
 	})
 
 	// fm: tests/fm-wake-drain-open-decisions.test.sh:105
@@ -773,9 +882,9 @@ func TestPortWakeDrainOpenDecisions(t *testing.T) {
 		ask(t, epic, "pick REST or RPC")
 		must(t, wake.AckThrough(epic, drain(t, epic)[0].Gen))
 		appendN(t, epic, wake.KindStatus, "unrelated")
-		if !openQuestionOnDrain(t, epic, "pick REST or RPC") {
-			notImplemented(t, "wake.drain-open-decisions", "the open-question section is epic-wide, not scoped to this drain's queued records")
-		}
+		out, _, _ := cox(t, "wake", "drain", "--epic", epic)
+		wantLine(t, out, "unrelated", "the unrelated queued wake was not presented")
+		wantLine(t, out, "pick REST or RPC", "the open-question section is not epic-wide")
 	})
 
 	// fm: tests/fm-wake-drain-open-decisions.test.sh:144
@@ -783,24 +892,34 @@ func TestPortWakeDrainOpenDecisions(t *testing.T) {
 		epic := newEpic(t)
 		ask(t, epic, "pick REST or RPC")
 		must(t, wake.AckThrough(epic, drain(t, epic)[0].Gen))
+		if len(drain(t, epic)) != 0 {
+			t.Fatal("setup: queue not empty")
+		}
 		if !openQuestionOnDrain(t, epic, "pick REST or RPC") {
-			notImplemented(t, "wake.drain-open-decisions", "an open question must print even when the wake queue is empty")
+			red(t, "wake.drain-open-decisions", "an open question did not print when the wake queue is empty")
 		}
 	})
 
 	// n/a status_symlink_is_not_followed fm:tests/fm-wake-drain-open-decisions.test.sh:161 - fleet-wide status-file scan, firstmate-only
 
-	// fm: tests/fm-wake-drain-open-decisions.test.sh:186
+	// fm: tests/fm-wake-drain-open-decisions.test.sh:186 (the item line is cut to 219 characters with the shared
+	// " [truncated]" marker, its lede intact; a short item is untouched)
 	t.Run("FM/fm-wake-drain-open-decisions/over_long_decision_note_is_capped_with_a_marker", func(t *testing.T) {
 		epic := newEpic(t)
-		ask(t, epic, "pick REST or RPC"+strings.Repeat(" and-then-some", 200))
+		statusLine(t, epic, "task-long", "needs-decision [key=api-shape]: pick REST or RPC"+strings.Repeat(" and-then-some", 200))
+		id := ask(t, epic, "pick REST or RPC"+strings.Repeat(" and-then-some", 200))
 		out, _, _ := cox(t, "wake", "drain", "--epic", epic)
-		line := strings.TrimSpace(out)
-		if len(line) > 260 || !strings.Contains(line, "pick REST or RPC") {
-			red(t, "wake.drain", "an over-long question line was not capped with its lede intact (%d chars)", len(line))
+		for _, lede := range []string{"task-long [key=api-shape] needs-decision: pick REST or RPC", "s1 [key=" + id + "] needs-decision: pick REST or RPC"} {
+			line := lineStarting(out, lede)
+			if line == "" || !strings.HasSuffix(line, " [truncated]") || len([]rune(line)) > 219 {
+				red(t, "wake.drain", "an over-long decision note was not capped with its lede intact (%d chars): %q", len([]rune(line)), line)
+			}
 		}
-		if !strings.Contains(line, "truncated") && !strings.HasSuffix(line, "...") && !strings.HasSuffix(line, "…") {
-			red(t, "wake.drain", "the capped question line carries no truncation marker")
+		statusLine(t, epic, "task-short", "needs-decision [key=short]: brief enough to keep whole")
+		out, _, _ = cox(t, "wake", "drain", "--epic", epic)
+		wantLine(t, out, "task-short [key=short] needs-decision: brief enough to keep whole", "a decision note already under the cap was altered")
+		if strings.Contains(out, "brief enough to keep whole [truncated]") {
+			red(t, "wake.drain", "a decision note already under the cap was marked truncated")
 		}
 	})
 }
@@ -809,15 +928,22 @@ func TestPortWakeDrainOpenDecisionsCursor(t *testing.T) {
 	// fm: tests/fm-wake-drain-open-decisions-cursor.test.sh:42
 	t.Run("FM/fm-wake-drain-open-decisions-cursor/buried_decision_survives_many_growing_drains_and_resolution_clears_it", func(t *testing.T) {
 		epic := newEpic(t)
-		ask(t, epic, "pick REST or RPC")
+		id := ask(t, epic, "pick REST or RPC")
 		for i := 0; i < 20; i++ {
 			_, err := report.Report(epic, story, 1, report.KindStatus, fmt.Sprintf("working: filler %d", i), nil)
 			must(t, err)
 			ws := drain(t, epic)
 			must(t, wake.AckThrough(epic, ws[len(ws)-1].Gen))
+			if !openQuestionOnDrain(t, epic, "pick REST or RPC") {
+				red(t, "wake.drain-open-decisions", "a buried open question was lost after growing drain %d", i)
+				break
+			}
 		}
-		if !openQuestionOnDrain(t, epic, "pick REST or RPC") {
-			notImplemented(t, "wake.drain-open-decisions", "a buried open question must survive many growing drains until it is resolved")
+		if _, err := question.Answer(epic, story, id, "REST", false); err != nil {
+			t.Fatal(err)
+		}
+		if openQuestionOnDrain(t, epic, "OPEN DECISIONS") {
+			red(t, "wake.drain-open-decisions", "the resolution did not clear the buried question")
 		}
 	})
 
@@ -846,13 +972,59 @@ func TestPortWakeDrainOpenDecisionsCursor(t *testing.T) {
 	// n/a pre_fix_cursor_refolds_corr_tagged_decision fm:tests/fm-wake-drain-open-decisions-cursor.test.sh:276 - fold cache versioning, firstmate-only
 	// n/a previous_fold_cache_is_refolded_under_current_semantics fm:tests/fm-wake-drain-open-decisions-cursor.test.sh:309 - fold cache versioning, firstmate-only
 
-	// fm: tests/fm-wake-drain-open-decisions-cursor.test.sh:350 (a terminal report supersedes the story's open decisions)
+	// fm: tests/fm-wake-drain-open-decisions-cursor.test.sh:350 (a ship/scout terminal report supersedes the story's open
+	// decisions; a secondmate's does not; a reopening after it surfaces again. The cache-migration pass is n/a: cox
+	// keeps no fold cache)
 	t.Run("FM/fm-wake-drain-open-decisions-cursor/terminal_supersession_reaches_cached_drains", func(t *testing.T) {
+		for _, kind := range []string{"scout", "ship", "secondmate"} {
+			for _, terminal := range []string{"done", "failed"} {
+				epic := newEpic(t)
+				storyFile(t, epic, "task", kind)
+				statusLine(t, epic, "task", "blocked [key=access]: waiting")
+				out, _, _ := cox(t, "wake", "drain", "--epic", epic)
+				wantLine(t, out, "task [key=access] blocked: waiting", "initial blocker must surface")
+				statusLine(t, epic, "task", terminal+": report saved")
+				statusLine(t, epic, "task", "note: cleanup complete")
+				out, _, _ = cox(t, "wake", "drain", "--epic", epic)
+				hist := historyOf(t, epic, "task")
+				ev, _ := decision.Actionable(hist.Lines, hist.Kind, "")
+				span := strings.Join(ev, "\n")
+				if kind == "secondmate" {
+					wantLine(t, out, "task [key=access] blocked: waiting", "secondmate blocker must survive "+terminal)
+					wantLine(t, span, "blocked [key=access]: waiting", "secondmate opening must remain actionable")
+				} else {
+					if strings.Contains(out, "OPEN DECISIONS") {
+						red(t, "wake.drain-open-decisions", "%s pre-terminal blocker resurfaced after %s: %s", kind, terminal, out)
+					}
+					if strings.Contains(span, "waiting") {
+						red(t, "wake.drain-open-decisions", "%s superseded opening remained actionable in a captured span", kind)
+					}
+				}
+				for _, l := range []string{"blocked [key=access]: reopened", "needs-decision [key=new]: a new decision", "note: more cleanup"} {
+					statusLine(t, epic, "task", l)
+				}
+				out, _, _ = cox(t, "wake", "drain", "--epic", epic)
+				wantLine(t, out, "task [key=access] blocked: reopened", "post-terminal reopening must surface")
+				wantLine(t, out, "task [key=new] needs-decision: a new decision", "post-terminal new key must surface")
+				for _, l := range []string{"resolved [key=access]: answered", "resolved [key=new]: answered", "note: final cleanup"} {
+					statusLine(t, epic, "task", l)
+				}
+				if out, _, _ = cox(t, "wake", "drain", "--epic", epic); strings.Contains(out, "OPEN DECISIONS") {
+					red(t, "wake.drain-open-decisions", "matching resolutions did not close reopened decisions: %s", out)
+				}
+			}
+		}
+		// The cox question channel under the same rule: a ship story's done report supersedes its open question.
 		epic := newEpic(t)
+		storyFile(t, epic, story, "ship")
 		ask(t, epic, "pick REST or RPC")
 		_, err := report.Report(epic, story, 1, report.KindDone, "done: shipped with REST", nil)
 		must(t, err)
-		notImplemented(t, "wake.drain-open-decisions", "a terminal report that supersedes an open question must clear it from every later drain; cox has no open-question fold for a drain to supersede")
+		ws := drain(t, epic)
+		must(t, wake.AckThrough(epic, ws[len(ws)-1].Gen))
+		if openQuestionOnDrain(t, epic, "pick REST or RPC") {
+			red(t, "wake.drain-open-decisions", "a ship story's terminal report did not supersede its open question")
+		}
 	})
 
 	// n/a kind_changes_invalidate_folded_decisions fm:tests/fm-wake-drain-open-decisions-cursor.test.sh:397 - task-kind evidence cache, firstmate-only
@@ -860,63 +1032,142 @@ func TestPortWakeDrainOpenDecisionsCursor(t *testing.T) {
 
 func TestPortWakeDrainOutcomeBackstop(t *testing.T) {
 	const mech = "wake.outcome-backstop"
-	// fm: tests/fm-wake-drain-outcome-backstop.test.sh:32 (a captain-facing latest report whose wake row is gone - acked
-	// without being handled - resurfaces on the next drain)
+	// fm: tests/fm-wake-drain-outcome-backstop.test.sh:32 (a captain-facing latest status event whose wake was never
+	// handled - its row lost, or acknowledged past without being named - resurfaces on the next drain)
 	t.Run("FM/fm-wake-drain-outcome-backstop/uncovered_keyless_captain_events_surface_on_the_next_main_drain", func(t *testing.T) {
 		epic := newEpic(t)
 		g, err := report.Report(epic, story, 1, report.KindDone, "done: PR 900", nil)
 		must(t, err)
 		must(t, wake.AckThrough(epic, g+5)) // an acknowledgement past what was handled
 		out, _, _ := cox(t, "wake", "drain", "--epic", epic)
-		if !strings.Contains(out, "PR 900") {
-			notImplemented(t, mech, "a newest done/stuck/question report with no newer outcome must resurface on the next drain when its row was lost; the drain reads only the queue")
+		if !strings.Contains(backstopBody(out), "s1 done: PR 900") {
+			red(t, mech, "a done report acknowledged past without handling did not resurface: %s", out)
 		}
+		statusLine(t, epic, "done-task", "done: PR https://example.test/3346 checks green")
+		statusLine(t, epic, "blocked-task", "blocked: release credential unavailable")
+		statusLine(t, epic, "decision-task", "needs-decision: choose REST or RPC")
+		out, _, _ = cox(t, "wake", "drain", "--epic", epic)
+		wantLine(t, backstopBody(out), "done-task done: PR https://example.test/3346 checks green", "keyless done event did not surface in the backstop")
+		wantLine(t, out, "blocked-task blocked: release credential unavailable", "keyless blocked event did not surface through OPEN DECISIONS")
+		wantLine(t, out, "decision-task needs-decision: choose REST or RPC", "keyless needs-decision event did not surface through OPEN DECISIONS")
 	})
 
-	// fm: tests/fm-wake-drain-outcome-backstop.test.sh:59
+	// fm: tests/fm-wake-drain-outcome-backstop.test.sh:59 (cox: a handled wake is the covering outcome)
 	t.Run("FM/fm-wake-drain-outcome-backstop/newer_task_outcome_and_routine_latest_events_stay_silent", func(t *testing.T) {
-		notImplemented(t, mech, "a newer outcome for the story suppresses the backstop and routine latest reports stay silent")
+		epic := newEpic(t)
+		g, err := report.Report(epic, "covered", 1, report.KindDone, "done: already delivered completion", nil)
+		must(t, err)
+		must(t, wake.AckThrough(epic, g))
+		statusLine(t, epic, "working", "working: rebased onto merged #76")
+		statusLine(t, epic, "paused", "paused: waiting for the scheduled release window")
+		if out, _, _ := cox(t, "wake", "drain", "--epic", epic); out != "" {
+			red(t, mech, "covered and routine latest events broke the silent drain contract: %q", out)
+		}
 	})
 
 	// fm: tests/fm-wake-drain-outcome-backstop.test.sh:81
 	t.Run("FM/fm-wake-drain-outcome-backstop/older_or_other_task_outcome_cannot_hide_a_new_captain_event", func(t *testing.T) {
-		notImplemented(t, mech, "only a strictly newer outcome for the same story can suppress its latest captain-facing report")
+		epic := newEpic(t)
+		for _, s := range []string{"same-task", "unrelated-task"} {
+			g, err := report.Report(epic, s, 1, report.KindDone, "done: "+s+" completion", nil)
+			must(t, err)
+			must(t, wake.AckThrough(epic, g))
+		}
+		statusLine(t, epic, "same-task", "failed: a later attempt failed")
+		statusLine(t, epic, "no-task-outcome", "PR ready for review")
+		out, _, _ := cox(t, "wake", "drain", "--epic", epic)
+		body := backstopBody(out)
+		wantLine(t, body, "same-task failed: a later attempt failed", "an older same-task outcome hid a later failure")
+		wantLine(t, body, "no-task-outcome PR ready for review", "another task's newer outcome hid a captain-facing event")
 	})
 
 	// n/a branch_annotation_cannot_consume_the_main_resurfacing_backstop fm:tests/fm-wake-drain-outcome-backstop.test.sh:103 - Pi supervision-branch actor, firstmate-only
 
-	// fm: tests/fm-wake-drain-outcome-backstop.test.sh:141
+	// fm: tests/fm-wake-drain-outcome-backstop.test.sh:141 (every event here lands in the same second; the history
+	// position, not the timestamp, separates handled from later)
 	t.Run("FM/fm-wake-drain-outcome-backstop/same_second_outcome_uses_status_causal_position", func(t *testing.T) {
-		notImplemented(t, mech, "same-second events are ordered by causal position (cox: gen), not by timestamp")
+		epic := newEpic(t)
+		g, err := report.Report(epic, "same-second", 1, report.KindDone, "done: first completion", nil)
+		must(t, err)
+		must(t, wake.AckThrough(epic, g))
+		if out, _, _ := cox(t, "wake", "drain", "--epic", epic); out != "" {
+			red(t, mech, "a same-second handled status was re-presented: %q", out)
+		}
+		statusLine(t, epic, "same-second", "failed: genuinely later same-second event")
+		out, _, _ := cox(t, "wake", "drain", "--epic", epic)
+		wantLine(t, out, "same-second failed: genuinely later same-second event", "a later same-second status was hidden by the older outcome")
 	})
 
 	// n/a drain_does_not_scan_append_only_outcome_history fm:tests/fm-wake-drain-outcome-backstop.test.sh:168 - cost bound of firstmate's append-only outcome-history store
 
 	// fm: tests/fm-wake-drain-outcome-backstop.test.sh:189
 	t.Run("FM/fm-wake-drain-outcome-backstop/successful_backstop_is_idempotent_without_consuming_delayed_annotation", func(t *testing.T) {
-		notImplemented(t, mech, "a presented backstop records a receipt so it never repeats, without consuming a delayed wake")
+		epic := newEpic(t)
+		statusLine(t, epic, "receipt-task", "done: keyless completion awaiting recovery")
+		out, _, _ := cox(t, "wake", "drain", "--epic", epic)
+		wantLine(t, out, "receipt-task done: keyless completion awaiting recovery", "first drain did not surface the keyless completion")
+		if out, _, _ := cox(t, "wake", "drain", "--epic", epic); out != "" {
+			red(t, mech, "a successful backstop presentation repeated unchanged: %q", out)
+		}
+		_, err := wake.Append(epic, wake.Wake{Epic: filepath.Base(epic), Story: "receipt-task", Kind: wake.KindWorkerDone, Note: "done: keyless completion awaiting recovery"})
+		must(t, err)
+		out, _, _ = cox(t, "wake", "drain", "--epic", epic)
+		wantLine(t, out, "worker_done receipt-task: done: keyless completion awaiting recovery", "the backstop receipt consumed the delayed wake")
 	})
 
-	// fm: tests/fm-wake-drain-outcome-backstop.test.sh:217
+	// fm: tests/fm-wake-drain-outcome-backstop.test.sh:217 (the output consumer fails: wake.Present's writer)
 	t.Run("FM/fm-wake-drain-outcome-backstop/output_failure_does_not_commit_the_backstop_receipt", func(t *testing.T) {
-		notImplemented(t, mech, "a failed output consumer leaves the backstop unacknowledged for retry")
+		epic := newEpic(t)
+		statusLine(t, epic, "output-task", "done: retry after the output consumer fails")
+		if err := wake.Present(epic, failWriter{}, io.Discard, wake.PresentOptions{}); err == nil {
+			red(t, mech, "a failed output consumer was reported as a successful presentation")
+		}
+		var retry strings.Builder
+		must(t, wake.Present(epic, &retry, io.Discard, wake.PresentOptions{}))
+		wantLine(t, retry.String(), "output-task done: retry after the output consumer fails", "the output failure consumed the backstop receipt")
 	})
 
-	// fm: tests/fm-wake-drain-outcome-backstop.test.sh:248
+	// fm: tests/fm-wake-drain-outcome-backstop.test.sh:248 (the receipt's atomic write cannot land)
 	t.Run("FM/fm-wake-drain-outcome-backstop/receipt_commit_failure_repeats_the_already_presented_backstop", func(t *testing.T) {
-		notImplemented(t, mech, "a receipt failure may repeat a presented backstop but never loses it")
+		epic := newEpic(t)
+		statusLine(t, epic, "atomic-task", "done: presentation precedes its durable receipt")
+		blocker := filepath.Join(epic, wake.ControlDir, fmt.Sprintf("wake.backstop.tmp.%d", os.Getpid()))
+		must(t, os.MkdirAll(blocker, 0o755))
+		var first, retry, final strings.Builder
+		must(t, wake.Present(epic, &first, io.Discard, wake.PresentOptions{}))
+		wantLine(t, first.String(), "atomic-task done: presentation precedes its durable receipt", "receipt failure prevented the prepared backstop presentation")
+		must(t, os.Remove(blocker))
+		must(t, wake.Present(epic, &retry, io.Discard, wake.PresentOptions{}))
+		wantLine(t, retry.String(), "atomic-task done: presentation precedes its durable receipt", "the uncommitted backstop did not retry after storage recovered")
+		must(t, wake.Present(epic, &final, io.Discard, wake.PresentOptions{}))
+		if final.String() != "" {
+			red(t, mech, "the successfully committed retry repeated: %q", final.String())
+		}
 	})
 
 	// fm: tests/fm-wake-drain-outcome-backstop.test.sh:284
 	t.Run("FM/fm-wake-drain-outcome-backstop/rejected_decision_line_surfaces_once_through_backstop", func(t *testing.T) {
-		notImplemented(t, mech, "a captain-facing decision the fold rejects surfaces once through the backstop")
+		epic := newEpic(t)
+		statusLine(t, epic, "rejected", "blocked [key=bad/value]: credential missing")
+		out, _, _ := cox(t, "wake", "drain", "--epic", epic)
+		wantLine(t, out, "rejected blocked [key=bad/value]: credential missing", "captain-facing rejected decision was lost")
+		if strings.Contains(out, "OPEN DECISIONS") {
+			red(t, mech, "malformed decision key entered the open-decision fold: %s", out)
+		}
+		if out, _, _ := cox(t, "wake", "drain", "--epic", epic); out != "" {
+			red(t, mech, "rejected decision backstop repeated unchanged: %q", out)
+		}
 	})
 
 	// n/a missing_index_self_heals_on_first_drain fm:tests/fm-wake-drain-outcome-backstop.test.sh:306 - outcome index store, firstmate-only
 
-	// fm: tests/fm-wake-drain-outcome-backstop.test.sh:331
+	// fm: tests/fm-wake-drain-outcome-backstop.test.sh:331 (a fresh epic: status history, no receipts)
 	t.Run("FM/fm-wake-drain-outcome-backstop/uncovered_event_surfaces_on_first_drain_without_index", func(t *testing.T) {
-		notImplemented(t, mech, "a fresh epic with reports and no receipts surfaces the latest captain-facing report on its first drain")
+		epic := newEpic(t)
+		statusLine(t, epic, "fresh", "done: uncovered completion with no index")
+		out, _, _ := cox(t, "wake", "drain", "--epic", epic)
+		wantLine(t, out, "STATUS OUTCOME BACKSTOP (", "first drain skipped the backstop")
+		wantLine(t, backstopBody(out), "fresh done: uncovered completion with no index", "uncovered status did not surface on the first drain")
 	})
 
 	// n/a malformed_outcome_store_fails_closed_without_pi_advice fm:tests/fm-wake-drain-outcome-backstop.test.sh:358 - outcome store and Pi restart advice, firstmate-only
@@ -926,12 +1177,39 @@ func TestPortWakeDrainOutcomeBackstop(t *testing.T) {
 
 	// fm: tests/fm-wake-drain-outcome-backstop.test.sh:469
 	t.Run("FM/fm-wake-drain-outcome-backstop/overbound_routine_event_stays_silent", func(t *testing.T) {
-		notImplemented(t, mech, "an over-bound unclassifiable routine report stays silent in the backstop")
+		epic := newEpic(t)
+		statusLine(t, epic, "oversized", "working: "+strings.Repeat("x", 70000))
+		if out, _, _ := cox(t, "wake", "drain", "--epic", epic); out != "" {
+			red(t, mech, "unclassifiable over-bound routine event was presented (%d bytes)", len(out))
+		}
 	})
 
 	// fm: tests/fm-wake-drain-outcome-backstop.test.sh:483
 	t.Run("FM/fm-wake-drain-outcome-backstop/backstop_output_is_bounded", func(t *testing.T) {
-		notImplemented(t, mech, "the backstop caps each item and its total output deterministically")
+		epic := newEpic(t)
+		payload := strings.Repeat("0", 300)
+		for i := 1; i <= 30; i++ {
+			statusLine(t, epic, fmt.Sprintf("task-%d", i), fmt.Sprintf("done: completion-%02d %s", i, payload))
+		}
+		out, _, _ := cox(t, "wake", "drain", "--epic", epic)
+		if !strings.Contains(out, "STATUS OUTCOME BACKSTOP: ") || !strings.Contains(out, "more omitted (byte cap)") {
+			red(t, mech, "an over-budget backstop did not report bounded omission: %s", out)
+		}
+		count, longest := 0, 0
+		for _, l := range strings.Split(backstopBody(out), "\n") {
+			if strings.HasPrefix(l, "task-") {
+				count++
+				if n := len([]rune(l)); n > longest {
+					longest = n
+				}
+			}
+		}
+		if count == 0 || count >= 30 {
+			red(t, mech, "backstop byte cap presented an unexpected task count: %d", count)
+		}
+		if longest > 219 {
+			red(t, mech, "a backstop item exceeded its 219-character budget: %d", longest)
+		}
 	})
 }
 
