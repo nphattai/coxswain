@@ -22,6 +22,7 @@ import (
 	"github.com/nphattai/coxswain/internal/adapter/forge"
 	"github.com/nphattai/coxswain/internal/protocol/checkpoint"
 	"github.com/nphattai/coxswain/internal/protocol/inbox"
+	"github.com/nphattai/coxswain/internal/protocol/question"
 	"github.com/nphattai/coxswain/internal/reconcile"
 	"github.com/nphattai/coxswain/internal/state"
 	"github.com/nphattai/coxswain/internal/wake"
@@ -104,6 +105,7 @@ type Watcher struct {
 	// the declaration the current stale alarm binds its throttle to.
 	signals  map[string]*signal
 	surfaced map[string]bool
+	mailbox  []backend.Message // this tick's mailbox read, for the heartbeat backstop
 	probes   map[string]probeResult
 	waitDecl string
 }
@@ -137,7 +139,7 @@ func orDur(v, def time.Duration) time.Duration {
 // appended (0 when nothing was actionable). It never blocks; Run wraps it in a poll loop.
 func (w *Watcher) Tick() (int, error) {
 	w.tickCount++
-	w.signals, w.surfaced, w.probes, w.appendedCount = nil, nil, nil, 0
+	w.signals, w.surfaced, w.probes, w.mailbox, w.appendedCount = nil, nil, nil, nil, 0
 	w.Sessions = LoadSessions(w.EpicDir) // pick up any story dispatched since the last tick (item 1)
 	dispatchStory, err := w.dispatchStoryMap()
 	if err != nil {
@@ -176,6 +178,12 @@ func (w *Watcher) Tick() (int, error) {
 		return appended, err
 	}
 	appended += n
+
+	before := w.appendedCount
+	if err := w.heartbeatPass(open, dispatchStory); err != nil {
+		return appended, err
+	}
+	appended += w.appendedCount - before
 
 	n, _, err = w.blockedPass()
 	if err != nil {
@@ -419,6 +427,7 @@ func (w *Watcher) mailPass(dispatchStory map[string]string) (int, bool, error) {
 	if err != nil {
 		return w.reportUnreadable(err)
 	}
+	w.mailbox = msgs
 	_ = os.Remove(filepath.Join(w.watchDir(), "mail-unreadable"))
 	seen, err := w.loadSeen()
 	if err != nil {
@@ -474,6 +483,7 @@ func (w *Watcher) mailPass(dispatchStory map[string]string) (int, bool, error) {
 		}
 		appended++
 		urgent = true
+		w.markSurfaced(m.ID)
 		if w.surfaced == nil {
 			w.surfaced = map[string]bool{}
 		}
@@ -535,6 +545,12 @@ func (w *Watcher) inboxLadder() (int, bool, error) {
 		}
 		dir := inbox.Dir(w.EpicDir, story)
 		for _, rec := range recs {
+			if rec.Kind == inbox.KindReply && replyConsumed(w.EpicDir, story, rec.Body) {
+				// B-53: the worker already read this answer through `cox question wait`; the inbox copy is retired, never
+				// rung or counted as an unread steer (fm pending-reply resolution).
+				_ = inbox.Handled(rec)
+				continue
+			}
 			info, err := os.Stat(rec.Path)
 			if err != nil {
 				continue
@@ -597,7 +613,9 @@ func (w *Watcher) inboxLadder() (int, bool, error) {
 				fmt.Fprintf(os.Stderr, "watch: %s/%s not rung (no session or busy composer); ladder not bumped\n", story, key)
 			}
 			// Runaway: unread past RunawayMin on a live worker -> interrupt once per window.
-			if rec.Urgency != inbox.FYI && age > w.runawayMin() {
+			// A reply answers the worker's own question (read through the question channel), so it is never a sign of
+			// a runaway turn (B-53).
+			if rec.Urgency != inbox.FYI && rec.Kind != inbox.KindReply && age > w.runawayMin() {
 				lastInt, _ := inbox.LastInterrupt(dir)
 				if lastInt == 0 || now.Sub(time.Unix(lastInt, 0)) > w.runawayMin() {
 					if sess, ok := w.Sessions[story]; ok {
@@ -622,6 +640,20 @@ func (w *Watcher) inboxLadder() (int, bool, error) {
 		}
 	}
 	return appended, urgent, nil
+}
+
+// replyAnswerRe reads the question id a `cox reply` record answers ("answer to qNNN: ...").
+var replyAnswerRe = regexp.MustCompile(`^answer to (q[0-9]{3,}):`)
+
+// replyConsumed reports whether the question a reply answers has been consumed (`cox question wait` moved it to
+// handled/).
+func replyConsumed(epicDir, story, body string) bool {
+	m := replyAnswerRe.FindStringSubmatch(strings.TrimSpace(body))
+	if m == nil {
+		return false
+	}
+	_, err := os.Stat(filepath.Join(question.Dir(epicDir, story), "handled", m[1]+".md"))
+	return err == nil
 }
 
 // composerState resolves a worker's composer verdict harness-first (DESIGN wave-3 item 3): the harness-owned busy record

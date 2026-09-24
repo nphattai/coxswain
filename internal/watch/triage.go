@@ -38,6 +38,12 @@ const (
 	WedgeDemandInspectCount = 3
 )
 
+// Heartbeat backstop cadence: FM_HEARTBEAT base, doubling per consecutive no-change scan up to FM_HEARTBEAT_MAX.
+const (
+	DefaultHeartbeat    = 600 * time.Second
+	DefaultHeartbeatMax = 7200 * time.Second
+)
+
 func (w *Watcher) pauseResurface() time.Duration {
 	return orDur(w.PauseResurface, DefaultPauseResurface)
 }
@@ -324,6 +330,9 @@ func (w *Watcher) signalTriage(open map[string]bool) (int, error) {
 		}
 		for _, id := range sg.msgIDs {
 			w.markSeen(id)
+		}
+		if !open[s] || actionable {
+			w.markSurfaced(sg.msgIDs...)
 		}
 	}
 	return appended, nil
@@ -925,4 +934,95 @@ func (w *Watcher) clearStaleHashTracking(story string) {
 func (w *Watcher) clearPauseTracking(story string) {
 	w.clearPauseState(story)
 	w.clearStaleHashTracking(story)
+}
+
+// --- heartbeat backstop (fm heartbeat_scan_finds_actionable / mark_all_captain_relevant_surfaced) ---
+
+// markSurfaced records message ids whose content reached the leader (an urgent wake, or a queued actionable batch).
+func (w *Watcher) markSurfaced(ids ...string) {
+	if len(ids) == 0 {
+		return
+	}
+	_ = os.MkdirAll(w.watchDir(), 0o755)
+	f, err := os.OpenFile(filepath.Join(w.watchDir(), "surfaced"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	for _, id := range ids {
+		if id != "" {
+			fmt.Fprintln(f, id)
+		}
+	}
+}
+
+func (w *Watcher) loadSurfaced() map[string]bool {
+	out := map[string]bool{}
+	b, _ := os.ReadFile(filepath.Join(w.watchDir(), "surfaced"))
+	for _, l := range strings.Split(string(b), "\n") {
+		if l != "" {
+			out[l] = true
+		}
+	}
+	return out
+}
+
+// heartbeatPass is the backstop behind the per-wake path: on the heartbeat cadence it scans every worker message still
+// in the mailbox for a captain-relevant status that was seen but never surfaced (absorbed by mistake), and surfaces it.
+// A scan that finds nothing is absorbed and backs the cadence off; a tick that surfaced anything resets it (fm wake()).
+func (w *Watcher) heartbeatPass(open map[string]bool, dispatchStory map[string]string) error {
+	if len(w.surfaced) > 0 {
+		w.swrite("heartbeat", "streak", "0")
+		return nil // fm: a surfacing cycle exits before the heartbeat block
+	}
+	streak := 0
+	if v, ok := w.sread("heartbeat", "streak"); ok {
+		streak, _ = strconv.Atoi(strings.TrimSpace(v))
+	}
+	if streak < 0 {
+		streak = 0
+	}
+	if streak > 12 {
+		streak = 12
+	}
+	interval := DefaultHeartbeat * time.Duration(1<<streak)
+	if interval > DefaultHeartbeatMax {
+		interval = DefaultHeartbeatMax
+	}
+	if w.sage("heartbeat", "last") < interval {
+		return nil
+	}
+	seen, err := w.loadSeen()
+	if err != nil {
+		return err
+	}
+	surfaced := w.loadSurfaced()
+	var found []string
+	for _, m := range w.mailbox {
+		if m.ID == "" || !seen[m.ID] || surfaced[m.ID] || m.Type == "heartbeat" {
+			continue
+		}
+		disp, _ := payloadFields(m.Payload)
+		if disp == "" {
+			disp = strings.TrimPrefix(m.From, "dispatch:")
+		}
+		story := dispatchStory[disp]
+		line := statusFromMail(m)
+		if !open[story] || !captainRelevantRE(line, w.CaptainRE) {
+			continue
+		}
+		if err := w.surface(story, wake.KindStale, "heartbeat backstop: "+story+" has a captain-relevant status that never reached the leader: "+line,
+			map[string]any{"msg": m.ID, "dispatch": disp}); err != nil {
+			return err
+		}
+		w.appendedCount++
+		found = append(found, m.ID)
+	}
+	w.sstamp("heartbeat", "last")
+	if len(found) > 0 {
+		w.markSurfaced(found...)
+		return nil
+	}
+	w.swrite("heartbeat", "streak", strconv.Itoa(streak+1))
+	return nil
 }

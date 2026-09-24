@@ -1113,8 +1113,10 @@ func TestPortTriageA2(t *testing.T) {
 		r.mail("m1", "status", "working: setup")
 		r.mail("m2", "status", "needs-decision: pick A or B")
 		wantSurfaced(t, r.tick(), "a captain-relevant needs-decision signal")
-		// fm also records the .hb-surfaced marker the heartbeat backstop reads; cox has no backstop.
-		notImplemented(t, pA2MechHBBackstop)
+		// fm also records the surfaced marker the heartbeat backstop reads.
+		if sf := r.w.loadSurfaced(); !sf["m1"] || !sf["m2"] {
+			t.Errorf("the surfaced signal was not recorded for the heartbeat backstop: %v", sf)
+		}
 	})
 }
 
@@ -2662,41 +2664,55 @@ func TestPortTriageD(t *testing.T) {
 
 	t.Run(s+"heartbeat_no_change_absorbed", func(t *testing.T) {
 		// fm: tests/fm-watch-triage.test.sh:5711
-		// cox: pDMechHeartbeat
+		// cox: heartbeatPass (a due scan with nothing unsurfaced is absorbed and backs the cadence off)
 		r := newPortRig(t)
 		pDSeen(r, "m1", "working: routine heartbeat history")
 		r.advance(time.Second)
 		r.heartbeat("h1")
 		wantAbsorbed(t, r.tick(), "a heartbeat with no captain-relevant change is absorbed")
-		// The backoff streak and the committed heartbeat endpoint (.hb-surfaced-*) belong to the backstop cox lacks.
-		notImplemented(t, pDMechHeartbeat)
+		if b, _ := os.ReadFile(filepath.Join(r.w.watchDir(), "heartbeat", "streak")); strings.TrimSpace(string(b)) != "1" {
+			t.Errorf("the no-change heartbeat did not back the cadence off (streak %q)", b)
+		}
+		if _, err := os.Stat(filepath.Join(r.w.watchDir(), "heartbeat", "last")); err != nil {
+			t.Errorf("the heartbeat scan left no schedule record: %v", err)
+		}
+		r.advance(time.Second)
+		r.tick()
+		if b, _ := os.ReadFile(filepath.Join(r.w.watchDir(), "heartbeat", "streak")); strings.TrimSpace(string(b)) != "1" {
+			t.Errorf("a heartbeat scan ran again inside its backed-off interval (streak %q)", b)
+		}
 	})
 
 	t.Run(s+"heartbeat_backstop_surfaces_a_masked_status", func(t *testing.T) {
 		// fm: tests/fm-watch-triage.test.sh:5743
-		// cox: pDMechHeartbeat
-		// The decision hidden behind a later routine append must reach the leader; cox sees each line as its own status
-		// mail, so at least the needs-decision line should surface (classify gap: needs-decision: is not urgent in cox).
+		// cox: heartbeatPass (a decision the per-wake path absorbed - a busy crew, the decision line masked by a later
+		// routine append - is caught by the heartbeat backstop)
 		r := newPortRig(t)
+		r.busySet(busy.Busy)
 		r.mail("m1", "status", "working: setup")
 		r.mail("m2", "status", "needs-decision: pick A or B")
 		r.mail("m3", "status", "working: tidying the branch")
-		wantSurfaced(t, r.tick(), "a needs-decision line followed by a routine append still surfaces")
-		// The periodic backstop re-surface of a masked status is absent in cox.
-		notImplemented(t, pDMechHeartbeat)
+		ws := r.tick()
+		wantSurfaced(t, ws, "a needs-decision line followed by a routine append still surfaces")
+		pBWantNote(t, ws, "needs-decision: pick A or B", "the backstop names the masked decision")
+		r.advance(DefaultHeartbeat + time.Second) // the next scan is due; the busy turn is still under its bound
+		r.heartbeat("h2")
+		wantAbsorbed(t, r.tick(), "the next heartbeat does not re-fire a surfaced event")
 	})
 
 	t.Run(s+"heartbeat_backstop_surfaces_unsurfaced_status", func(t *testing.T) {
 		// fm: tests/fm-watch-triage.test.sh:5764
-		// cox: pDMechHeartbeat
-		// A captain-relevant status already marked seen but never surfaced (a per-wake-path miss): the next heartbeat
-		// must catch it.
+		// cox: heartbeatPass (a captain-relevant status marked seen but never surfaced)
 		r := newPortRig(t)
 		r.w.markSeen("m1")
 		r.mail("m1", "status", "done: PR https://example.test/pr/5")
 		r.heartbeat("h1")
-		wantSurfaced(t, r.tick(), "heartbeat backstop surfaces a seen-but-unsurfaced done: status")
-		notImplemented(t, pDMechHeartbeat)
+		ws := r.tick()
+		wantSurfaced(t, ws, "heartbeat backstop surfaces a seen-but-unsurfaced done: status")
+		pBWantNote(t, ws, "done: PR https://example.test/pr/5", "the backstop names the status")
+		if !r.w.loadSurfaced()["m1"] {
+			t.Errorf("the backstop did not record the status as surfaced")
+		}
 	})
 
 	t.Run(s+"beacon_stays_fresh_while_absorbing", func(t *testing.T) {
