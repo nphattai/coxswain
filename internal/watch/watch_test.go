@@ -3,11 +3,8 @@ package watch
 import (
 	"encoding/json"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -939,33 +936,22 @@ func TestAlarmChannels(t *testing.T) {
 func TestRunAlarmChannelKillsTheProcessGroup(t *testing.T) {
 	saved := alarmTimeout
 	defer func() { alarmTimeout = saved }()
-	alarmTimeout = 2 * time.Second // ample for the shell to start its child; the child itself sleeps 30s
-	pidFile := filepath.Join(t.TempDir(), "pid")
+	alarmTimeout = 2 * time.Second // ample for the shell to start its child; the child would outlive it
+	// The child proves its own fate instead of a pid probe (a reaped pid can be reissued at once on a busy host).
+	dir := t.TempDir()
+	started, survived := filepath.Join(dir, "started"), filepath.Join(dir, "survived")
 	start := time.Now()
-	err := runAlarmChannel("command:sleep 30 & echo $! > "+pidFile+"; wait", "summary")
+	err := runAlarmChannel("command:(touch "+started+"; sleep 3; touch "+survived+") & wait", "summary")
 	if err == nil || time.Since(start) > 10*time.Second {
 		t.Fatalf("want a timeout error inside the bound, got %v after %s", err, time.Since(start))
 	}
-	b, _ := os.ReadFile(pidFile)
-	pid, _ := strconv.Atoi(strings.TrimSpace(string(b)))
-	if pid <= 0 {
-		t.Fatalf("the notifier never started its child (pid file %q): the assertion would be vacuous", b)
+	if _, err := os.Stat(started); err != nil {
+		t.Fatal("the notifier never started its child: the assertion would be vacuous")
 	}
-	if !processDead(pid) {
-		_ = syscall.Kill(pid, syscall.SIGKILL)
-		t.Fatalf("the notifier's child %d outlived the timeout", pid)
+	time.Sleep(time.Until(start.Add(4 * time.Second))) // past the child's own deadline
+	if _, err := os.Stat(survived); err == nil {
+		t.Fatal("the notifier's child outlived the timeout")
 	}
-}
-
-// processDead reports whether pid is gone or a zombie: a killed child whose shell parent died is reparented and may sit
-// unreaped (kill(pid, 0) still succeeds on a zombie, notably on Linux CI runners).
-func processDead(pid int) bool {
-	if syscall.Kill(pid, 0) != nil {
-		return true
-	}
-	out, err := exec.Command("ps", "-o", "stat=", "-p", strconv.Itoa(pid)).Output()
-	st := strings.TrimSpace(string(out))
-	return err != nil || st == "" || strings.HasPrefix(st, "Z")
 }
 
 // Kill-test path (epic AC 3): a busy record that is still the dispatch seed (no harness hook ever ran) is not proof of
