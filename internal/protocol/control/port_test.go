@@ -341,7 +341,28 @@ func TestPortControl(t *testing.T) {
 
 	// fm: tests/fm-control.test.sh:692
 	t.Run("FM/fm-control/interrupt_and_exit_lock_before_task_state_resolution", func(t *testing.T) {
-		notImplemented(t, "control.per-story-lock", "interrupt and park must take the story's lifecycle lock before resolving its state; Controller takes no lock, so concurrent verbs interleave")
+		for _, verb := range []string{"interrupt", "park"} {
+			epic := epicWith(t, "claude")
+			b := fake.New()
+			b.Liveness = backend.Alive
+			freshCheckpoint(t, epic, b)
+			release := holdLock(t, epic)
+			// The session now names another story: a verb that resolved state before locking would refuse on that.
+			other := backend.Session{Kind: "fake", ID: "ctx_s1", Handle: "term_s1", Story: "other"}
+			var err error
+			if verb == "interrupt" {
+				err = ctl(epic, b, "claude").Interrupt(story, other)
+			} else {
+				err = ctl(epic, b, "claude").Park(story, t.TempDir(), other)
+			}
+			release()
+			if err == nil || !strings.Contains(err.Error(), "another lifecycle action is already running") {
+				red(t, "control.per-story-lock", "%s did not refuse a held lifecycle lock before reading task state: %v", verb, err)
+			}
+			if len(b.Calls) > 0 {
+				red(t, "control.per-story-lock", "contended %s reached the backend: %v", verb, b.Calls)
+			}
+		}
 	})
 
 	// fm: tests/fm-control.test.sh:724
@@ -456,7 +477,16 @@ func TestPortControl(t *testing.T) {
 
 	// fm: tests/fm-control.test.sh:895
 	t.Run("FM/fm-control/interrupt_revalidates_agent_after_acknowledgement_wait", func(t *testing.T) {
-		notImplemented(t, "control.interrupt-postcondition", "interrupt must wait for the harness to acknowledge the cancel and revalidate the agent afterwards; cox records delivered:true on the keystroke and never checks the turn stopped")
+		epic := epicWith(t, "claude")
+		b := &diesOnInterrupt{Backend: fake.New()}
+		b.Liveness = backend.Alive
+		err := ctl(epic, b, "claude").Interrupt(story, sess)
+		if err == nil || !strings.Contains(err.Error(), "after its interrupt") {
+			red(t, "control.interrupt-postcondition", "interrupt did not fail when the agent stopped during delivery: %v", err)
+		}
+		if ev := snap(t, epic).LastEvent.Evidence; ev["verified"] != nil {
+			red(t, "control.interrupt-postcondition", "a stale pre-delivery liveness proof was published: %v", ev)
+		}
 	})
 
 	// fm: tests/fm-control.test.sh:918
@@ -764,12 +794,32 @@ func TestPortControlRelaunch(t *testing.T) {
 
 	// fm: tests/fm-control-relaunch.test.sh:1536
 	t.Run("FM/fm-control-relaunch/concurrent_relaunch_is_refused", func(t *testing.T) {
-		notImplemented(t, "control.per-story-lock", "two control actions on one story must serialize instead of interleaving; two concurrent relaunches both spawn")
+		epic := epicWith(t, "claude")
+		b := fake.New()
+		b.Liveness = backend.Alive
+		release := holdLock(t, epic)
+		err := relaunch(t, epic, b, t.TempDir(), "concurrent", sess)
+		release()
+		if err == nil || !strings.Contains(err.Error(), "another lifecycle action is already running") {
+			red(t, "control.per-story-lock", "a second concurrent control action was not refused: %v", err)
+		}
+		if called(b, "Stop") > 0 || called(b, "Spawn") > 0 {
+			red(t, "control.per-story-lock", "a refused concurrent relaunch touched the agent: %v", b.Calls)
+		}
 	})
 
 	// fm: tests/fm-control-relaunch.test.sh:1568
 	t.Run("FM/fm-control-relaunch/direct_spawn_relaunch_participates_in_the_lifecycle_lock", func(t *testing.T) {
-		notImplemented(t, "control.per-story-lock", "`cox story resume` and `cox control relaunch` must share the story's lifecycle lock")
+		c := workspaceCase(t, "harness: claude\n")
+		release := holdLock(t, c.epic)
+		out, code := c.cox(t, "story", "resume", story, "--epic", c.epic, "--allow-unsandboxed")
+		release()
+		if code == 0 || !strings.Contains(out, "another lifecycle action is already running") {
+			red(t, "control.per-story-lock", "cox story resume did not refuse a held lifecycle lock (exit %d, %q)", code, strings.TrimSpace(out))
+		}
+		if c.launchLine(t) != "" {
+			red(t, "control.per-story-lock", "a contended resume delivered launch bytes: %q", c.calls(t))
+		}
 	})
 
 	// n/a promotion_participates_in_the_lifecycle_lock_before_metadata_resolution fm:tests/fm-control-relaunch.test.sh:1596 - scout promotion, firstmate-only
@@ -855,6 +905,24 @@ func TestPortControlRelaunch(t *testing.T) {
 // n/a herdr_exit_on_a_stale_registration_is_idempotent fm:tests/fm-control-herdr-smoke.test.sh:289 - real herdr binary
 // n/a herdr_stale_registration_no_longer_blocks_relaunch fm:tests/fm-control-herdr-smoke.test.sh:308 - real herdr binary
 // n/a herdr_unproven_composer_fails_closed fm:tests/fm-control-herdr-smoke.test.sh:325 - real herdr binary
+
+// holdLock takes the story's lifecycle lock the way a running control action holds it (fm: a live holder through the
+// same lock library) and returns its release.
+func holdLock(t *testing.T, epic string) func() {
+	t.Helper()
+	release, err := control.LockWait(epic, story, 0)
+	must(t, err)
+	return release
+}
+
+// diesOnInterrupt is a backend whose agent stops while its interrupt is delivered (fm FM_FAKE_MUSE_DISAPPEAR_BEFORE_ACK).
+type diesOnInterrupt struct{ *fake.Backend }
+
+func (d *diesOnInterrupt) Interrupt(s backend.Session) error {
+	err := d.Backend.Interrupt(s)
+	d.Liveness = backend.Settled
+	return err
+}
 
 // spawnRecorder records the worktree and brief a relaunch spawns with.
 type spawnRecorder struct {

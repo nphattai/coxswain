@@ -15,6 +15,7 @@ import (
 
 	"github.com/nphattai/coxswain/internal/adapter/backend"
 	"github.com/nphattai/coxswain/internal/adapter/harness"
+	"github.com/nphattai/coxswain/internal/adapter/harness/registry"
 	"github.com/nphattai/coxswain/internal/protocol/brief"
 	"github.com/nphattai/coxswain/internal/protocol/busy"
 	"github.com/nphattai/coxswain/internal/protocol/checkpoint"
@@ -56,47 +57,120 @@ func (c *Controller) warn() io.Writer {
 	return os.Stderr
 }
 
-// backendInterrupts reports whether the backend keystroke interrupt actually aborts this harness's turn. A nil Harness
-// (unconfigured, e.g. in a test) defaults to true - the historical keystroke-only path - so only a harness that
-// explicitly declares BackendInterrupt=false takes the inbox+extension route.
+// backendInterrupts reports whether the backend keystroke interrupt actually aborts this harness's turn (card
+// BackendInterrupt). begin has already refused a Controller with no Harness.
 func (c *Controller) backendInterrupts() bool {
-	return c.Harness == nil || c.Harness.Card().BackendInterrupt
+	return c.Harness.Card().BackendInterrupt
 }
 
-// Interrupt breaks a worker out of a runaway turn and rings its doorbell (v1 interrupt.sh). An interrupt is not a state
-// transition: it records ONE working->working event with evidence {verb: interrupt, delivered: true|false, error?} so
-// the audit log shows the attempt, and the story never leaves working. A failed delivery returns an error but does not
-// change state - parking it in pending_external would drop it out of OpenStories and silently disarm idle rearm while
-// the worker is still running.
+// ResolveHarness is the control plane's harness resolution (fm_control_harness_*): a recorded harness name resolves to
+// its adapter, and a name with no adapter is refused rather than guessed at - a lifecycle key or stop sent through the
+// wrong harness's mechanics can land anywhere.
+func ResolveHarness(name string) (harness.Harness, error) {
+	if h, ok := registry.Adapter(name); ok {
+		return h, nil
+	}
+	return nil, fmt.Errorf("harness %q has no verified control mechanics; refusing to guess at one", name)
+}
+
+// begin opens a lifecycle action on story (fm-control.sh:305-330): it takes the story's lifecycle lock FIRST, before any
+// mutable state is read, then resolves the story - it must be recorded (dispatched: it has events), the session must be
+// bound to it (a session record naming another story is refused), and the Controller must carry a harness with verified
+// control mechanics. The returned release drops the lock; the caller holds it to its last write.
+func (c *Controller) begin(story string, session backend.Session) (func(), *state.StorySnap, error) {
+	release, err := tryLock(c.EpicDir, story)
+	if err != nil {
+		return nil, nil, err
+	}
+	snap, err := c.recorded(story)
+	if err == nil && session.Story != "" && session.Story != story {
+		err = fmt.Errorf("story %s's endpoint %s belongs to story %s, not %s; refusing to act on it", story, sessionHandle(session), session.Story, story)
+	}
+	if err == nil && c.Harness == nil {
+		err = fmt.Errorf("story %s has no harness with verified control mechanics; refusing to guess at one", story)
+	}
+	if err != nil {
+		release()
+		return nil, nil, err
+	}
+	return release, snap, nil
+}
+
+// recorded returns the snapshot of a story that has been dispatched, refusing an id with no events (fm: "no task").
+func (c *Controller) recorded(story string) (*state.StorySnap, error) {
+	events, _, err := state.Load(c.EpicDir)
+	if err != nil {
+		return nil, err
+	}
+	s := state.Fold(events).Stories[story]
+	if s == nil {
+		return nil, fmt.Errorf("no story '%s' in %s (cox control resolves a recorded story id only)", story, c.EpicDir)
+	}
+	if s.Attempt < 1 {
+		s.Attempt = 1
+	}
+	return s, nil
+}
+
+func sessionHandle(s backend.Session) string {
+	if s.Handle != "" {
+		return s.Handle
+	}
+	return s.ID
+}
+
+// Interrupt breaks a worker out of a runaway turn (fm-control.sh interrupt, do_interrupt). It refuses when no agent is
+// running at the story's endpoint (probe settled: "there is nothing to interrupt") before any key is sent; an unknown
+// probe (a backend that cannot classify the agent) proceeds, because an interrupt is non-destructive and the proof it
+// prints says exactly what was verified. Delivery goes through the one mechanism the harness honours: the backend
+// keystroke for a card with BackendInterrupt, otherwise ONLY the durable inbox interrupt record its extension aborts on
+// (a key the harness does not honour is never sent). After delivery the agent is revalidated: an interrupt must leave
+// the agent running, so a settled agent afterwards is an error, and the stale pre-delivery proof is not published. The
+// event records ONE working->working attempt with {verb, delivered, verified, cancel}; cancel is always "unconfirmed"
+// because no cox harness acknowledges a cancellation. The story never leaves its state.
 func (c *Controller) Interrupt(story string, session backend.Session) error {
-	snap, err := c.snap(story)
+	release, snap, err := c.begin(story, session)
 	if err != nil {
 		return err
 	}
-	// The backend keystroke interrupt is always attempted (the Ctrl-C fallback). For a harness whose TUI ignores that
-	// keystroke (card BackendInterrupt=false, dogfood F-C), it is a no-op even on success, so delivery goes THROUGH the
-	// harness: a durable interrupt record the harness's own extension aborts on, plus a best-effort doorbell ring.
-	ivErr := c.Backend.Interrupt(session)
-	delivered := ivErr == nil
-	ev := map[string]any{"verb": "interrupt", "delivered": delivered}
-	if ivErr != nil {
-		ev["error"] = ivErr.Error()
+	defer release()
+	if live, perr := c.Backend.Probe(session); perr == nil && live == backend.Settled {
+		return fmt.Errorf("no agent is running at story %s's recorded endpoint (state: settled); there is nothing to interrupt", story)
 	}
-	if !c.backendInterrupts() {
+	ev := map[string]any{"verb": "interrupt", "delivered": false}
+	var deliverErr error
+	if c.backendInterrupts() {
+		if deliverErr = c.Backend.Interrupt(session); deliverErr == nil {
+			ev["delivered"] = true
+			ev["via"] = "backend"
+			_, _ = c.Backend.Send(session, inbox.Doorbell(inbox.Dir(c.EpicDir, story))) // ring so it reads its inbox now
+		} else {
+			ev["error"] = deliverErr.Error()
+		}
+	} else {
 		recPath, werr := inbox.WriteInterrupt(c.EpicDir, story)
 		if werr != nil {
+			deliverErr = werr
 			ev["harness_interrupt_error"] = werr.Error()
-			delivered = false
 		} else {
+			ev["delivered"] = true
 			ev["via"] = "inbox+extension"
 			ev["interrupt_record"] = recPath
-			delivered = true                                                            // delivered through the harness path even if the keystroke alone did nothing
 			_, _ = c.Backend.Send(session, inbox.Doorbell(inbox.Dir(c.EpicDir, story))) // best-effort ring
 		}
-		ev["delivered"] = delivered
-	} else if ivErr == nil {
-		// Ring the durable doorbell so the interrupted worker reads its inbox now.
-		_, _ = c.Backend.Send(session, inbox.Doorbell(inbox.Dir(c.EpicDir, story)))
+	}
+	var postErr error
+	if deliverErr == nil {
+		ev["cancel"] = "unconfirmed"
+		switch live, perr := c.Backend.Probe(session); {
+		case perr == nil && live == backend.Settled:
+			ev["agent_state"] = live.String()
+			postErr = fmt.Errorf("story %s's agent is '%s' after its interrupt; an interrupt must leave the agent running", story, live)
+		case perr == nil && live == backend.Alive:
+			ev["verified"] = "agent-alive"
+		default:
+			ev["verified"] = "unverified"
+		}
 	}
 	if err := state.Append(c.EpicDir, state.Event{
 		Epic: snapEpic(c.EpicDir), Story: story, Attempt: snap.Attempt, Actor: state.Leader,
@@ -104,12 +178,10 @@ func (c *Controller) Interrupt(story string, session backend.Session) error {
 	}); err != nil {
 		return err
 	}
-	// A keystroke error is only fatal when nothing else delivered the interrupt. For a BackendInterrupt=false harness the
-	// keystroke is expected to do nothing, so the inbox+extension path (delivered) is what counts.
-	if ivErr != nil && !delivered {
-		return fmt.Errorf("interrupt not delivered (state unchanged): %w", ivErr)
+	if deliverErr != nil {
+		return fmt.Errorf("interrupt not delivered (state unchanged): %w", deliverErr)
 	}
-	return nil
+	return postErr
 }
 
 // Park stops a worker for later resume. It refuses to park blind: a checkpoint must exist whose attempt and head match
@@ -121,10 +193,11 @@ func (c *Controller) Interrupt(story string, session backend.Session) error {
 // UNLESS a follow-up probe reports Settled (the worker already stopped, e.g. Orca closed the terminal itself), in
 // which case it parks with a note; an Alive or Unknown probe keeps pending_external.
 func (c *Controller) Park(story, worktree string, session backend.Session) error {
-	snap, err := c.snap(story)
+	release, snap, err := c.begin(story, session)
 	if err != nil {
 		return err
 	}
+	defer release()
 	// An idle worker (empty composer) whose last checkpoint is newer than its last event has nothing left to write:
 	// parking on that checkpoint immediately beats steering it and waiting ParkWait for a checkpoint it will never
 	// produce (finding 14). Otherwise fall through to the normal ensure-and-wait path.
@@ -177,10 +250,11 @@ func (c *Controller) retireBusy(story string) {
 // when none); extra is merged into the working event's evidence (e.g. a reroute {from,to,reason} when the leader resumes
 // on another harness); pass nil for a plain resume.
 func (c *Controller) Relaunch(story, worktree, note string, prior backend.Session, spec backend.HarnessSpec, extra map[string]any) (backend.Session, error) {
-	snap, err := c.snap(story)
+	release, snap, err := c.begin(story, prior)
 	if err != nil {
 		return backend.Session{}, err
 	}
+	defer release()
 	newAttempt := snap.Attempt + 1
 
 	ctxPath, err := brief.Build(c.EpicDir, story)

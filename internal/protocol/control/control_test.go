@@ -14,13 +14,20 @@ import (
 	"github.com/nphattai/coxswain/internal/adapter/backend/fake"
 	"github.com/nphattai/coxswain/internal/adapter/harness"
 	harnessfake "github.com/nphattai/coxswain/internal/adapter/harness/fake"
+	"github.com/nphattai/coxswain/internal/adapter/harness/registry"
 	"github.com/nphattai/coxswain/internal/protocol/inbox"
 	"github.com/nphattai/coxswain/internal/state"
 	"github.com/nphattai/coxswain/internal/watch"
 )
 
+// claude is the verified claude adapter every fixture controls through (begin refuses a Controller with no harness).
+func claude() harness.Harness {
+	h, _ := registry.Adapter("claude")
+	return h
+}
+
 func newCtl(epic string, b backend.Backend) *Controller {
-	return &Controller{EpicDir: epic, Backend: b, ParkWait: 40 * time.Millisecond, PollInterval: 5 * time.Millisecond, Warn: &bytes.Buffer{}}
+	return &Controller{EpicDir: epic, Backend: b, Harness: claude(), ParkWait: 40 * time.Millisecond, PollInterval: 5 * time.Millisecond, Warn: &bytes.Buffer{}}
 }
 
 // seed a working story at the given attempt.
@@ -216,7 +223,7 @@ func TestParkConfirmedAndAbandon(t *testing.T) {
 			b := fake.New()
 			b.StopConfirmed = tc.confirmed
 			warn := &bytes.Buffer{}
-			ctl := &Controller{EpicDir: epic, Backend: b, ParkWait: time.Second, PollInterval: 5 * time.Millisecond, Warn: warn}
+			ctl := &Controller{EpicDir: epic, Backend: b, Harness: claude(), ParkWait: time.Second, PollInterval: 5 * time.Millisecond, Warn: warn}
 			if err := ctl.Park("s", wt, backend.Session{ID: "x"}); err != nil {
 				t.Fatalf("park: %v", err)
 			}
@@ -415,7 +422,7 @@ func TestParkIdleWorkerParksOnFreshCheckpoint(t *testing.T) {
 	b.ComposerState = backend.ComposerEmpty
 	b.StopConfirmed = true
 	// A one-hour ParkWait would hang the test if park fell through to the ensure-and-wait path; the fast path must skip it.
-	ctl := &Controller{EpicDir: epic, Backend: b, ParkWait: time.Hour, PollInterval: 5 * time.Millisecond, Warn: &bytes.Buffer{}}
+	ctl := &Controller{EpicDir: epic, Backend: b, Harness: claude(), ParkWait: time.Hour, PollInterval: 5 * time.Millisecond, Warn: &bytes.Buffer{}}
 	done := make(chan error, 1)
 	go func() { done <- ctl.Park("s", t.TempDir(), backend.Session{ID: "x"}) }()
 	select {
