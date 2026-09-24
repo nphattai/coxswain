@@ -11,6 +11,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -20,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nphattai/coxswain/hooks"
 	"github.com/nphattai/coxswain/internal/state"
 	"github.com/nphattai/coxswain/internal/wake"
 	"github.com/nphattai/coxswain/internal/watch"
@@ -145,9 +147,6 @@ func TestFM(t *testing.T) {
 	t.Run("doc-turnend-guard", fmDocTurnendGuard)
 	t.Run("doc-watcher-continuity", fmDocWatcherContinuity)
 }
-
-func fmDocTurnendGuard(t *testing.T)      {}
-func fmDocWatcherContinuity(t *testing.T) {}
 
 // fmRepairLine is cox's exact repair instruction for a blocked epic (firstmate's REQUIRED_REASON).
 func fmRepairLine(epic string) string {
@@ -1871,4 +1870,152 @@ func fmWatchArm(t *testing.T) {
 	})
 
 	// n/a: arm_refuses_an_unusable_launch_confirm_window (fm: tests/fm-watch-arm.test.sh:893) - the FM_PROCEVENT_LAUNCH_CONFIRM_SECONDS knob is firstmate-only; cox's confirm window (watcherConfirmWait) is compiled in, with no operator input to validate.
+}
+
+// fmProbe stubs the leader-liveness probe: the recorded leader handle is live or dead, and a backend exists to ask.
+func fmProbe(t *testing.T, live bool) {
+	t.Helper()
+	prev := probeLeaderHandle
+	probeLeaderHandle = func(string, string) (bool, bool) { return live, true }
+	t.Cleanup(func() { probeLeaderHandle = prev })
+}
+
+// fmDocTurnendGuard translates the predicates of docs/turnend-guard.md that no suite case already pins. The report
+// lists every predicate considered and the suite case that pins the rest.
+func fmDocTurnendGuard(t *testing.T) {
+	// fm: docs/turnend-guard.md:34
+	t.Run("foreign_live_owner_takes_diagnostic_exit", func(t *testing.T) {
+		// A live session owner this terminal does not own: the Claude guard allows the stop safely (it cannot repair
+		// without stealing the owner's lock) AND emits a read-only ownership diagnostic. Cox's analogue is a different,
+		// still-live leader handle recorded in .cox/leader.
+		ws, epic := fmWorkspace(t, "e1", "s1")
+		t.Chdir(ws)
+		if err := state.WriteLeader(epic, "term_owner"); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("ORCA_TERMINAL_HANDLE", "term_other")
+		fmProbe(t, true)
+		r := fmGuard(t, epic, nil, fmBlocks(t))
+		if r.blocked() {
+			t.Fatalf("a foreign live owner must not be blocked on (an unbounded loop), got %+v", r)
+		}
+		if !strings.Contains(r.out, "term_owner") {
+			t.Fatalf("the safe exit must emit a read-only ownership diagnostic naming the live owner, got %q", r.out)
+		}
+	})
+
+	// fm: docs/turnend-guard.md:38
+	t.Run("dead_foreign_owner_keeps_ordinary_guard", func(t *testing.T) {
+		// A dead (or malformed/absent) owner record does not satisfy the foreign-owner exception: the ordinary guard runs
+		// and blocks a blind stop. Cox: the recorded leader handle is dead and this terminal leads the epic's workspace.
+		ws, epic := fmWorkspace(t, "e1", "s1")
+		t.Chdir(ws)
+		if err := state.WriteLeader(epic, "term_dead"); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("ORCA_TERMINAL_HANDLE", "term_new")
+		fmProbe(t, false)
+		fmWantBlock(t, fmGuard(t, epic, fmLaunchRefused, fmBlocks(t)), epic, "dead recorded owner, unwatched epic")
+	})
+
+	// fm: docs/turnend-guard.md:71
+	t.Run("grace_is_poll_derived_with_headroom", func(t *testing.T) {
+		// A healthy watcher's beacon legitimately ages a full poll plus its pass time between touches, so the grace must
+		// never drop below a floor with headroom (firstmate: a flat 300s default for the strict guard, max(300s, poll+60s)
+		// where the grace derives from the poll). A live watcher whose beacon is poll + 59s old (a slow pass) is healthy.
+		epic := fmEpic(t, "s1")
+		fmWatchPid(t, epic, os.Getpid())
+		fmBeacon(t, epic, watch.DefaultPoll+59*time.Second)
+		if !watcherHealthy(epic, time.Now()) {
+			t.Fatalf("a live watcher whose beacon is %s old (poll %s + a 59s pass) must still read healthy; cox's grace is 3 x poll = %s",
+				watch.DefaultPoll+59*time.Second, watch.DefaultPoll, 3*watch.DefaultPoll)
+		}
+	})
+
+	// fm: docs/turnend-guard.md:118
+	t.Run("block_budget_is_below_claude_override", func(t *testing.T) {
+		// The re-block budget defaults to 3, below Claude's own 8-block override, so the guard's bound bites first.
+		if rewakeBlockBudget != 3 || rewakeBlockBudget >= 8 {
+			t.Fatalf("block budget %d must be 3 and below Claude's 8-block override", rewakeBlockBudget)
+		}
+	})
+
+	// fm: docs/turnend-guard.md:192
+	t.Run("no_shell_ampersand_supervision", func(t *testing.T) {
+		// No harness adapter manufactures supervision by backgrounding with a shell ampersand.
+		shims, _ := filepath.Glob(filepath.Join("..", "..", "hooks", "*.sh"))
+		if len(shims) == 0 {
+			t.Fatal("no hook shims found under hooks/")
+		}
+		for _, p := range shims {
+			b, err := os.ReadFile(p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, line := range strings.Split(string(b), "\n") {
+				code := strings.TrimSpace(strings.SplitN(line, "#", 2)[0])
+				if strings.HasSuffix(code, "&") && !strings.HasSuffix(code, "&&") {
+					t.Errorf("%s backgrounds a process with a shell ampersand: %q", p, line)
+				}
+			}
+		}
+	})
+}
+
+// fmDocWatcherContinuity translates the cmd/cox-reachable predicates of docs/watcher-continuity.md that no suite
+// case already pins (the watcher-side ones are in internal/watch/port_lifecycle_test.go).
+func fmDocWatcherContinuity(t *testing.T) {
+	// fm: docs/watcher-continuity.md:19
+	t.Run("dead_session_owner_is_reclaimed_before_arming", func(t *testing.T) {
+		// A session-lock owner that fails liveness is reclaimed before any arm state changes, so a leader restart does
+		// not orphan the epic (B-54): the restarted terminal re-binds .cox/leader, and the watcher rings it next.
+		ws, epic := fmWorkspace(t, "e1", "s1")
+		t.Chdir(ws)
+		if err := state.WriteLeader(epic, "term_dead"); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("ORCA_TERMINAL_HANDLE", "term_new")
+		fmProbe(t, false)
+		if g := guardEpics(epic); len(g) != 1 {
+			t.Fatalf("the restarted leader must still guard its epic, got %v", g)
+		}
+		if got := readLeader(epic); got != "term_new" {
+			t.Fatalf("the dead owner must be reclaimed (re-bound to the live terminal), .cox/leader=%q", got)
+		}
+	})
+
+	// fm: docs/watcher-continuity.md:24
+	t.Run("cycle_end_failure_is_benign_when_watcher_live", func(t *testing.T) {
+		// After a failed arm the hook rechecks the watcher: when a live, fresh watcher now exists (a peer came up), the
+		// failure is benign and the hook continues silently instead of reporting it.
+		epic := fmEpic(t, "s1")
+		r := fmGuard(t, epic, func(ep string) error {
+			fmHealthy(t, ep) // a peer watcher came up while this restart lost the race
+			return errWatchRefused
+		}, fmBlocks(t))
+		if r.blocked() {
+			t.Fatalf("a failed restart with a live fresh watcher in place must be benign (recheck, continue silently), got %+v", r)
+		}
+	})
+
+	// fm: docs/watcher-continuity.md:46
+	t.Run("no_pretooluse_watcher_denial", func(t *testing.T) {
+		// No PreToolUse hook denies fleet commands based on watcher status.
+		var m struct {
+			Hooks map[string]json.RawMessage `json:"hooks"`
+		}
+		if err := json.Unmarshal(hooks.JSON, &m); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := m.Hooks["PreToolUse"]; ok {
+			t.Fatal("the leader hook manifest registers a PreToolUse hook")
+		}
+	})
+
+	// fm: docs/watcher-continuity.md:117
+	t.Run("watcher_hup_runs_exit_cleanup", func(t *testing.T) {
+		// HUP and TERM both run the watcher's exit cleanup (pidfile release), including mid-poll. cmdWatch notifies only
+		// SIGTERM and SIGINT, so a HUP kills it without releasing .cox/watch.pid.
+		notImplemented(t, "watcher HUP handling: SIGHUP must run the same pidfile release as TERM/INT")
+	})
 }

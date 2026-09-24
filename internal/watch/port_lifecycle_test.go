@@ -70,8 +70,6 @@ func TestFMLifecycle(t *testing.T) {
 	t.Run("doc-watcher-continuity", lcDocWatcherContinuity)
 }
 
-func lcDocWatcherContinuity(t *testing.T) {}
-
 // lcWatchPid records pid as the epic's watcher in <epic>/.cox/watch.pid, the file `cox watch` claims.
 func lcWatchPid(t *testing.T, epic string, pid int) {
 	t.Helper()
@@ -227,6 +225,23 @@ func lcWatchRecoveryLoop(t *testing.T) {
 		}
 		if lcExited(done, 0) {
 			t.Fatal("the successor watcher exited instead of supervising")
+		}
+	})
+}
+
+// lcDocWatcherContinuity translates the watcher-side predicates of docs/watcher-continuity.md that no suite case
+// already pins.
+func lcDocWatcherContinuity(t *testing.T) {
+	// fm: docs/watcher-continuity.md:116
+	t.Run("only_the_watcher_writes_the_beacon", func(t *testing.T) {
+		// Only the watcher's own loop touches the beacon; no helper (cox watch --once, a probe) can make a wedged
+		// watcher look healthy.
+		epic := lcEpic(t)
+		if _, err := lcWatcher(epic).Tick(); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(filepath.Join(epic, state.ControlDir, "watch", "lasttick")); err == nil {
+			t.Fatal("a one-shot pass outside the watcher loop wrote the beacon")
 		}
 	})
 }
