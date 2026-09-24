@@ -32,6 +32,9 @@ Superseded by cox-supervision-port wave 2 (firstmate `1e0e773` translated):
 - The free-text status regex ported from v1 `bin/watch.sh` (`blocked` or `need a decision` anywhere in the text) is
   replaced by the firstmate status-line grammar. Prose never raises a wake.
 - `stale` and `unknown_probe` are urgent, not routine (leader ruling 2026-09-24).
+- `check` (urgent) carries a registered custom check's output as `check: <path>: <out>`, or
+  `check: rejected unauthenticated state checks: <paths>` for a check whose bytes no longer match its registration
+  (firstmate's check row, `bin/fm-watch.sh` check sweep). See `cox watch check register`.
 - A corrupt queue line is retired instead of failing every drain, and a schema-less row is adopted instead of
   skipped.
 
