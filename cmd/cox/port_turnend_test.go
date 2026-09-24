@@ -11,6 +11,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -145,8 +146,6 @@ func TestFM(t *testing.T) {
 	t.Run("doc-watcher-continuity", fmDocWatcherContinuity)
 }
 
-func fmWatcherLock(t *testing.T)          {}
-func fmWatchArm(t *testing.T)             {}
 func fmDocTurnendGuard(t *testing.T)      {}
 func fmDocWatcherContinuity(t *testing.T) {}
 
@@ -1208,4 +1207,668 @@ func fmWatchCheckpoint(t *testing.T) {
 			t.Fatalf("the refusal must say the watcher is already running, got %v", err)
 		}
 	})
+}
+
+// fmLiveChildExit runs script under sh as a stand-in live process and returns its pid and a channel that closes once it
+// has exited (reaped), so a case can tell "still running" from "killed". Cleanup kills it.
+func fmLiveChildExit(t *testing.T, script string) (int, <-chan struct{}) {
+	t.Helper()
+	cmd := exec.Command("sh", "-c", script)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	exited := make(chan struct{})
+	go func() { _ = cmd.Wait(); close(exited) }()
+	t.Cleanup(func() { _ = cmd.Process.Kill(); <-exited })
+	return cmd.Process.Pid, exited
+}
+
+// fmStillRunning reports whether exited has not closed (the process was not killed).
+func fmStillRunning(exited <-chan struct{}) bool {
+	select {
+	case <-exited:
+		return false
+	case <-time.After(200 * time.Millisecond):
+		return true
+	}
+}
+
+// TestPortClaimChild is not a translated case: it is the child process fmClaimRace re-executes so several real
+// processes contend for one epic's watch.pid (claimWatchPid keys on os.Getpid, so the race needs distinct processes).
+// Without FM_CLAIM_EPIC it does nothing.
+func TestPortClaimChild(t *testing.T) {
+	epic := os.Getenv("FM_CLAIM_EPIC")
+	if epic == "" {
+		return
+	}
+	if at, err := strconv.ParseInt(os.Getenv("FM_CLAIM_AT"), 10, 64); err == nil {
+		time.Sleep(time.Until(time.Unix(0, at)))
+	}
+	release, err := claimWatchPid(epic, false)
+	if err != nil {
+		fmt.Println("CLAIM lost:", err)
+		return
+	}
+	fmt.Println("CLAIM won")
+	time.Sleep(1500 * time.Millisecond) // hold the claim live so a late contender sees a live holder
+	release()
+}
+
+// fmClaimRace starts n processes that all call claimWatchPid on epic at the same instant and returns how many won.
+func fmClaimRace(t *testing.T, epic string, n int) int {
+	t.Helper()
+	// 3s lets every re-executed child finish starting under a loaded CI box before the shared instant, so the claims
+	// really race (1s let early children win uncontested while late ones saw a live holder).
+	at := strconv.FormatInt(time.Now().Add(3*time.Second).UnixNano(), 10)
+	outs := make([]*bytes.Buffer, n)
+	cmds := make([]*exec.Cmd, n)
+	for i := range cmds {
+		outs[i] = &bytes.Buffer{}
+		cmds[i] = exec.Command(os.Args[0], "-test.run=^TestPortClaimChild$", "-test.count=1")
+		cmds[i].Env = append(os.Environ(), "FM_CLAIM_EPIC="+epic, "FM_CLAIM_AT="+at)
+		cmds[i].Stdout = outs[i]
+		if err := cmds[i].Start(); err != nil {
+			t.Error(err) // callers run this off the test goroutine: Error, never Fatal
+			cmds[i] = nil
+		}
+	}
+	won := 0
+	for i, c := range cmds {
+		if c == nil {
+			continue
+		}
+		_ = c.Wait()
+		won += strings.Count(outs[i].String(), "CLAIM won")
+	}
+	return won
+}
+
+// fmWait runs the stop-rewake idle wait for epic (guard first, then the poll loop) over polls virtual polls, calling
+// onPoll(i) at each poll so a case can change the world mid-wait (the watcher dies, a wake lands). It returns the exit
+// code and output. A healthy watcher is required for the guard to let the wait start.
+func fmWait(t *testing.T, epic string, polls int, onPoll func(i int)) (int, string) {
+	t.Helper()
+	var out bytes.Buffer
+	i := 0
+	cfg := rewakeCfg{
+		epics: []string{epic}, guardEpics: guardEpics(epic), out: &out, stdout: &out, blocksPath: fmBlocks(t),
+		maxWait: time.Duration(polls) * time.Second, batchMax: time.Hour, poll: time.Second,
+		sleep:  func(time.Duration) { i++; onPoll(i) },
+		launch: func(ep string) error { t.Errorf("the waiter restarted the watcher for %s", ep); return errWatchRefused },
+	}
+	return runStopRewake(cfg), out.String()
+}
+
+// fmWantWatcherDownNotice asserts the waiter surfaced that its watcher is gone (firstmate's typed
+// "watcher: FAILED - cycle ended without an actionable reason").
+func fmWantWatcherDownNotice(t *testing.T, code int, out, why string) {
+	t.Helper()
+	if code != 2 || !strings.Contains(out, "not alive") {
+		t.Fatalf("%s: the waiter must reopen naming the dead watcher, got %d %q", why, code, out)
+	}
+}
+
+// fmTickingWatcher stubs launchWatcher's `cox watch` with a script that, after a real watcher's startup time (0.5s:
+// backend and policy load), records its pid as the epic's watcher and ticks.
+func fmTickingWatcher(t *testing.T, wait time.Duration) {
+	t.Helper()
+	stubWatcher(t, wait, `sleep 0.5; mkdir -p "$3/.cox/watch" && echo $$ > "$3/.cox/watch.pid" && date > "$3/.cox/watch/lasttick" && exec sleep 30`)
+}
+
+// fmWatcherLock translates the cmd/cox half of tests/fm-watcher-lock.test.sh: the singleton (`cox watch`'s
+// claimWatchPid on .cox/watch.pid), restart (--replace), the arm (the stop-rewake guard's launchWatcher restart and
+// the idle waiter attached to a live watcher) and the pull guard. The watcher-side cases (self-eviction, the cycle
+// ledger) live in internal/watch/port_lifecycle_test.go under the same suite name.
+func fmWatcherLock(t *testing.T) {
+	// fm: tests/fm-watcher-lock.test.sh:37
+	t.Run("wait_deadline_reaps_a_stopped_child", func(t *testing.T) {
+		// A stopped, TERM-resistant watcher: `cox watch --replace` (killAndWait) must still reap it within its deadline.
+		pid, exited := fmLiveChildExit(t, `trap "" TERM; kill -STOP $$; exec sleep 300`)
+		time.Sleep(200 * time.Millisecond)
+		start := time.Now()
+		err := killAndWait(pid, 2*time.Second)
+		if d := time.Since(start); d > 5*time.Second {
+			t.Fatalf("killAndWait hung past its deadline: %s", d)
+		}
+		if fmStillRunning(exited) {
+			t.Fatalf("a stopped TERM-resistant process survived the replace deadline (err=%v); it must escalate to KILL and reap", err)
+		}
+	})
+
+	// fm: tests/fm-watcher-lock.test.sh:93
+	t.Run("singleton_start", func(t *testing.T) {
+		// Firstmate starts two watchers at once. One 2-way race is a coin flip against a read-check-write claim, so
+		// the invariant is checked over 10 independent 2-way races run together: every one must leave one winner.
+		wins := make(chan int, 10)
+		for i := 0; i < 10; i++ {
+			epic := fmEpic(t)
+			go func() { wins <- fmClaimRace(t, epic, 2) }()
+		}
+		for i := 0; i < 10; i++ {
+			if won := <-wins; won != 1 {
+				t.Errorf("simultaneous watcher starts must leave exactly one live watcher, %d claimed watch.pid", won)
+			}
+		}
+	})
+
+	// fm: tests/fm-watcher-lock.test.sh:126
+	t.Run("stale_watch_lock_reclaimed", func(t *testing.T) {
+		epic := fmEpic(t)
+		dead := fmDeadPid(t)
+		fmWatchPid(t, epic, dead)
+		release, err := claimWatchPid(epic, false)
+		if err != nil {
+			t.Fatalf("a dead watcher's pidfile must be reclaimed, got %v", err)
+		}
+		defer release()
+		if got := readPid(watchPidPath(epic)); got != os.Getpid() {
+			t.Fatalf("stale pid %d was not replaced, watch.pid=%d", dead, got)
+		}
+	})
+
+	// fm: tests/fm-watcher-lock.test.sh:158
+	t.Run("live_stale_watch_lock_is_actionable", func(t *testing.T) {
+		epic := fmEpic(t)
+		fmWatchPid(t, epic, fmLiveChild(t))
+		fmBeacon(t, epic, time.Since(time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)))
+		release, err := claimWatchPid(epic, false)
+		if err == nil {
+			release()
+			t.Fatal("a new watcher must not silently no-op (or win) behind a live holder")
+		}
+		if !strings.Contains(err.Error(), "stale") {
+			t.Fatalf("the refusal must explain the live holder's stale heartbeat, got %v", err)
+		}
+	})
+
+	// fm: tests/fm-watcher-lock.test.sh:175
+	t.Run("guard_warnings", func(t *testing.T) {
+		// Down + two open stories + a queued wake: the watcher-down banner leads (open count, beacon age, fix command),
+		// the queued-wakes warning follows it; a live fresh watcher with an empty queue is silent.
+		epic := fmEpic(t, "s1", "s2")
+		seedWake(t, epic, wake.KindStatus)
+		_, out := fmCapture(t, func() int { return cmdState([]string{"--epic", epic, "--no-forge"}) })
+		for _, want := range []string{"2 story(ies)", "cox watch --epic " + epic + " --replace", "never"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("down banner must carry %q, got %q", want, out)
+			}
+		}
+		banner, queue := strings.Index(out, "not alive"), strings.Index(out, "wake")
+		if banner < 0 || queue < banner {
+			t.Errorf("a queued-wakes warning must follow the watcher-down banner (drain, then repair), got %q", out)
+		}
+		fresh := fmEpic(t, "s1")
+		fmHealthy(t, fresh)
+		if _, out := fmCapture(t, func() int { return cmdState([]string{"--epic", fresh, "--no-forge"}) }); strings.Contains(out, "ISSUE") {
+			t.Errorf("a live fresh watcher with an empty queue must not warn, got %q", out)
+		}
+	})
+
+	// fm: tests/fm-watcher-lock.test.sh:253
+	t.Run("lock_single_winner_under_concurrency", func(t *testing.T) {
+		epic := fmEpic(t)
+		if won := fmClaimRace(t, epic, 20); won != 1 {
+			t.Fatalf("concurrent claims must yield exactly one winner, got %d", won)
+		}
+	})
+
+	// fm: tests/fm-watcher-lock.test.sh:283
+	t.Run("lock_steals_dead_pid_lock", func(t *testing.T) {
+		epic := fmEpic(t)
+		fmWatchPid(t, epic, fmDeadPid(t))
+		release, err := claimWatchPid(epic, false)
+		if err != nil {
+			t.Fatalf("a dead-pid lock must be reclaimed by a single acquirer, got %v", err)
+		}
+		release()
+	})
+
+	// fm: tests/fm-watcher-lock.test.sh:302
+	t.Run("lock_stale_steal_single_winner_under_concurrency", func(t *testing.T) {
+		epic := fmEpic(t)
+		fmWatchPid(t, epic, fmDeadPid(t))
+		if won := fmClaimRace(t, epic, 20); won != 1 {
+			t.Fatalf("concurrent steals of a dead-pid lock must yield exactly one winner, got %d", won)
+		}
+	})
+
+	// fm: tests/fm-watcher-lock.test.sh:333
+	t.Run("lock_live_steal_mutex_is_not_reclaimed", func(t *testing.T) {
+		notImplemented(t, "atomic watcher lock: mkdir/owner-dir claim with a steal mutex (claimWatchPid is read-check-write)")
+	})
+
+	// fm: tests/fm-watcher-lock.test.sh:373
+	t.Run("lock_does_not_steal_live_lock", func(t *testing.T) {
+		epic := fmEpic(t)
+		live := fmLiveChild(t)
+		fmWatchPid(t, epic, live)
+		release, err := claimWatchPid(epic, false)
+		if err == nil {
+			release()
+			t.Fatal("a live-held lock must be refused")
+		}
+		if !strings.Contains(err.Error(), strconv.Itoa(live)) {
+			t.Fatalf("the refusal must name the live holder pid %d, got %v", live, err)
+		}
+		if got := readPid(watchPidPath(epic)); got != live {
+			t.Fatalf("the live holder's pid was clobbered: %d", got)
+		}
+	})
+
+	// fm: tests/fm-watcher-lock.test.sh:402
+	t.Run("lock_empty_pid_uses_minimum_grace", func(t *testing.T) {
+		// A just-created, still-empty pidfile is a claim mid-acquire, not a free lock.
+		epic := fmEpic(t)
+		mustWrite(t, watchPidPath(epic), "")
+		release, err := claimWatchPid(epic, false)
+		if err == nil {
+			release()
+			t.Fatal("an empty mid-acquire pidfile must keep a minimum grace, not be stolen at once")
+		}
+	})
+
+	// fm: tests/fm-watcher-lock.test.sh:422
+	t.Run("lock_late_claim_loses_after_recreate", func(t *testing.T) {
+		notImplemented(t, "atomic watcher lock: mkdir/owner-dir claim with a steal mutex (claimWatchPid is read-check-write)")
+	})
+
+	// fm: tests/fm-watcher-lock.test.sh:454
+	t.Run("lock_paused_mid_acquire_claim_fails_during_steal", func(t *testing.T) {
+		notImplemented(t, "atomic watcher lock: mkdir/owner-dir claim with a steal mutex (claimWatchPid is read-check-write)")
+	})
+
+	// fm: tests/fm-watcher-lock.test.sh:483
+	t.Run("watch_restart_rejects_reused_pid", func(t *testing.T) {
+		// --replace over a pidfile whose pid now belongs to an unrelated process must not signal that process.
+		epic := fmEpic(t)
+		pid, exited := fmLiveChildExit(t, "exec sleep 300")
+		fmWatchPid(t, epic, pid)
+		if release, err := claimWatchPid(epic, true); err == nil {
+			release()
+		}
+		if !fmStillRunning(exited) {
+			t.Fatal("cox watch --replace killed an unrelated process whose pid the pidfile named (pid reuse)")
+		}
+	})
+
+	// fm: tests/fm-watcher-lock.test.sh:514
+	t.Run("watch_restart_attaches_to_healthy_peer", func(t *testing.T) {
+		// --replace over a verified healthy (TERM-resistant) peer attaches to it instead of fighting it.
+		epic := fmEpic(t)
+		pid, exited := fmLiveChildExit(t, `trap "" TERM; while :; do sleep 1; done`)
+		fmWatchPid(t, epic, pid)
+		fmBeacon(t, epic, 0)
+		release, err := claimWatchPid(epic, true)
+		if err == nil {
+			release()
+		}
+		if err != nil || !fmStillRunning(exited) || readPid(watchPidPath(epic)) != pid {
+			t.Fatalf("restart must attach to the healthy peer (no error, peer alive, pidfile unchanged), got err=%v pidfile=%d", err, readPid(watchPidPath(epic)))
+		}
+	})
+
+	// fm: tests/fm-watcher-lock.test.sh:590
+	t.Run("arm_self_eviction_is_loud_without_successor", func(t *testing.T) {
+		// The waiter's watcher self-evicts (another live pid takes watch.pid, the beacon stops) with no successor: the
+		// waiter must turn that into a loud failure, not wait out MAX_WAIT.
+		epic := fmEpic(t, "s1")
+		fmHealthy(t, epic)
+		other := fmLiveChild(t)
+		code, out := fmWait(t, epic, 10, func(i int) {
+			if i == 1 {
+				fmWatchPid(t, epic, other)
+				fmBeacon(t, epic, time.Since(time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)))
+			}
+		})
+		fmWantWatcherDownNotice(t, code, out, "self-evicted watcher with no successor")
+	})
+
+	// fm: tests/fm-watcher-lock.test.sh:626
+	t.Run("arm_attaches_and_waits_for_live_fresh_watcher", func(t *testing.T) {
+		// The waiter attaches to a live fresh watcher (no restart, no failure) and fails loudly once that watcher dies
+		// without a successor.
+		epic := fmEpic(t, "s1")
+		fmHealthy(t, epic)
+		code, out := fmWait(t, epic, 10, func(i int) {
+			if i == 1 {
+				fmDead(t, epic)
+			}
+		})
+		fmWantWatcherDownNotice(t, code, out, "attached watcher died")
+	})
+
+	// fm: tests/fm-watcher-lock.test.sh:703
+	t.Run("arm_starts_and_self_heals", func(t *testing.T) {
+		for _, row := range []string{"clean", "dead-pid"} {
+			epic := fmEpic(t, "s1")
+			if row == "dead-pid" {
+				fmWatchPid(t, epic, fmDeadPid(t))
+				fmBeacon(t, epic, 0) // a fresh-looking leftover beacon must not read as healthy
+			}
+			fmTickingWatcher(t, 10*time.Second)
+			r := fmGuard(t, epic, launchWatcher, fmBlocks(t))
+			if len(r.launched) != 1 || r.blocked() {
+				t.Fatalf("%s: the guard must start a watcher and confirm it, got %+v", row, r)
+			}
+			if pid := readPid(watchPidPath(epic)); pid <= 0 || !processAlive(pid) {
+				t.Fatalf("%s: the restart was confirmed before the new watcher held watch.pid (holder pid %d is not alive): a leftover beacon must not confirm it", row, pid)
+			}
+			if row == "dead-pid" {
+				if w, _ := wake.Drain(epic, true); len(w) == 0 {
+					t.Fatalf("dead-pid: reclaiming a dead watcher must surface a recovery wake for the downtime, got none (out=%q)", r.out)
+				}
+			}
+		}
+	})
+
+	// n/a: arm_hup_cleans_child_and_temp_output (fm: tests/fm-watcher-lock.test.sh:758) - the arm-owned one-shot watcher child is firstmate's auto-arm model; cox's watcher is detached and persistent, never a child of the waiter, and the waiter keeps no temp output.
+
+	// fm: tests/fm-watcher-lock.test.sh:788
+	t.Run("arm_propagates_immediate_wake_before_confirmation", func(t *testing.T) {
+		// The restarted watcher's first pass yields an actionable wake: the same Stop must surface it.
+		epic := fmEpic(t, "s1")
+		var out bytes.Buffer
+		cfg := rewakeCfg{epics: []string{epic}, guardEpics: guardEpics(epic), out: &out, stdout: &out, sleep: noSleep, blocksPath: fmBlocks(t),
+			maxWait: time.Second, batchMax: time.Hour, poll: time.Second,
+			launch: func(ep string) error { seedWake(t, ep, wake.KindWorkerDone); return nil }}
+		if code := runStopRewake(cfg); code != 2 || !strings.Contains(out.String(), "worker_done") {
+			t.Fatalf("an immediate wake from the restarted watcher must be propagated (reopen with it), got %d %q", code, out.String())
+		}
+	})
+
+	// fm: tests/fm-watcher-lock.test.sh:819
+	t.Run("arm_waits_for_peer_beacon_after_child_stands_down", func(t *testing.T) {
+		// A live peer holds the pidfile but has not ticked yet: the restart stands down and waits (bounded) for the
+		// peer's beacon, then attaches, instead of reporting failure at once.
+		epic := fmEpic(t, "s1")
+		fmWatchPid(t, epic, fmLiveChild(t))
+		ticked := make(chan struct{})
+		go func() {
+			defer close(ticked)
+			time.Sleep(300 * time.Millisecond)
+			_ = os.WriteFile(filepath.Join(epic, controlDir, "watch", "lasttick"), []byte(time.Now().UTC().Format(time.RFC3339)), 0o644)
+		}()
+		r := fmGuard(t, epic, launchWatcher, fmBlocks(t))
+		<-ticked
+		if r.blocked() {
+			t.Fatalf("the restart must wait for the live peer's beacon and attach, not fail at once: %+v", r)
+		}
+	})
+
+	// fm: tests/fm-watcher-lock.test.sh:870
+	t.Run("arm_fails_loud_when_no_fresh_watcher_confirmable", func(t *testing.T) {
+		epic := fmEpic(t, "s1")
+		pid, exited := fmLiveChildExit(t, "exec sleep 300")
+		fmWatchPid(t, epic, pid)
+		fmBeacon(t, epic, time.Since(time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)))
+		fmWantBlock(t, fmGuard(t, epic, launchWatcher, fmBlocks(t)), epic, "live unconfirmable holder, stale beacon")
+		if !fmStillRunning(exited) {
+			t.Fatal("the guard killed the unrelated live holder")
+		}
+	})
+
+	// fm: tests/fm-watcher-lock.test.sh:970
+	t.Run("stopped_watcher_is_live_but_stale_then_exit_is_classified", func(t *testing.T) {
+		epic := fmEpic(t, "s1")
+		pid, _ := fmLiveChildExit(t, `kill -STOP $$; exec sleep 300`)
+		time.Sleep(200 * time.Millisecond)
+		fmWatchPid(t, epic, pid)
+		fmBeacon(t, epic, time.Since(time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)))
+		if !processAlive(pid) {
+			t.Fatal("a SIGSTOPped watcher must still read as a live pid")
+		}
+		if watcherHealthy(epic, time.Now()) {
+			t.Fatal("a SIGSTOPped watcher with a stale beacon must not read as healthy")
+		}
+		notImplemented(t, "watcher cycle-exit ledger: each watcher exit classified (signal/nonzero/clean) with its successor")
+	})
+
+	// fm: tests/fm-watcher-lock.test.sh:1005
+	t.Run("pid_identity_is_locale_invariant", func(t *testing.T) {
+		notImplemented(t, "watcher process identity: watch.pid records pid + start time/cmdline so pid reuse is detectable")
+	})
+
+	// fm: tests/fm-watcher-lock.test.sh:1071
+	t.Run("proc_pid_identity_ignores_wall_clock_and_detects_pid_reuse", func(t *testing.T) {
+		notImplemented(t, "watcher process identity: watch.pid records pid + start time/cmdline so pid reuse is detectable")
+	})
+
+	// fm: tests/fm-watcher-lock.test.sh:1102
+	t.Run("stale_watch_reclaim_publishes_before_clear", func(t *testing.T) {
+		notImplemented(t, "watcher-down recovery episode: durable downtime marker published before a stale lock is cleared")
+	})
+
+	// n/a: msys_pid_identity_uses_proc (fm: tests/fm-watcher-lock.test.sh:1144) - MSYS/Windows process identity; cox ships darwin and linux only.
+}
+
+// fmWatchArm translates the cmd/cox half of tests/fm-watch-arm.test.sh. Firstmate's arm attaches to a watcher cycle
+// and closes with the cycle's reason; cox's is the stop-rewake idle waiter (fmWait) over a live watcher, and its re-arm
+// is the guard's restart of a dead watcher. Firstmate's recovery episode (.watcher-down marker + recovery generation +
+// rearm-resurface wake) has no cox counterpart; the durable wake queue with gen-based ack-through is the name-mapped
+// part.
+func fmWatchArm(t *testing.T) {
+	// fm: tests/fm-watch-arm.test.sh:184
+	t.Run("attached_arm_reports_the_delivered_wake", func(t *testing.T) {
+		epic := fmEpic(t, "s1")
+		fmHealthy(t, epic)
+		code, out := fmWait(t, epic, 10, func(i int) {
+			if i == 1 {
+				seedWake(t, epic, wake.KindWorkerDone)
+			}
+		})
+		if code != 2 || !strings.Contains(out, "worker_done") || strings.Contains(out, "not alive") {
+			t.Fatalf("the waiter must close on the delivered wake, not a failure, got %d %q", code, out)
+		}
+		notImplemented(t, "watcher cycle-exit ledger: each watcher exit classified (signal/nonzero/clean) with its successor")
+	})
+
+	// fm: tests/fm-watch-arm.test.sh:214
+	t.Run("attached_arm_reports_the_delivered_wake_after_drain", func(t *testing.T) {
+		// The handling turn drains and acks the delivered wake before the waiter looks: no false failure.
+		epic := fmEpic(t, "s1")
+		fmHealthy(t, epic)
+		_, out := fmWait(t, epic, 3, func(i int) {
+			if i == 1 {
+				seedWake(t, epic, wake.KindWorkerDone)
+				w, _ := wake.Drain(epic, true)
+				if err := wake.AckThrough(epic, w[len(w)-1].Gen); err != nil {
+					t.Fatal(err)
+				}
+			}
+		})
+		if strings.Contains(out, "not alive") || strings.Contains(out, "FAILED") {
+			t.Fatalf("an already-handled wake must not be reported as a failed cycle, got %q", out)
+		}
+	})
+
+	// fm: tests/fm-watch-arm.test.sh:245
+	t.Run("attached_arm_still_fails_on_a_wake_it_did_not_deliver", func(t *testing.T) {
+		// A foreign producer queues a wake while the watcher dies: the waiter must still say the watcher is gone.
+		epic := fmEpic(t, "s1")
+		fmHealthy(t, epic)
+		code, out := fmWait(t, epic, 10, func(i int) {
+			if i == 1 {
+				seedWake(t, epic, wake.KindStatus)
+				fmDead(t, epic)
+			}
+		})
+		fmWantWatcherDownNotice(t, code, out, "watcher died while a foreign wake was queued")
+	})
+
+	// fm: tests/fm-watch-arm.test.sh:270
+	t.Run("rearm_resurfaces_durable_queue_and_remote_open_decision", func(t *testing.T) {
+		// Two durable wakes queued while no watcher ran: the re-arm (guard restart) must surface them, and a drain
+		// must show both. (The remote secondmate decision half is firstmate-only.)
+		epic := fmEpic(t, "s1")
+		fmDead(t, epic)
+		seedWake(t, epic, wake.KindStatus)
+		seedWake(t, epic, wake.KindStatus)
+		var out bytes.Buffer
+		cfg := rewakeCfg{epics: []string{epic}, guardEpics: guardEpics(epic), out: &out, stdout: &out, sleep: noSleep, blocksPath: fmBlocks(t),
+			maxWait: time.Second, batchMax: time.Hour, poll: time.Second, launch: func(string) error { return nil }}
+		code := runStopRewake(cfg)
+		if w, _ := wake.Drain(epic, true); len(w) != 2 {
+			t.Fatalf("both downtime wakes must stay durable for the drain, got %d", len(w))
+		}
+		if code != 2 || !strings.Contains(out.String(), "cox wake drain") {
+			t.Fatalf("the re-arm must surface the wakes queued during downtime, got %d %q", code, out.String())
+		}
+	})
+
+	// fm: tests/fm-watch-arm.test.sh:398
+	t.Run("slow_rearm_recovery_is_still_surfaced", func(t *testing.T) {
+		epic := fmEpic(t, "s1")
+		fmDead(t, epic)
+		seedWake(t, epic, wake.KindStatus)
+		var out bytes.Buffer
+		cfg := rewakeCfg{epics: []string{epic}, guardEpics: guardEpics(epic), out: &out, stdout: &out, sleep: noSleep, blocksPath: fmBlocks(t),
+			maxWait: time.Second, batchMax: time.Hour, poll: time.Second,
+			launch: func(string) error { time.Sleep(1500 * time.Millisecond); return nil }}
+		if code := runStopRewake(cfg); code != 2 || !strings.Contains(out.String(), "cox wake drain") {
+			t.Fatalf("a slow re-arm must still surface the wake queued during downtime, got %d %q", code, out.String())
+		}
+	})
+
+	// fm: tests/fm-watch-arm.test.sh:450
+	t.Run("marker_publish_failure_retains_recovery_evidence", func(t *testing.T) {
+		notImplemented(t, "watcher-down recovery episode: durable downtime marker published before a stale lock is cleared")
+	})
+
+	// fm: tests/fm-watch-arm.test.sh:480
+	t.Run("delivery_gap_wake_is_recovered_once", func(t *testing.T) {
+		// A wake queued after the handling drain is recovered once by the next waiter, which then stays stable.
+		epic := fmEpic(t, "s1")
+		fmHealthy(t, epic)
+		seedWake(t, epic, wake.KindWorkerDone)
+		code, out := fmWait(t, epic, 3, func(int) {})
+		if code != 2 || !strings.Contains(out, "worker_done") {
+			t.Fatalf("the successor waiter must recover the gap wake, got %d %q", code, out)
+		}
+		w, _ := wake.Drain(epic, true)
+		if err := wake.AckThrough(epic, w[len(w)-1].Gen); err != nil {
+			t.Fatal(err)
+		}
+		if _, out := fmWait(t, epic, 3, func(int) {}); strings.Contains(out, "worker_done") {
+			t.Fatalf("after the ack the next waiter must not replay the recovered wake, got %q", out)
+		}
+	})
+
+	// fm: tests/fm-watch-arm.test.sh:519
+	t.Run("interrupted_handling_is_redrained_on_rearm", func(t *testing.T) {
+		// A delivered wake whose handling was interrupted (never acked) stays durable and is re-surfaced by the next
+		// waiter; the completed replay acks it through its gen.
+		epic := fmEpic(t, "s1")
+		fmHealthy(t, epic)
+		seedWake(t, epic, wake.KindWorkerDone)
+		for i := 0; i < 2; i++ {
+			if code, out := fmWait(t, epic, 3, func(int) {}); code != 2 || !strings.Contains(out, "worker_done") {
+				t.Fatalf("waiter %d must re-surface the unacked wake, got %d %q", i, code, out)
+			}
+		}
+		w, _ := wake.Drain(epic, true)
+		if err := wake.AckThrough(epic, w[len(w)-1].Gen); err != nil {
+			t.Fatal(err)
+		}
+		if w, _ := wake.Drain(epic, true); len(w) != 0 {
+			t.Fatalf("the acknowledged replay must leave the queue, got %d", len(w))
+		}
+	})
+
+	// fm: tests/fm-watch-arm.test.sh:612
+	t.Run("malformed_marker_is_quarantined_once", func(t *testing.T) {
+		notImplemented(t, "watcher-down recovery episode: durable downtime marker published before a stale lock is cleared")
+	})
+
+	// fm: tests/fm-watch-arm.test.sh:638
+	t.Run("recovery_consumption_serializes_queue_publication", func(t *testing.T) {
+		// A wake published while a waiter is live after a handled recovery is surfaced.
+		epic := fmEpic(t, "s1")
+		fmHealthy(t, epic)
+		code, out := fmWait(t, epic, 5, func(i int) {
+			if i == 2 {
+				seedWake(t, epic, wake.KindStuck)
+			}
+		})
+		if code != 2 || !strings.Contains(out, "stuck") {
+			t.Fatalf("a wake published during the wait must be surfaced, got %d %q", code, out)
+		}
+	})
+
+	// fm: tests/fm-watch-arm.test.sh:665
+	t.Run("restart_preserves_recovery_across_reused_pid_lock", func(t *testing.T) {
+		// Restart over a pidfile whose pid was reused: publish recovery, and never signal the unrelated process.
+		epic := fmEpic(t, "s1")
+		pid, exited := fmLiveChildExit(t, "exec sleep 300")
+		fmWatchPid(t, epic, pid)
+		if release, err := claimWatchPid(epic, true); err == nil {
+			release()
+		}
+		if !fmStillRunning(exited) {
+			t.Fatal("restart signaled the unrelated process whose pid was reused")
+		}
+		if w, _ := wake.Drain(epic, true); len(w) == 0 {
+			t.Fatal("restart cleared the reused-pid lock without a recovery wake")
+		}
+	})
+
+	// fm: tests/fm-watch-arm.test.sh:693
+	t.Run("markerless_legacy_queue_is_recovered_on_arm", func(t *testing.T) {
+		// A queue row left from before any recovery bookkeeping is still surfaced by the next waiter.
+		epic := fmEpic(t, "s1")
+		fmHealthy(t, epic)
+		seedWake(t, epic, wake.KindWorkerDone)
+		if code, out := fmWait(t, epic, 3, func(int) {}); code != 2 || !strings.Contains(out, "worker_done") {
+			t.Fatalf("a legacy queued wake must be recovered, got %d %q", code, out)
+		}
+	})
+
+	// fm: tests/fm-watch-arm.test.sh:721
+	t.Run("handling_window_close_keeps_the_acknowledgement_valid", func(t *testing.T) {
+		// The ack printed for a drain stays valid when newer wakes land during handling: it consumes only through its
+		// gen, the newer one survives and is acked by the next drain.
+		epic := fmEpic(t, "s1")
+		seedWake(t, epic, wake.KindWorkerDone)
+		first, _ := wake.Drain(epic, true)
+		gen := first[len(first)-1].Gen
+		seedWake(t, epic, wake.KindStatus)
+		if err := wake.AckThrough(epic, gen); err != nil {
+			t.Fatalf("the printed acknowledgement was rejected after a newer publication: %v", err)
+		}
+		rest, _ := wake.Drain(epic, true)
+		if len(rest) != 1 || rest[0].Gen <= gen {
+			t.Fatalf("the newer wake must survive the older ack, got %+v", rest)
+		}
+		if err := wake.AckThrough(epic, rest[0].Gen); err != nil {
+			t.Fatal(err)
+		}
+		notImplemented(t, "watcher-down recovery episode: a recovery generation that the ack retires, kept across publications during handling")
+	})
+
+	// fm: tests/fm-watch-arm.test.sh:789
+	t.Run("moved_generation_acknowledgement_is_self_healing", func(t *testing.T) {
+		// Replaying a stale ack degrades safely: no error, no over-consumption; a larger ack consumes what it names.
+		epic := fmEpic(t, "s1")
+		seedWake(t, epic, wake.KindWorkerDone)
+		first, _ := wake.Drain(epic, true)
+		gen := first[len(first)-1].Gen
+		if err := wake.AckThrough(epic, gen); err != nil {
+			t.Fatal(err)
+		}
+		seedWake(t, epic, wake.KindStatus)
+		if err := wake.AckThrough(epic, gen); err != nil {
+			t.Fatalf("a replayed stale acknowledgement must degrade safely, got %v", err)
+		}
+		if w, _ := wake.Drain(epic, true); len(w) != 1 {
+			t.Fatalf("a stale acknowledgement must not consume a wake above its gen, got %d left", len(w))
+		}
+		if err := wake.AckThrough(epic, 999); err != nil {
+			t.Fatal(err)
+		}
+		if w, _ := wake.Drain(epic, true); len(w) != 0 {
+			t.Fatalf("the sequence alone owns consumption, got %d left", len(w))
+		}
+		notImplemented(t, "watcher-down recovery episode: a moved recovery generation names its own remedy (re-run the drain)")
+	})
+
+	// n/a: arm_refuses_an_unusable_launch_confirm_window (fm: tests/fm-watch-arm.test.sh:893) - the FM_PROCEVENT_LAUNCH_CONFIRM_SECONDS knob is firstmate-only; cox's confirm window (watcherConfirmWait) is compiled in, with no operator input to validate.
 }
