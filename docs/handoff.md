@@ -171,12 +171,65 @@ sets the posture: `no-mistakes` (full gates + PR + wait for merge authority), `d
 `local-only` (clean ready branch, no push, wait). `cox story done --merge <sha>` refuses a sha that is not landed on the
 branch the mode requires (`origin/epic/<slug>`, or the production branch for `local-only`).
 
+## Leader session start: `cox bearings`
+
+A leader session starts from one digest, not from a hand-written handoff file. `cox bearings` (run by the
+`session-start` hook; `--reemit` on a compact or clear) composes cox's own sources of truth in a fixed order, ported
+verbatim from firstmate's `fm-session-start.sh`:
+
+1. `LEADER LEASE` - `<ws>/.cox/leader-lease` names the one leader allowed to mutate. A live competing holder, or a lease
+   that cannot be written, makes a `READ-ONLY SESSION`: the digest still prints, but the wake queue, the deferred forge
+   checks and every repair are skipped and said so.
+2. `DOCTOR` - detect-only workspace diagnostics.
+3. `WAKE QUEUE` - `cox wake drain` for every active epic and the `cox wake ack-through <gen>` line; the digest never
+   acknowledges.
+4. `SUPERVISION OPERATING INSTRUCTIONS` - exactly one block for the leader harness; on Pi it proves the leader
+   extension is loaded in the running process (`PI_LEADER_EXTENSION`), not merely installed.
+5. `READ-ONCE CONTRACT` - everything below is printed in full; do not re-read it.
+6. `FLEET STATE` - the compact `BACKLOG.md` listing (closed rows omitted, every in-epic, held and blocked row in full,
+   other open rows bounded to 20 with the exact remainder), each story's `cox state` row, endpoint liveness and status
+   tail (5 lines, 220 characters each), orphan status, then the four sections `Captain's Call`, `Recently Landed`,
+   `Underway`, `Charted Next`, each with its empty-state sentence.
+7. `FORGE CHECKS` - GitHub authentication and the inactive-story state reads run in a detached `cox bearings deferred`
+   worker, never on the blocking path; a failed result arrives once as a `startup-forge` wake.
+8. `NOTES` - the three memory files below, `ABSENT` distinguished from `(present, empty)`, and the budget line.
+9. `NEXT STEP`, then the digest's own token estimate on its last line.
+
+The whole digest runs under a 120 s bound. A stage that hangs is killed (TERM, then KILL) and the digest ends with a
+`STARTUP TRUNCATED` banner naming the stage that stopped and every stage that never printed; it still exits 0. On a Pi
+compact whose `AGENTS.md` changed since the session's true start, the current file is re-emitted before the fleet state.
+
+### Startup memory: `cox/notes/`
+
+Three files are printed at every start and budgeted together: `cox/notes/captain.md` and `cox/notes/captain-shared.md`
+(default tier `pinned`: preferences, authority, standing rulings) and `cox/notes/learnings.md` (default tier `aging`:
+operational facts that must re-prove themselves). History never lives here: epic outcomes stay in the epic dir and git,
+product gaps are `BACKLOG.md` rows. This section owns the tier contract (firstmate's stow skill); each file's header
+carries only the pointer `<!-- memory tiers: see docs/handoff.md -->`.
+
+- **Markers** trail an entry: `<!--a:YYYY-MM-DD-->` aging and `<!--p:YYYY-MM-DD-->` perishable (the date is the last
+  reinforcement; perishable prose names a checkable expiry), `<!--P-->` pinned in a non-pinned file, `<!--g-->` one
+  legacy grace cycle. An entry matching its file's pinned default carries no marker.
+- **Clocks**: aging is stale at 30 days, perishable at 7. With the `cox/notes-pass-horizon` presence flag a dated marker
+  also carries `/N` unreinforced passes, stale at 10 (aging) or 3 (perishable); without the flag no counter is read or
+  written. Pinned entries read no clock and are never moved automatically.
+- **Budget**: `cox/notes-budget` holds one positive integer and one newline (default `7500`, materialized when absent);
+  a malformed, symlinked, hardlinked or special file is rejected, never defaulted. The estimate is `ceil(UTF-8 bytes /
+  3)` per file; an absent file counts nothing.
+- **Curation** is `cox bearings curate [--reinforce "<entry>" ...]`: reinforcement (only for entries this session
+  evidenced) refreshes the date, a pass ticks counters, stale entries and unconfirmed grace entries move to
+  `cox/notes/memory-archive.md` under `## <date> notes pass` with provenance and reason, and an over-budget result evicts
+  dated aging entries oldest-first only when that can close the gap; otherwise the receipt opens a captain decision
+  (raise the budget, or trim a named pinned entry). The archive is append-only, never printed and never counted. The
+  receipt reports the budget before and after, one action per file, and whether the session is reset-safe.
+
 ## Operator loop
 
-1. Drain wakes at the start of a leader turn.
-2. Handle each durable question, completion, or failure record.
-3. Acknowledge through the highest handled generation.
-4. When idle, use the harness delivery mode described by its capability card.
+1. Start a session from the `cox bearings` digest; do not re-read the sources it printed.
+2. Drain wakes at the start of a leader turn.
+3. Handle each durable question, completion, or failure record.
+4. Acknowledge through the highest handled generation.
+5. When idle, use the harness delivery mode described by its capability card.
 
 Do not poll a worker terminal for meaning and do not type instructions directly into it. Use `cox steer`, `cox reply`,
 and `cox control` so the interaction survives restarts and remains auditable.

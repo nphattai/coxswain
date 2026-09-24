@@ -129,6 +129,11 @@ You steer the whole crew by chatting with the leader; it escalates only real dec
   recorded the merge sha, released the worker, and closed the worktree.
 ```
 
+Every leader session starts from one digest instead of a hand-written handoff: `cox bearings` (run by the
+`session-start` hook) prints the leader lease, doctor diagnostics, the wake queue, the fleet state of every active epic,
+and the three budgeted memory files under `cox/notes/`, then its own token estimate. `cox bearings curate` keeps those
+memory files within their budget. See [Leader session start](docs/handoff.md#leader-session-start-cox-bearings).
+
 ### Ship an epic
 
 The captain merges everything. `cox ship merge --pr <n> --epic <dir>` is the single merge command, so the

@@ -106,6 +106,8 @@ func run(args []string) int {
 		return cmdScorecard(args[1:])
 	case "baseline":
 		return cmdBaseline(args[1:])
+	case "bearings":
+		return cmdBearings(args[1:])
 	case "doctor":
 		return cmdDoctor(args[1:])
 	case "migrate":

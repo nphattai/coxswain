@@ -1,12 +1,10 @@
-//go:build port
-
-// Port tests for the proposed internal/bearings package: firstmate's session-start digest and memory-curation
-// contracts, translated case by case from firstmate@1e0e773 (epic cox-supervision-port, story
-// cox-supervision-port-session). Cox has no session-start command yet, so every case runs against the local Bearings
-// interface below through a notImplemented adapter and fails naming the gap; wave 2 swaps the adapter for the real
-// package and removes the port tag from each case it turns green. Firstmate names map to cox names as follows: home ->
-// workspace, fleet lock -> leader lease, bootstrap -> cox doctor, state/*.status -> story status wakes, data/backlog.md
-// -> BACKLOG.md, data/captain.md + data/learnings.md -> NOTES.md.
+// Port tests for internal/bearings: firstmate's session-start digest and memory-curation contracts, translated case by
+// case from firstmate@1e0e773 (epic cox-supervision-port, wave 1 story cox-supervision-port-session) and turned green
+// by wave 2 (story cox-supervision-port-w2-bearings), so the file runs untagged under go test ./... . Every case runs
+// against the Bearings interface below through the realBearings adapter. Firstmate names map to cox names as follows:
+// home -> workspace, fleet lock -> leader lease, bootstrap -> cox doctor, state/*.status -> story status wakes,
+// data/backlog.md -> BACKLOG.md, data/captain.md, data/captain-shared.md, data/learnings.md ->
+// cox/notes/{captain,captain-shared,learnings}.md (captain ruling 2026-09-24: three files, firstmate's 7,500 budget).
 package bearings_test
 
 import (
@@ -21,6 +19,7 @@ import (
 	"time"
 
 	"github.com/nphattai/coxswain/internal/adapter/harness/pi"
+	"github.com/nphattai/coxswain/internal/bearings"
 	"github.com/nphattai/coxswain/internal/state"
 	"github.com/nphattai/coxswain/internal/wake"
 )
@@ -42,11 +41,11 @@ const (
 	mechFour     = "four-section fleet digest"
 )
 
-// Notes constants. NOTES.md has two sections whose default tiers port firstmate's per-file defaults: "## Captain"
-// (was data/captain.md, pinned) and "## Learnings" (was data/learnings.md, aging). The budget lives in cox/notes-budget.
+// Notes constants. Three memory files keep firstmate's per-file default tiers: captain.md and captain-shared.md
+// pinned, learnings.md aging (captain ruling 2026-09-24). The budget lives in cox/notes-budget.
 const (
 	notesBudgetRel     = "cox/notes-budget"
-	defaultNotesBudget = 4000 // half the VISION 8,000-token session-start ceiling; the digest gets the other half
+	defaultNotesBudget = 7500 // docs/configuration.md:262
 	agingDays          = 30   // stow SKILL.md:38
 	perishableDays     = 7    // stow SKILL.md:39
 	agingPasses        = 10   // stow SKILL.md:70
@@ -72,47 +71,18 @@ const (
 	defaultQueuedLimit = 20  // fm: tests/fm-session-start.test.sh:1744
 )
 
-// Opts is one digest invocation.
-type Opts struct {
-	Workspace   string            // workspace root: BACKLOG.md, NOTES.md, AGENTS.md, epics/<slug>/
-	LeaderID    string            // this session's leader identity (ORCA_TERMINAL_HANDLE in cox)
-	Live        func(string) bool // is a leader identity live; the fake stands in for the backend probe
-	Harness     string            // claude | codex | pi
-	Source      string            // "" (true startup) | resume | compact | clear
-	Reemit      bool              // re-print the digest without startup's mutating sweeps
-	StatusTail  int               // 0 = defaultStatusTail
-	QueuedLimit int               // 0 = defaultQueuedLimit
-	Timeout     time.Duration     // runtime bound; 0 = the package default
-	Forge       func() error      // the deferred forge/auth probe (gh); a fake may block or fail
-	Endpoint    func(epic, story string) (alive bool, handle string)
-	StateRead   func(epic, story string) (string, error) // the slow current-state read for an inactive story
-	StageCmd    map[string][]string                      // test seam: an extra subprocess a named stage runs (hang injection)
-}
+// The digest and curation types are the package's own.
+type (
+	Opts         = bearings.Opts
+	Digest       = bearings.Digest
+	StoryState   = bearings.StoryState
+	BudgetReport = bearings.BudgetReport
+	Entry        = bearings.Entry
+	Receipt      = bearings.Receipt
+)
 
-// Digest is the printed session-start digest.
-type Digest struct {
-	Text      string
-	ReadOnly  bool
-	Truncated bool
-}
-
-// StoryState is one story's state as the digest's fleet section needs it.
-type StoryState struct {
-	Story         string
-	State         string
-	OpenQuestions []string
-}
-
-// BudgetReport is the startup-memory accounting for one workspace.
-type BudgetReport struct {
-	Budget int            // effective allowance, estimated tokens
-	Files  map[string]int // file -> ceil(bytes/3); an absent file has no key
-	Total  int
-	Status string // within-budget | over-budget
-}
-
-// Bearings is the proposed internal/bearings surface: what one session-start command needs from cox's sources of
-// truth (cox doctor, cox wake drain, cox state, questions/, BACKLOG.md, NOTES.md).
+// Bearings is the internal/bearings surface: what one session-start command needs from cox's sources of
+// truth (cox doctor, cox wake drain, cox state, questions/, BACKLOG.md, cox/notes/*.md).
 type Bearings interface {
 	Digest(o Opts) (Digest, error)
 	Acquire(ws, id string, live func(string) bool) (bool, error)
@@ -124,77 +94,49 @@ type Bearings interface {
 	Budget(ws string) (BudgetReport, error)
 	Deferred(ws string, wait time.Duration) (string, error)
 	RunBounded(timeout time.Duration, argv ...string) (int, error)
-	// Classify reads one NOTES.md entry line under its section's default tier.
+	// Classify reads one memory-file entry line under its file's default tier.
 	Classify(section, line string, now time.Time, passHorizon bool) (Entry, error)
 	// Curate runs the mechanical half of a notes pass: tick, decay, grace migration, budget eviction, archive, and the
 	// receipt. reinforced lists the entries this session evidenced (the judgment half stays with the leader).
 	Curate(ws string, now time.Time, reinforced []string) (Receipt, error)
 }
 
-// Entry is one classified notes entry.
-type Entry struct {
-	Tier       string // pinned | aging | perishable | grace
-	Reinforced string // YYYY-MM-DD, "" for pinned and grace
-	Passes     int    // unreinforced-pass counter (pass horizon only)
-	Stale      bool
-}
-
-// Receipt is a notes pass's completion receipt (stow SKILL.md "Completion receipt").
-type Receipt struct {
-	Before, After BudgetReport
-	Actions       map[string][]string // section -> unchanged | added | rewritten | pruned | routed | archived | proposed-offload
-	Archived      []string            // archive lines written this pass
-	Exceptions    []string
-	Decision      string // the captain decision opened for an unresolved over-budget result, "" when none
-	ResetSafe     bool
-}
-
 type notImplementedErr struct{ what string }
 
 func (e notImplementedErr) Error() string { return "not implemented: " + e.what }
 
-// notImplementedBearings is the wave 1 adapter: every method reports the gap.
-type notImplementedBearings struct{}
+// realBearings forwards to internal/bearings. notImplementedErr stays as the gap vocabulary: a method that ever regresses
+// to it fails its cases naming the mechanism (DESIGN translation contract rule 3).
+type realBearings struct{}
 
-func (notImplementedBearings) Digest(Opts) (Digest, error) {
-	return Digest{}, notImplementedErr{"Digest"}
+func (realBearings) Digest(o Opts) (Digest, error) { return bearings.Compose(o) }
+func (realBearings) Acquire(ws, id string, live func(string) bool) (bool, error) {
+	return bearings.Acquire(ws, id, live)
 }
-func (notImplementedBearings) Acquire(string, string, func(string) bool) (bool, error) {
-	return false, notImplementedErr{"Acquire"}
+func (realBearings) DoctorSummary(ws string) (string, error) { return bearings.DoctorSummary(ws) }
+func (realBearings) WakeDrain(epicDir string) ([]wake.Wake, error) {
+	return bearings.WakeDrain(epicDir)
 }
-func (notImplementedBearings) DoctorSummary(string) (string, error) {
-	return "", notImplementedErr{"DoctorSummary"}
+func (realBearings) StoryStates(epicDir string) ([]StoryState, error) {
+	return bearings.StoryStates(epicDir)
 }
-func (notImplementedBearings) WakeDrain(string) ([]wake.Wake, error) {
-	return nil, notImplementedErr{"WakeDrain"}
+func (realBearings) BacklogOpenRows(ws string) (int, error)      { return bearings.BacklogOpenRows(ws) }
+func (realBearings) Notes(ws string, budget int) (string, error) { return bearings.Notes(ws, budget) }
+func (realBearings) Budget(ws string) (BudgetReport, error)      { return bearings.Budget(ws) }
+func (realBearings) Deferred(ws string, wait time.Duration) (string, error) {
+	return bearings.Deferred(ws, wait)
 }
-func (notImplementedBearings) StoryStates(string) ([]StoryState, error) {
-	return nil, notImplementedErr{"StoryStates"}
+func (realBearings) RunBounded(timeout time.Duration, argv ...string) (int, error) {
+	return bearings.RunBounded(timeout, argv...)
 }
-func (notImplementedBearings) BacklogOpenRows(string) (int, error) {
-	return 0, notImplementedErr{"BacklogOpenRows"}
+func (realBearings) Classify(file, line string, now time.Time, horizon bool) (Entry, error) {
+	return bearings.Classify(file, line, now, horizon)
 }
-func (notImplementedBearings) Notes(string, int) (string, error) {
-	return "", notImplementedErr{"Notes"}
-}
-func (notImplementedBearings) Budget(string) (BudgetReport, error) {
-	return BudgetReport{}, notImplementedErr{"Budget"}
-}
-func (notImplementedBearings) Deferred(string, time.Duration) (string, error) {
-	return "", notImplementedErr{"Deferred"}
-}
-func (notImplementedBearings) RunBounded(time.Duration, ...string) (int, error) {
-	return 0, notImplementedErr{"RunBounded"}
+func (realBearings) Curate(ws string, now time.Time, reinforced []string) (Receipt, error) {
+	return bearings.Curate(ws, now, reinforced)
 }
 
-func (notImplementedBearings) Classify(string, string, time.Time, bool) (Entry, error) {
-	return Entry{}, notImplementedErr{"Classify"}
-}
-func (notImplementedBearings) Curate(string, time.Time, []string) (Receipt, error) {
-	return Receipt{}, notImplementedErr{"Curate"}
-}
-
-var impl Bearings = notImplementedBearings{}
+var impl Bearings = realBearings{}
 
 // notImplemented fails the case naming the cox mechanism it pins (DESIGN translation contract rule 3).
 func notImplemented(t *testing.T, mechanism string) {
@@ -381,18 +323,20 @@ func TestPortSessionStart(t *testing.T) {
 	t.Run(s+"context_digest_absent_empty_present", func(t *testing.T) {
 		// fm: tests/fm-session-start.test.sh:722
 		w := newWorld(t)
-		w.write("NOTES.md", "") // present, empty; BACKLOG.md deliberately absent
+		for _, rel := range notesFiles {
+			w.write(rel, "") // present, empty; BACKLOG.md deliberately absent
+		}
 		d := digest(t, mechDigest, w.opts())
-		contains(t, d.Text, "NOTES.md", "digest did not label the notes section")
+		contains(t, d.Text, "cox/notes/", "digest did not label the notes section")
 		contains(t, d.Text, "BACKLOG.md", "digest did not label the backlog section")
 		if n := countLines(d.Text, "ABSENT"); n != 1 {
 			t.Errorf("want exactly 1 ABSENT marker (BACKLOG.md), got %d", n)
 		}
-		contains(t, section(d.Text, "NOTES.md"), "(present, empty)", "empty-but-present NOTES.md not distinguished from ABSENT")
-		w.write("NOTES.md", "- the captain merges; leaders never push main\n")
+		contains(t, section(d.Text, learningsRel), "(present, empty)", "empty-but-present learnings.md not distinguished from ABSENT")
+		w.write(captainRel, "- the captain merges; leaders never push main\n")
 		w.write("BACKLOG.md", "| Id | Source | Gap | Status |\n|---|---|---|---|\n| B-01 | x | a gap | open |\n")
 		d = digest(t, mechDigest, w.opts())
-		contains(t, d.Text, "- the captain merges; leaders never push main", "digest did not print NOTES.md content")
+		contains(t, d.Text, "- the captain merges; leaders never push main", "digest did not print the memory file content")
 		if n := countLines(d.Text, "ABSENT"); n != 0 {
 			t.Errorf("populated files printed %d ABSENT markers", n)
 		}
@@ -485,7 +429,7 @@ func TestPortSessionStart(t *testing.T) {
 		w := newWorld(t)
 		w.story("task-a")
 		w.status("task-a", "working: step 1")
-		w.write("NOTES.md", "Notes that may be truncated away safely.\n")
+		w.write(learningsRel, "Notes that may be truncated away safely.\n")
 		d := digest(t, mechDigest, w.opts())
 		for _, pair := range [][2]string{
 			{hLease, hDoctor}, {hDoctor, hWake}, {hWake, hReadOnce},
@@ -1046,19 +990,42 @@ func longBacklog(open int) string {
 
 // --- notes fixtures ------------------------------------------------------------------------------------------------
 
-const notesHeader = "<!-- memory tiers: see the cox notes contract -->\n"
+const notesHeader = "<!-- memory tiers: see docs/handoff.md -->\n"
 
+// Memory file paths, workspace-relative (captain ruling 2026-09-24; firstmate data/*.md).
+const (
+	captainRel   = "cox/notes/captain.md"
+	sharedRel    = "cox/notes/captain-shared.md"
+	learningsRel = "cox/notes/learnings.md"
+	archiveRel   = "cox/notes/memory-archive.md"
+)
+
+var notesFiles = []string{captainRel, sharedRel, learningsRel}
+
+// notes writes captain.md and learnings.md, each with the one-line header pointer (stow SKILL.md:48).
 func (w *world) notes(captain, learnings []string) {
-	var b strings.Builder
-	b.WriteString(notesHeader + "# Notes\n\n## Captain\n\n")
-	for _, l := range captain {
-		b.WriteString(l + "\n")
+	for _, f := range []struct {
+		rel, title string
+		lines      []string
+	}{{captainRel, "Captain", captain}, {learningsRel, "Learnings", learnings}} {
+		var b strings.Builder
+		b.WriteString(notesHeader + "# " + f.title + "\n\n")
+		for _, l := range f.lines {
+			b.WriteString(l + "\n")
+		}
+		w.write(f.rel, b.String())
 	}
-	b.WriteString("\n## Learnings\n\n")
-	for _, l := range learnings {
-		b.WriteString(l + "\n")
+}
+
+// notesTotal is the reference total: the three memory files' estimates summed (docs/configuration.md:261).
+func (w *world) notesTotal() int {
+	n := 0
+	for _, rel := range notesFiles {
+		if b := w.read(rel); b != "" {
+			n += estimate(b)
+		}
 	}
-	w.write("NOTES.md", b.String())
+	return n
 }
 
 func (w *world) read(rel string) string {
@@ -1101,17 +1068,17 @@ func TestPortStowCascade(t *testing.T) {
 			w.write(notesBudgetRel, "10\n")
 		}
 		over.notes(nil, []string{"- " + strings.Repeat("x", 60) + " <!--a:2026-09-20-->"})
-		within.notes(nil, nil)
-		within.write("NOTES.md", "- ok\n") // 5 bytes -> 2 tokens
+		// within holds only its learnings file (the one-file variant overwrote the whole file here)
+		within.write(learningsRel, "- ok\n") // 5 bytes -> 2 tokens
 		ro := got(impl.Budget(over.ws))(t, mechBudget)
 		rw := got(impl.Budget(within.ws))(t, mechBudget)
 		if ro.Budget != 10 || rw.Budget != 10 {
 			t.Errorf("a workspace did not report its own allowance: %d, %d", ro.Budget, rw.Budget)
 		}
-		if want := estimate(over.read("NOTES.md")); ro.Total != want {
+		if want := over.notesTotal(); ro.Total != want {
 			t.Errorf("over-budget total %d is not its own files (%d)", ro.Total, want)
 		}
-		if want := estimate(within.read("NOTES.md")); rw.Total != want {
+		if want := within.notesTotal(); rw.Total != want {
 			t.Errorf("within-budget total %d is not its own files (%d)", rw.Total, want)
 		}
 		if ro.Status != "over-budget" || rw.Status != "within-budget" {
@@ -1134,9 +1101,9 @@ func TestPortStowCascade(t *testing.T) {
 		if r.After.Status != "within-budget" || r.After.Total >= r.Before.Total {
 			t.Errorf("the after pass did not reflect curation: before=%d after=%d %q", r.Before.Total, r.After.Total, r.After.Status)
 		}
-		for _, sec := range []string{"Captain", "Learnings"} {
+		for _, sec := range []string{"captain.md", "captain-shared.md", "learnings.md"} {
 			if len(r.Actions[sec]) == 0 {
-				t.Errorf("receipt lacks an action for section %s", sec)
+				t.Errorf("receipt lacks an action for file %s", sec)
 			}
 		}
 		if r.Before.Budget != 45 || r.After.Budget != 45 {
@@ -1159,7 +1126,7 @@ func TestPortStowSkill(t *testing.T) {
 			{"- fact <!--P-->", "pinned", ""},
 			{"- fact <!--g-->", "grace", ""},
 		} {
-			e := got(impl.Classify("Learnings", c.line, now, false))(t, mechTiers)
+			e := got(impl.Classify("learnings.md", c.line, now, false))(t, mechTiers)
 			if e.Tier != c.tier || e.Reinforced != c.date {
 				t.Errorf("%q -> %+v, want tier %s date %q", c.line, e, c.tier, c.date)
 			}
@@ -1168,11 +1135,11 @@ func TestPortStowSkill(t *testing.T) {
 
 	t.Run(s+"pass_counter_marker_absent_means_zero", func(t *testing.T) {
 		// fm: .agents/skills/stow/SKILL.md:23
-		e := got(impl.Classify("Learnings", "- fact <!--a:2026-09-20/6-->", now, true))(t, mechTiers)
+		e := got(impl.Classify("learnings.md", "- fact <!--a:2026-09-20/6-->", now, true))(t, mechTiers)
 		if e.Passes != 6 {
 			t.Errorf("counter /6 read as %d", e.Passes)
 		}
-		e = got(impl.Classify("Learnings", "- fact <!--a:2026-09-20-->", now, true))(t, mechTiers)
+		e = got(impl.Classify("learnings.md", "- fact <!--a:2026-09-20-->", now, true))(t, mechTiers)
 		if e.Passes != 0 {
 			t.Errorf("absent /N read as %d, want 0", e.Passes)
 		}
@@ -1180,7 +1147,7 @@ func TestPortStowSkill(t *testing.T) {
 
 	t.Run(s+"pinned_is_exempt_from_decay", func(t *testing.T) {
 		// fm: .agents/skills/stow/SKILL.md:37
-		e := got(impl.Classify("Learnings", "- ancient but pinned <!--P-->", now.AddDate(5, 0, 0), true))(t, mechTiers)
+		e := got(impl.Classify("learnings.md", "- ancient but pinned <!--P-->", now.AddDate(5, 0, 0), true))(t, mechTiers)
 		if e.Stale {
 			t.Error("a pinned entry read a clock")
 		}
@@ -1193,7 +1160,7 @@ func TestPortStowSkill(t *testing.T) {
 			stale bool
 		}{{agingDays - 1, false}, {agingDays, true}} {
 			line := "- fact <!--a:" + now.AddDate(0, 0, -c.age).Format("2006-01-02") + "-->"
-			if e := got(impl.Classify("Learnings", line, now, false))(t, mechTiers); e.Stale != c.stale {
+			if e := got(impl.Classify("learnings.md", line, now, false))(t, mechTiers); e.Stale != c.stale {
 				t.Errorf("aging age %dd: stale=%v, want %v", c.age, e.Stale, c.stale)
 			}
 		}
@@ -1206,7 +1173,7 @@ func TestPortStowSkill(t *testing.T) {
 			stale bool
 		}{{perishableDays - 1, false}, {perishableDays, true}} {
 			line := "- fact until B-10 lands <!--p:" + now.AddDate(0, 0, -c.age).Format("2006-01-02") + "-->"
-			if e := got(impl.Classify("Learnings", line, now, false))(t, mechTiers); e.Stale != c.stale {
+			if e := got(impl.Classify("learnings.md", line, now, false))(t, mechTiers); e.Stale != c.stale {
 				t.Errorf("perishable age %dd: stale=%v, want %v", c.age, e.Stale, c.stale)
 			}
 		}
@@ -1214,11 +1181,11 @@ func TestPortStowSkill(t *testing.T) {
 
 	t.Run(s+"tier_defaults_are_section_scoped", func(t *testing.T) {
 		// fm: .agents/skills/stow/SKILL.md:45
-		if e := got(impl.Classify("Captain", "- the captain merges", now, false))(t, mechTiers); e.Tier != "pinned" {
-			t.Errorf("unmarked Captain entry tier %q, want pinned", e.Tier)
+		if e := got(impl.Classify("captain.md", "- the captain merges", now, false))(t, mechTiers); e.Tier != "pinned" {
+			t.Errorf("unmarked captain.md entry tier %q, want pinned", e.Tier)
 		}
-		if e := got(impl.Classify("Learnings", "- an unmarked learning", now, false))(t, mechTiers); e.Tier != "aging" {
-			t.Errorf("unmarked Learnings entry tier %q, want aging", e.Tier)
+		if e := got(impl.Classify("learnings.md", "- an unmarked learning", now, false))(t, mechTiers); e.Tier != "aging" {
+			t.Errorf("unmarked learnings.md entry tier %q, want aging", e.Tier)
 		}
 	})
 
@@ -1227,18 +1194,20 @@ func TestPortStowSkill(t *testing.T) {
 		w := newWorld(t)
 		w.notes([]string{"- pinned"}, []string{"- fact <!--a:2026-09-20-->"})
 		r := got(impl.Budget(w.ws))(t, mechBudget)
-		if want := estimate(w.read("NOTES.md")); r.Files["NOTES.md"] != want {
-			t.Errorf("NOTES.md estimate %d, want %d (markers and header counted)", r.Files["NOTES.md"], want)
+		for _, rel := range []string{captainRel, learningsRel} {
+			if want := estimate(w.read(rel)); r.Files[rel] != want {
+				t.Errorf("%s estimate %d, want %d (markers and header counted)", rel, r.Files[rel], want)
+			}
 		}
 	})
 
 	t.Run(s+"header_pointer_is_one_line_and_added_once", func(t *testing.T) {
 		// fm: .agents/skills/stow/SKILL.md:48
 		w := newWorld(t)
-		w.write("NOTES.md", "# Notes\n\n## Captain\n\n- pinned\n\n## Learnings\n\n")
+		w.write(captainRel, "# Captain\n\n- pinned\n")
 		got(impl.Curate(w.ws, now, nil))(t, mechCurate)
 		got(impl.Curate(w.ws, now, nil))(t, mechCurate)
-		if n := strings.Count(w.read("NOTES.md"), "memory tiers:"); n != 1 {
+		if n := strings.Count(w.read(captainRel), "memory tiers:"); n != 1 {
 			t.Errorf("header pointer present %d times after two passes, want 1", n)
 		}
 	})
@@ -1248,7 +1217,7 @@ func TestPortStowSkill(t *testing.T) {
 		w := newWorld(t)
 		w.notes([]string{"- the captain merges"}, nil)
 		got(impl.Curate(w.ws, now, nil))(t, mechCurate)
-		contains(t, w.read("NOTES.md"), "- the captain merges\n", "an unmarked pinned-default entry was changed")
+		contains(t, w.read(captainRel), "- the captain merges\n", "an unmarked pinned-default entry was changed")
 	})
 
 	t.Run(s+"pass_horizon_absent_ignores_counters", func(t *testing.T) {
@@ -1256,7 +1225,7 @@ func TestPortStowSkill(t *testing.T) {
 		w := newWorld(t)
 		w.notes(nil, []string{"- fact <!--a:2026-09-20/99-->", "- other <!--a:2026-09-20-->"})
 		got(impl.Curate(w.ws, now, nil))(t, mechCurate)
-		n := w.read("NOTES.md")
+		n := w.read(learningsRel)
 		contains(t, n, "- fact <!--a:2026-09-20/99-->", "a counter was read or advanced without the flag")
 		contains(t, n, "- other <!--a:2026-09-20-->", "a counter was written without the flag")
 	})
@@ -1268,7 +1237,7 @@ func TestPortStowSkill(t *testing.T) {
 			stale  bool
 		}{{agingPasses - 1, false}, {agingPasses, true}} {
 			line := fmt.Sprintf("- fact <!--a:2026-09-20/%d-->", c.passes)
-			if e := got(impl.Classify("Learnings", line, now, true))(t, mechTiers); e.Stale != c.stale {
+			if e := got(impl.Classify("learnings.md", line, now, true))(t, mechTiers); e.Stale != c.stale {
 				t.Errorf("aging %d passes: stale=%v, want %v", c.passes, e.Stale, c.stale)
 			}
 		}
@@ -1281,7 +1250,7 @@ func TestPortStowSkill(t *testing.T) {
 			stale  bool
 		}{{perishablePasses - 1, false}, {perishablePasses, true}} {
 			line := fmt.Sprintf("- fact until B-10 lands <!--p:2026-09-23/%d-->", c.passes)
-			if e := got(impl.Classify("Learnings", line, now, true))(t, mechTiers); e.Stale != c.stale {
+			if e := got(impl.Classify("learnings.md", line, now, true))(t, mechTiers); e.Stale != c.stale {
 				t.Errorf("perishable %d passes: stale=%v, want %v", c.passes, e.Stale, c.stale)
 			}
 		}
@@ -1293,7 +1262,7 @@ func TestPortStowSkill(t *testing.T) {
 		w.write("cox/notes-pass-horizon", "")
 		w.notes(nil, []string{"- exercised <!--a:2026-09-01/7-->", "- idle <!--a:2026-09-20/2-->"})
 		got(impl.Curate(w.ws, now, []string{"- exercised"}))(t, mechCurate)
-		n := w.read("NOTES.md")
+		n := w.read(learningsRel)
 		contains(t, n, "- exercised <!--a:2026-09-24-->", "reinforcement did not refresh the date and clear the counter")
 		contains(t, n, "- idle <!--a:2026-09-20/3-->", "the pass tick did not advance an unreinforced counter")
 	})
@@ -1304,12 +1273,12 @@ func TestPortStowSkill(t *testing.T) {
 		w.write("cox/notes-pass-horizon", "")
 		w.notes(nil, []string{"- idle <!--a:2026-09-20/5-->"})
 		got(impl.Curate(w.ws, now, nil))(t, mechCurate)
-		contains(t, w.read("NOTES.md"), "- idle <!--a:2026-09-20/6-->", "fixture: the opted-in pass did not tick")
+		contains(t, w.read(learningsRel), "- idle <!--a:2026-09-20/6-->", "fixture: the opted-in pass did not tick")
 		if err := os.Remove(w.path("cox/notes-pass-horizon")); err != nil {
 			t.Fatal(err)
 		}
 		got(impl.Curate(w.ws, now, nil))(t, mechCurate)
-		contains(t, w.read("NOTES.md"), "- idle <!--a:2026-09-20/6-->", "a counter was advanced or rewritten after the flag was removed")
+		contains(t, w.read(learningsRel), "- idle <!--a:2026-09-20/6-->", "a counter was advanced or rewritten after the flag was removed")
 	})
 
 	t.Run(s+"rejected_budget_setting_is_an_exception_not_a_default", func(t *testing.T) {
@@ -1330,8 +1299,10 @@ func TestPortStowSkill(t *testing.T) {
 		// fm: .agents/skills/stow/SKILL.md:87
 		w := newWorld(t)
 		got(impl.Curate(w.ws, now, nil))(t, mechCurate)
-		if _, err := os.Stat(w.path("NOTES.md")); !os.IsNotExist(err) {
-			t.Error("a pass manufactured an absent NOTES.md")
+		for _, rel := range notesFiles {
+			if _, err := os.Stat(w.path(rel)); !os.IsNotExist(err) {
+				t.Errorf("a pass manufactured an absent %s", rel)
+			}
 		}
 	})
 
@@ -1340,7 +1311,7 @@ func TestPortStowSkill(t *testing.T) {
 		w := newWorld(t)
 		w.notes(nil, []string{"- a brand new learning"})
 		got(impl.Curate(w.ws, now, []string{"- a brand new learning"}))(t, mechCurate)
-		contains(t, w.read("NOTES.md"), "- a brand new learning <!--a:2026-09-24-->", "a new entry was not stamped")
+		contains(t, w.read(learningsRel), "- a brand new learning <!--a:2026-09-24-->", "a new entry was not stamped")
 	})
 
 	t.Run(s+"pass_tick_increments_unreinforced_counters", func(t *testing.T) {
@@ -1349,7 +1320,7 @@ func TestPortStowSkill(t *testing.T) {
 		w.write("cox/notes-pass-horizon", "")
 		w.notes(nil, []string{"- idle <!--a:2026-09-20-->"})
 		got(impl.Curate(w.ws, now, nil))(t, mechCurate)
-		contains(t, w.read("NOTES.md"), "- idle <!--a:2026-09-20/1-->", "the pass tick did not increment")
+		contains(t, w.read(learningsRel), "- idle <!--a:2026-09-20/1-->", "the pass tick did not increment")
 	})
 
 	t.Run(s+"stale_unreinforced_entry_is_archived_not_kept", func(t *testing.T) {
@@ -1357,10 +1328,10 @@ func TestPortStowSkill(t *testing.T) {
 		w := newWorld(t)
 		w.notes(nil, []string{"- stale learning <!--a:2026-08-01-->", "- stale but re-proved <!--a:2026-08-01-->"})
 		got(impl.Curate(w.ws, now, []string{"- stale but re-proved"}))(t, mechCurate)
-		n := w.read("NOTES.md")
+		n := w.read(learningsRel)
 		notContains(t, n, "- stale learning", "a stale unreinforced entry was kept by inertia")
 		contains(t, n, "- stale but re-proved <!--a:2026-09-24-->", "a re-validated stale entry was not refreshed")
-		contains(t, w.read("NOTES-ARCHIVE.md"), "stale learning", "the stale entry was not archived")
+		contains(t, w.read(archiveRel), "stale learning", "the stale entry was not archived")
 	})
 
 	t.Run(s+"budget_eviction_takes_oldest_reinforced_aging_first", func(t *testing.T) {
@@ -1371,13 +1342,13 @@ func TestPortStowSkill(t *testing.T) {
 			"- newer " + strings.Repeat("n", 90) + " <!--a:2026-09-20-->",
 			"- grace " + strings.Repeat("g", 90), // unmarked legacy: takes <!--g--> this pass, ineligible for eviction
 		})
-		w.write(notesBudgetRel, fmt.Sprintf("%d\n", estimate(w.read("NOTES.md"))-20))
+		w.write(notesBudgetRel, fmt.Sprintf("%d\n", w.notesTotal()-20))
 		r := got(impl.Curate(w.ws, now, nil))(t, mechCurate)
-		n := w.read("NOTES.md")
+		n := w.read(learningsRel)
 		notContains(t, n, "- older", "eviction did not take the oldest-reinforced aging entry first")
 		contains(t, n, "- newer", "eviction took a newer entry before the oldest")
 		contains(t, n, "- grace "+strings.Repeat("g", 90)+" <!--g-->", "eviction took a grace entry, which is ineligible")
-		contains(t, w.read("NOTES-ARCHIVE.md"), "[archived: budget oldest-first]", "eviction reason missing")
+		contains(t, w.read(archiveRel), "[archived: budget oldest-first]", "eviction reason missing")
 		if r.After.Status != "within-budget" {
 			t.Errorf("after status %q", r.After.Status)
 		}
@@ -1389,7 +1360,7 @@ func TestPortStowSkill(t *testing.T) {
 		w.notes([]string{"- pinned " + strings.Repeat("p", 300)}, []string{"- small <!--a:2026-09-20-->"})
 		w.write(notesBudgetRel, "10\n")
 		r := got(impl.Curate(w.ws, now, []string{"- small"}))(t, mechCurate)
-		contains(t, w.read("NOTES.md"), "- small", "eviction archived knowledge that could not close the gap")
+		contains(t, w.read(learningsRel), "- small", "eviction archived knowledge that could not close the gap")
 		if r.Decision == "" {
 			t.Error("the pinned-floor shortfall did not open a captain decision")
 		}
@@ -1402,7 +1373,7 @@ func TestPortStowSkill(t *testing.T) {
 		w.notes([]string{"- pinned " + strings.Repeat("p", 300)}, []string{"- fact <!--P-->"})
 		w.write(notesBudgetRel, "10\n")
 		got(impl.Curate(w.ws, now.AddDate(3, 0, 0), nil))(t, mechCurate)
-		n := w.read("NOTES.md")
+		n := w.read(captainRel) + w.read(learningsRel)
 		contains(t, n, "- pinned "+strings.Repeat("p", 300), "an automatic process moved a pinned Captain entry")
 		contains(t, n, "- fact <!--P-->", "an automatic process moved a pinned Learnings entry")
 	})
@@ -1426,18 +1397,18 @@ func TestPortStowSkill(t *testing.T) {
 		w := newWorld(t)
 		w.notes(nil, []string{"- stale learning <!--a:2026-08-01-->"})
 		got(impl.Curate(w.ws, now, nil))(t, mechCurate)
-		a := w.read("NOTES-ARCHIVE.md")
+		a := w.read(archiveRel)
 		contains(t, a, "## 2026-09-24 notes pass", "archive lacks the dated pass heading")
-		contains(t, a, "- (from NOTES.md#Learnings, tier: aging, reinforced: 2026-08-01) stale learning [archived: unreinforced 54d]", "archive line lacks provenance")
+		contains(t, a, "- (from learnings.md, tier: aging, reinforced: 2026-08-01) stale learning [archived: unreinforced 54d]", "archive line lacks provenance")
 	})
 
 	t.Run(s+"archive_is_never_counted_by_the_budget", func(t *testing.T) {
 		// fm: .agents/skills/stow/SKILL.md:134
 		w := newWorld(t)
 		w.notes(nil, nil)
-		w.write("NOTES-ARCHIVE.md", strings.Repeat("archived line\n", 500))
+		w.write(archiveRel, strings.Repeat("archived line\n", 500))
 		r := got(impl.Budget(w.ws))(t, mechBudget)
-		if _, ok := r.Files["NOTES-ARCHIVE.md"]; ok || r.Total != estimate(w.read("NOTES.md")) {
+		if _, ok := r.Files[archiveRel]; ok || r.Total != w.notesTotal() {
 			t.Errorf("the cold tier was counted: %+v", r)
 		}
 	})
@@ -1448,7 +1419,7 @@ func TestPortStowSkill(t *testing.T) {
 		w.write("cox/notes-pass-horizon", "")
 		w.notes(nil, []string{"- by passes <!--a:2026-09-20/9-->", "- by days <!--a:2026-08-01/2-->"})
 		got(impl.Curate(w.ws, now, nil))(t, mechCurate)
-		a := w.read("NOTES-ARCHIVE.md")
+		a := w.read(archiveRel)
 		contains(t, a, "by passes [archived: unreinforced 10p]", "a pass-horizon archival lacks its counter reason")
 		contains(t, a, "by days [archived: unreinforced 54d]", "a wall-clock archival carried the counter")
 	})
@@ -1458,7 +1429,7 @@ func TestPortStowSkill(t *testing.T) {
 		w := newWorld(t)
 		w.notes([]string{"- unmarked preference"}, nil)
 		got(impl.Curate(w.ws, now.AddDate(1, 0, 0), nil))(t, mechCurate)
-		contains(t, w.read("NOTES.md"), "- unmarked preference\n", "an unmarked Captain entry was migrated or aged")
+		contains(t, w.read(captainRel), "- unmarked preference\n", "an unmarked captain.md entry was migrated or aged")
 	})
 
 	t.Run(s+"unevidenced_unmarked_learning_consumes_one_grace_cycle", func(t *testing.T) {
@@ -1466,9 +1437,9 @@ func TestPortStowSkill(t *testing.T) {
 		w := newWorld(t)
 		w.notes(nil, []string{"- legacy learning"})
 		got(impl.Curate(w.ws, now, nil))(t, mechCurate)
-		n := w.read("NOTES.md")
+		n := w.read(learningsRel)
 		contains(t, n, "- legacy learning <!--g-->", "an unevidenced legacy learning did not take the grace marker")
-		if strings.Contains(w.read("NOTES-ARCHIVE.md"), "legacy learning") {
+		if strings.Contains(w.read(archiveRel), "legacy learning") {
 			t.Error("a legacy learning was archived in its first grace pass")
 		}
 	})
@@ -1478,17 +1449,17 @@ func TestPortStowSkill(t *testing.T) {
 		w := newWorld(t)
 		w.notes(nil, []string{"- confirmed legacy <!--g-->", "- unconfirmed legacy <!--g-->"})
 		got(impl.Curate(w.ws, now, []string{"- confirmed legacy"}))(t, mechCurate)
-		contains(t, w.read("NOTES.md"), "- confirmed legacy <!--a:2026-09-24-->", "a confirmed grace entry did not get its dated marker")
-		contains(t, w.read("NOTES-ARCHIVE.md"), "unconfirmed legacy [archived: legacy-unvalidated]", "an unconfirmed grace entry was not archived")
+		contains(t, w.read(learningsRel), "- confirmed legacy <!--a:2026-09-24-->", "a confirmed grace entry did not get its dated marker")
+		contains(t, w.read(archiveRel), "unconfirmed legacy [archived: legacy-unvalidated]", "an unconfirmed grace entry was not archived")
 	})
 
 	t.Run(s+"receipt_reports_budget_before_and_after", func(t *testing.T) {
 		// fm: .agents/skills/stow/SKILL.md:262
 		w := newWorld(t)
 		w.notes([]string{"- pref"}, []string{"- fact <!--a:2026-09-20-->"})
-		before := estimate(w.read("NOTES.md"))
+		before := w.notesTotal()
 		r := got(impl.Curate(w.ws, now, []string{"- fact"}))(t, mechCurate)
-		if r.Before.Total != before || r.After.Total != estimate(w.read("NOTES.md")) || r.Before.Budget != defaultNotesBudget {
+		if r.Before.Total != before || r.After.Total != w.notesTotal() || r.Before.Budget != defaultNotesBudget {
 			t.Errorf("receipt budget facts wrong: %+v", r)
 		}
 	})
@@ -1506,7 +1477,7 @@ func TestPortStowSkill(t *testing.T) {
 				}
 			}
 		}
-		if acts := r.Actions["Learnings"]; len(acts) == 0 || acts[0] != "rewritten" {
+		if acts := r.Actions["learnings.md"]; len(acts) == 0 || acts[0] != "rewritten" {
 			t.Errorf("adding a grace marker must be 'rewritten', got %v", acts)
 		}
 	})
@@ -1653,7 +1624,7 @@ func TestPortConfigurationDoc(t *testing.T) {
 		d := digest(t, mechDigest, w.opts())
 		nt := between(d.Text, hNotes, hNext)
 		contains(t, nt, "- review before merge", "captain preferences missing from the digest")
-		if strings.Index(nt, "## Captain") > strings.Index(nt, "## Learnings") {
+		if strings.Index(nt, captainRel) > strings.Index(nt, learningsRel) {
 			t.Error("captain preferences must print before learnings")
 		}
 	})
@@ -1667,7 +1638,7 @@ func TestPortConfigurationDoc(t *testing.T) {
 		for _, n := range r.Files {
 			sum += n
 		}
-		if r.Total != sum || r.Total != estimate(w.read("NOTES.md")) {
+		if r.Total != sum || r.Total != w.notesTotal() {
 			t.Errorf("total %d is not the sum of the memory files (%d)", r.Total, sum)
 		}
 	})
@@ -1746,23 +1717,23 @@ func TestPortConfigurationDoc(t *testing.T) {
 		// fm: docs/configuration.md:267
 		w := newWorld(t)
 		r := got(impl.Budget(w.ws))(t, mechBudget)
-		if _, ok := r.Files["NOTES.md"]; ok || r.Total != 0 {
-			t.Errorf("an absent NOTES.md was counted: %+v", r)
+		if _, ok := r.Files[learningsRel]; ok || r.Total != 0 {
+			t.Errorf("an absent learnings.md was counted: %+v", r)
 		}
-		w.write("NOTES.md", "")
+		w.write(learningsRel, "")
 		r = got(impl.Budget(w.ws))(t, mechBudget)
-		if n, ok := r.Files["NOTES.md"]; !ok || n != 0 {
-			t.Errorf("an empty NOTES.md must be present with 0, got %v %v", n, ok)
+		if n, ok := r.Files[learningsRel]; !ok || n != 0 {
+			t.Errorf("an empty learnings.md must be present with 0, got %v %v", n, ok)
 		}
 	})
 
 	t.Run(s+"estimate_is_ceil_utf8_bytes_over_3_per_file", func(t *testing.T) {
 		// fm: docs/configuration.md:268
 		w := newWorld(t)
-		w.write("NOTES.md", "- é\n") // 5 UTF-8 bytes, 4 runes
+		w.write(learningsRel, "- é\n") // 5 UTF-8 bytes, 4 runes
 		r := got(impl.Budget(w.ws))(t, mechBudget)
-		if r.Files["NOTES.md"] != 2 {
-			t.Errorf("estimate %d, want ceil(5/3) = 2 (bytes, not runes)", r.Files["NOTES.md"])
+		if r.Files[learningsRel] != 2 {
+			t.Errorf("estimate %d, want ceil(5/3) = 2 (bytes, not runes)", r.Files[learningsRel])
 		}
 	})
 }
