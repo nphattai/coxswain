@@ -86,6 +86,12 @@ func tryLock(path string, beforeSteal func(stalePid int) error) (recovered int, 
 		return 0, err
 	}
 	if err := lockCreate(path); err == nil {
+		// fm_lock_claim_blocked_by_steal: a claim published while another process holds the steal mutex backs off, so
+		// the active stealer's recheck-then-replace can never swallow it.
+		if sp, _, ok := lockHolder(path + ".steal"); ok && sp != os.Getpid() && (sp > 0 && processAlive(sp) || lockMidAcquireFresh(path+".steal", sp)) {
+			releaseLock(path)
+			return 0, errLockHeld{sp}
+		}
 		return 0, nil
 	} else if !errors.Is(err, os.ErrExist) {
 		return 0, err

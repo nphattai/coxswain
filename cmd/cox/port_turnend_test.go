@@ -20,6 +20,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -312,16 +313,27 @@ func fmBlockCount(epic string) int {
 	return n
 }
 
-// fmHealthy makes epic's watcher live (this test process holds watch.pid) with a fresh beacon.
+// fmHealthy makes epic's watcher live (this test process holds watch.pid, its identity recorded like firstmate's
+// record_watcher_lock) with a fresh beacon.
 func fmHealthy(t *testing.T, epic string) {
 	t.Helper()
-	fmWatchPid(t, epic, os.Getpid())
+	fmRecordWatcher(t, epic, os.Getpid())
 	fmBeacon(t, epic, 0)
+}
+
+// fmRecordWatcher is record_watcher_lock: watch.pid names pid and the identity sidecar records its identity.
+func fmRecordWatcher(t *testing.T, epic string, pid int) {
+	t.Helper()
+	fmWatchPid(t, epic, pid)
+	if err := watch.RecordIdentity(epic, pid); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // fmDead makes epic's watcher dead (a reaped pid) with no beacon.
 func fmDead(t *testing.T, epic string) {
 	t.Helper()
+	_ = os.Remove(watch.IdentityPath(epic))
 	fmWatchPid(t, epic, fmDeadPid(t))
 	_ = os.Remove(filepath.Join(epic, controlDir, "watch", "lasttick"))
 }
@@ -1601,6 +1613,37 @@ func TestPortClaimChild(t *testing.T) {
 	release()
 }
 
+// fmGoCase runs one test of another package (the package that owns the mechanism) by name and fails unless it passed.
+func fmGoCase(t *testing.T, pkg, run string) {
+	t.Helper()
+	cmd := exec.Command("go", "test", "-count=1", "-run", run, pkg)
+	cmd.Dir = filepath.Join("..", "..")
+	out, err := cmd.CombinedOutput()
+	if err != nil || !strings.Contains(string(out), "ok ") {
+		t.Fatalf("%s %s did not pass: %v\n%s", pkg, run, err, out)
+	}
+}
+
+var fmCoxBinPath string
+
+// fmCoxBin builds the real cox binary once per test binary.
+func fmCoxBin(t *testing.T) string {
+	t.Helper()
+	if fmCoxBinPath != "" {
+		return fmCoxBinPath
+	}
+	dir, err := os.MkdirTemp("", "fm-cox-bin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Join(dir, "cox")
+	if out, err := exec.Command("go", "build", "-o", bin, ".").CombinedOutput(); err != nil {
+		t.Fatalf("build cox: %v\n%s", err, out)
+	}
+	fmCoxBinPath = bin
+	return bin
+}
+
 // TestPortAutoarmChild is not a translated case: it is the separate auto-arm process the concurrent-recovery case
 // runs (firstmate runs the auto-arm and the guard as two processes; cox's locks key on the pid). Without
 // FM_AUTOARM_EPIC it does nothing.
@@ -1793,7 +1836,23 @@ func fmWatcherLock(t *testing.T) {
 
 	// fm: tests/fm-watcher-lock.test.sh:333
 	t.Run("lock_live_steal_mutex_is_not_reclaimed", func(t *testing.T) {
-		notImplemented(t, "atomic watcher lock: mkdir/owner-dir claim with a steal mutex (claimWatchPid is read-check-write)")
+		// A dead-pid watcher lock whose steal mutex a live stealer holds: the acquirer must neither steal the lock nor
+		// reclaim the live mutex.
+		epic := fmEpic(t)
+		dead := fmDeadPid(t)
+		fmWatchPid(t, epic, dead)
+		stealer := fmLiveChild(t)
+		mustWrite(t, watchPidPath(epic)+".steal", fmt.Sprintf("%d\n", stealer))
+		if release, err := claimWatchPid(epic, false); err == nil {
+			release()
+			t.Fatal("a stale lock was stolen while a live stealer held the mutex")
+		}
+		if got := readPid(watchPidPath(epic)); got != dead {
+			t.Fatalf("the primary lock changed while the live steal mutex was held: %d", got)
+		}
+		if got, _, _ := lockHolder(watchPidPath(epic) + ".steal"); got != stealer {
+			t.Fatalf("the live steal mutex owner changed: %d", got)
+		}
 	})
 
 	// fm: tests/fm-watcher-lock.test.sh:373
@@ -1828,12 +1887,48 @@ func fmWatcherLock(t *testing.T) {
 
 	// fm: tests/fm-watcher-lock.test.sh:422
 	t.Run("lock_late_claim_loses_after_recreate", func(t *testing.T) {
-		notImplemented(t, "atomic watcher lock: mkdir/owner-dir claim with a steal mutex (claimWatchPid is read-check-write)")
+		// Firstmate's original claimant publishes its owner, stalls past the stale threshold, and loses to an acquirer
+		// that recreated the lock; its late claim must not win or change the recreated lock. Cox's claim is one atomic
+		// link of a fully written owner file, so the stalled claimant's late publication is that link.
+		epic := fmEpic(t)
+		path := watchPidPath(epic)
+		owner := path + ".owner.late"
+		mustWrite(t, owner, "99999999\n") // the stalled claimant's prepared owner
+		mustWrite(t, path, "")            // its published-but-unwritten claim, stale
+		fmAge(t, path)
+		release, err := claimWatchPid(epic, false)
+		if err != nil {
+			t.Fatalf("the acquirer could not reclaim the stale mid-acquire lock: %v", err)
+		}
+		defer release()
+		before := readPid(path)
+		if err := os.Link(owner, path); err == nil {
+			t.Fatal("the late original claimant succeeded after lock recreation")
+		}
+		if before != os.Getpid() || readPid(path) != before {
+			t.Fatalf("the late claim changed the recreated lock pid: before %d after %d", before, readPid(path))
+		}
 	})
 
 	// fm: tests/fm-watcher-lock.test.sh:454
 	t.Run("lock_paused_mid_acquire_claim_fails_during_steal", func(t *testing.T) {
-		notImplemented(t, "atomic watcher lock: mkdir/owner-dir claim with a steal mutex (claimWatchPid is read-check-write)")
+		// A claimant that publishes while a stealer holds the steal mutex backs off, and the stealer then claims. The
+		// claimant is a separate process (TestPortClaimChild); this process is the stealer.
+		epic := fmEpic(t)
+		steal := watchPidPath(epic) + ".steal"
+		if _, err := tryLock(steal, nil); err != nil {
+			t.Fatal(err)
+		}
+		if won := fmClaimRace(t, epic, 1); won != 0 {
+			t.Fatal("a paused claimant succeeded while the steal mutex was held")
+		}
+		if err := lockCreate(watchPidPath(epic)); err != nil {
+			t.Fatalf("the stealer could not claim after the paused claimant backed off: %v", err)
+		}
+		releaseLock(steal)
+		if readPid(watchPidPath(epic)) != os.Getpid() {
+			t.Fatal("the stealer's claim did not record its pid")
+		}
 	})
 
 	// fm: tests/fm-watcher-lock.test.sh:483
@@ -1852,10 +1947,15 @@ func fmWatcherLock(t *testing.T) {
 
 	// fm: tests/fm-watcher-lock.test.sh:514
 	t.Run("watch_restart_attaches_to_healthy_peer", func(t *testing.T) {
-		// --replace over a verified healthy (TERM-resistant) peer attaches to it instead of fighting it.
+		// --replace over a verified healthy (identity-recorded, fresh-beacon, TERM-resistant) peer attaches to it instead
+		// of fighting it (firstmate records the peer's pid-identity in its lock).
 		epic := fmEpic(t)
-		pid, exited := fmLiveChildExit(t, `trap "" TERM; while :; do sleep 1; done`)
-		fmWatchPid(t, epic, pid)
+		ready := filepath.Join(t.TempDir(), "ready")
+		pid, exited := fmLiveChildExit(t, `trap "" TERM; touch `+ready+`; while :; do sleep 1; done`)
+		for i := 0; i < 50 && !fmExists(ready); i++ {
+			time.Sleep(100 * time.Millisecond)
+		}
+		fmRecordWatcher(t, epic, pid)
 		fmBeacon(t, epic, 0)
 		release, err := claimWatchPid(epic, true)
 		if err == nil {
@@ -1984,12 +2084,22 @@ func fmWatcherLock(t *testing.T) {
 
 	// fm: tests/fm-watcher-lock.test.sh:1005
 	t.Run("pid_identity_is_locale_invariant", func(t *testing.T) {
-		notImplemented(t, "watcher process identity: watch.pid records pid + start time/cmdline so pid reuse is detectable")
+		// The identity primitive is watch.ProcIdentity (w2-watch's package); its suite pins this case with a fake ps that
+		// logs the locale it runs under. Run it there by name, plus the real ps fallback under a leaked LC_TIME here.
+		fmGoCase(t, "./internal/watch", "^TestProcIdentityPsFallbackIsLocaleInvariant$")
+		pid := fmLiveChild(t)
+		base := fmIdentity(t, pid)
+		t.Setenv("LC_TIME", "ko_KR.UTF-8")
+		t.Setenv("LC_ALL", "ko_KR.UTF-8")
+		if got := fmIdentity(t, pid); got != base {
+			t.Fatalf("the identity varied with the exported locale: %q vs %q", got, base)
+		}
 	})
 
 	// fm: tests/fm-watcher-lock.test.sh:1071
 	t.Run("proc_pid_identity_ignores_wall_clock_and_detects_pid_reuse", func(t *testing.T) {
-		notImplemented(t, "watcher process identity: watch.pid records pid + start time/cmdline so pid reuse is detectable")
+		// Needs a fake /proc root, which only watch.ProcIdentity's own package can inject: run its translation by name.
+		fmGoCase(t, "./internal/watch", "^TestProcIdentityProcIgnoresWallClockAndDetectsReuse$")
 	})
 
 	// fm: tests/fm-watcher-lock.test.sh:1102
@@ -2284,11 +2394,11 @@ func fmDocTurnendGuard(t *testing.T) {
 		// never drop below a floor with headroom (firstmate: a flat 300s default for the strict guard, max(300s, poll+60s)
 		// where the grace derives from the poll). A live watcher whose beacon is poll + 59s old (a slow pass) is healthy.
 		epic := fmEpic(t, "s1")
-		fmWatchPid(t, epic, os.Getpid())
+		fmRecordWatcher(t, epic, os.Getpid())
 		fmBeacon(t, epic, watch.DefaultPoll+59*time.Second)
 		if !watcherHealthy(epic, time.Now()) {
-			t.Fatalf("a live watcher whose beacon is %s old (poll %s + a 59s pass) must still read healthy; cox's grace is 3 x poll = %s",
-				watch.DefaultPoll+59*time.Second, watch.DefaultPoll, 3*watch.DefaultPoll)
+			t.Fatalf("a live watcher whose beacon is %s old (poll %s + a 59s pass) must still read healthy; the grace is max(300s, poll+60s) = %s",
+				watch.DefaultPoll+59*time.Second, watch.DefaultPoll, watch.DefaultGrace)
 		}
 	})
 
@@ -2374,8 +2484,40 @@ func fmDocWatcherContinuity(t *testing.T) {
 
 	// fm: docs/watcher-continuity.md:117
 	t.Run("watcher_hup_runs_exit_cleanup", func(t *testing.T) {
-		// HUP and TERM both run the watcher's exit cleanup (pidfile release), including mid-poll. cmdWatch notifies only
-		// SIGTERM and SIGINT, so a HUP kills it without releasing .cox/watch.pid.
-		notImplemented(t, "watcher HUP handling: SIGHUP must run the same pidfile release as TERM/INT")
+		// A real `cox watch` (a failing fake orca on PATH, so passes are cheap) is sent HUP mid-poll: the exit cleanup
+		// must release its watch.pid, exactly as TERM does.
+		for _, sig := range []syscall.Signal{syscall.SIGHUP, syscall.SIGTERM} {
+			epic := fmEpic(t, "s1")
+			bin := t.TempDir()
+			mustWrite(t, filepath.Join(bin, "orca"), "#!/bin/sh\necho '{\"ok\":false,\"error\":{\"message\":\"fake orca\"}}'\nexit 1\n")
+			if err := os.Chmod(filepath.Join(bin, "orca"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			cmd := exec.Command(fmCoxBin(t), "watch", "--epic", epic)
+			cmd.Env = append(os.Environ(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"), "ORCA_RUN_ID=run-fake")
+			if err := cmd.Start(); err != nil {
+				t.Fatal(err)
+			}
+			done := make(chan struct{})
+			go func() { _ = cmd.Wait(); close(done) }()
+			for i := 0; i < 100 && readPid(watchPidPath(epic)) != cmd.Process.Pid; i++ {
+				time.Sleep(50 * time.Millisecond)
+			}
+			if readPid(watchPidPath(epic)) != cmd.Process.Pid {
+				_ = cmd.Process.Kill()
+				t.Fatalf("%v: the watcher never claimed watch.pid", sig)
+			}
+			time.Sleep(300 * time.Millisecond) // inside the poll wait
+			_ = cmd.Process.Signal(sig)
+			select {
+			case <-done:
+			case <-time.After(10 * time.Second):
+				_ = cmd.Process.Kill()
+				t.Fatalf("%v: the watcher did not exit", sig)
+			}
+			if fmExists(watchPidPath(epic)) {
+				t.Fatalf("%v must run the watcher's exit cleanup (watch.pid released)", sig)
+			}
+		}
 	})
 }

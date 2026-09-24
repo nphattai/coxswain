@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/nphattai/coxswain/internal/watch"
 	"os"
 	"os/exec"
 	"strconv"
@@ -36,6 +37,10 @@ func TestClaimWatchPid(t *testing.T) {
 	// Reap the child once it is signaled, so it does not linger as a zombie that signal-0 still reports alive.
 	go func() { _ = sleep.Wait() }()
 	if err := writeCoxFile(epic, "watch.pid", strconv.Itoa(sleep.Process.Pid)); err != nil {
+		t.Fatal(err)
+	}
+	// It is this epic's watcher: its identity is recorded, so --replace may signal it (a bare pid never is).
+	if err := watch.RecordIdentity(epic, sleep.Process.Pid); err != nil {
 		t.Fatal(err)
 	}
 

@@ -18,6 +18,7 @@ import (
 	"github.com/nphattai/coxswain/internal/protocol/checkpoint"
 	"github.com/nphattai/coxswain/internal/state"
 	"github.com/nphattai/coxswain/internal/wake"
+	"github.com/nphattai/coxswain/internal/watch"
 	"github.com/nphattai/coxswain/internal/workspace"
 )
 
@@ -508,6 +509,9 @@ func TestGuardHealthyWatcherProceeds(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(watchPidPath(epic), []byte(strconv.Itoa(os.Getpid())), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := watch.RecordIdentity(epic, os.Getpid()); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(epic, controlDir, "watch", "lasttick"), []byte(time.Now().UTC().Format(time.RFC3339)), 0o644); err != nil {

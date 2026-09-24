@@ -705,20 +705,11 @@ func launchWatcher(epicDir string) error {
 	}
 }
 
-// watcherHealthy reports whether the epic's watcher is alive AND fresh: its watch.pid names a live process and
-// watch/lasttick was written within 3 tick intervals (watch.DefaultPoll, the same constant the loop uses). A live
-// watcher whose beacon has gone stale is unhealthy (wedged), exactly as a dead one is (item 1).
-func watcherHealthy(epicDir string, now time.Time) bool {
-	pid := readPid(watchPidPath(epicDir))
-	if pid <= 0 || !processAlive(pid) {
-		return false
-	}
-	info, err := os.Stat(filepath.Join(epicDir, controlDir, "watch", "lasttick"))
-	if err != nil {
-		return false
-	}
-	return now.Sub(info.ModTime()) < 3*watch.DefaultPoll
-}
+// watcherHealthy is firstmate's PID-strict fm_watcher_healthy: watch.pid names a live process whose identity matches
+// the .cox/watch.identity sidecar (an identityless or reused pid is not a watcher) and watch/lasttick is younger than
+// the poll-derived grace max(300s, poll+60s) (fm_poll_derived_grace; supersedes ADR 0014's 3 x poll). A live watcher
+// whose beacon has gone stale is wedged, exactly as a dead one is.
+func watcherHealthy(epicDir string, now time.Time) bool { return watch.Healthy(epicDir, now, 0) }
 
 // rewakeRepairMsg is the reopen text naming every blocked epic and the exact repair command.
 func rewakeRepairMsg(blocked []string) string {

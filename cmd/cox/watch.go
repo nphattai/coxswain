@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/nphattai/coxswain/internal/wake"
 	"github.com/nphattai/coxswain/internal/watch"
 )
 
@@ -85,32 +87,82 @@ func agoStr(d time.Duration) string {
 	}
 }
 
-// claimWatchPid writes this process's pid to <epic>/.cox/watch.pid. It refuses (naming the pid) when the file already
-// names another live process, unless replace is set, which SIGTERMs that process and waits for it to exit first. The
-// returned release removes the pidfile only while it still holds our pid, so a watcher that was itself replaced does
-// not delete its successor's file.
-//
-// ponytail: read-check-write is not atomic across two watchers starting at the same instant; the dispatch-side
-// startWatcher already gates on a live pidfile, so the residual race is a redundant watcher that this guard rejects on
-// the next start. Add a lockfile only if simultaneous cold starts prove real.
+// watcherReplaceWait bounds how long --replace waits for a TERMed identity-matched watcher to exit before it attaches
+// to a verified healthy survivor (fm-watch-arm.sh --restart: 50 x 0.1s).
+var watcherReplaceWait = 5 * time.Second
+
+// claimWatchPid claims <epic>/.cox/watch.pid for this process (fm-watch.sh's singleton lock acquisition, on the file
+// primitive tryLock): exactly one of any number of concurrent starts wins, a live holder is refused (naming its pid and,
+// when its beacon went stale, saying so), an empty mid-acquire pidfile keeps its grace, and a dead holder is reclaimed
+// under the steal mutex after the downtime is published. The winner records its process identity in the
+// .cox/watch.identity sidecar. With replace (fm-watch-arm.sh --restart) it first stops ONLY a holder whose recorded
+// identity still matches (TERM, bounded wait); a reused or identityless pid is never signalled - its lock is reclaimed
+// as stale - and a verified healthy holder that survives the TERM is attached to: the returned release is a no-op and
+// watch.pid keeps naming the peer. The release removes the pidfile and sidecar only while they still name this process.
 func claimWatchPid(epicDir string, replace bool) (func(), error) {
 	path := watchPidPath(epicDir)
-	if pid := readPid(path); pid > 0 && pid != os.Getpid() && processAlive(pid) {
-		if !replace {
-			return nil, fmt.Errorf("watcher already running (pid %d); use --replace to take over", pid)
+	if replace {
+		pid, identity := watch.ReadPid(epicDir)
+		if pid > 0 && pid != os.Getpid() && processAlive(pid) {
+			if identity != "" && identityOf(pid) == identity {
+				if !termAndWait(pid, watcherReplaceWait) {
+					if watch.Healthy(epicDir, time.Now(), 0) {
+						return func() {}, nil // attached to the verified healthy peer
+					}
+					if err := killAndWait(pid, 0); err != nil && processAlive(pid) {
+						return nil, err
+					}
+				}
+			} else if err := clearStaleWatchLock(epicDir, pid); err != nil {
+				return nil, err
+			}
 		}
-		if err := killAndWait(pid, 5*time.Second); err != nil {
+	}
+	if _, err := tryLock(path, func(stale int) error { return publishWatcherDowntime(epicDir, stale) }); err != nil {
+		var held errLockHeld
+		if !errors.As(err, &held) {
 			return nil, err
 		}
+		if held.pid > 0 {
+			if age := pathAge(beaconPath(epicDir)); exists(beaconPath(epicDir)) && age >= watch.DefaultGrace {
+				return nil, fmt.Errorf("watcher: lock held by live pid %d but heartbeat is stale for %ds (>%ds); inspect or stop that watcher before re-arming (cox watch --epic %s --replace)",
+					held.pid, int(age.Seconds()), int(watch.DefaultGrace.Seconds()), epicDir)
+			} else if !exists(beaconPath(epicDir)) && pathAge(path) >= watch.DefaultGrace {
+				return nil, fmt.Errorf("watcher: lock held by live pid %d but no heartbeat exists; inspect or stop that watcher before re-arming (cox watch --epic %s --replace)", held.pid, epicDir)
+			}
+			return nil, fmt.Errorf("watcher already running (pid %d); use --replace to take over", held.pid)
+		}
+		return nil, fmt.Errorf("watcher already running (a start is mid-acquire); use --replace to take over")
 	}
-	if err := writeCoxFile(epicDir, "watch.pid", strconv.Itoa(os.Getpid())); err != nil {
-		return nil, err
-	}
+	_ = watch.RecordIdentity(epicDir, os.Getpid())
 	return func() {
 		if readPid(path) == os.Getpid() {
+			_ = os.Remove(watch.IdentityPath(epicDir))
 			_ = os.Remove(path)
 		}
 	}, nil
+}
+
+// clearStaleWatchLock is fm-watch-arm.sh clear_stale_recorded_watcher_lock: a live pid whose recorded identity does not
+// verify is not this epic's watcher (pid reuse) - publish the downtime, then remove its lock without ever signalling it.
+func clearStaleWatchLock(epicDir string, pid int) error {
+	if err := publishWatcherDowntime(epicDir, pid); err != nil {
+		return fmt.Errorf("watcher: FAILED - stale watcher recovery state could not be persisted: %w", err)
+	}
+	if readPid(watchPidPath(epicDir)) == pid {
+		_ = os.Remove(watch.IdentityPath(epicDir))
+		_ = os.Remove(watchPidPath(epicDir))
+	}
+	return nil
+}
+
+// publishWatcherDowntime records that the epic's watcher was down (pid is the stale holder) before its lock is cleared,
+// so the wakes queued during the downtime are re-surfaced to the leader (fm-watch.sh resurface_after_downtime,
+// "check: rearm-resurface").
+func publishWatcherDowntime(epicDir string, pid int) error {
+	_, err := wake.Append(epicDir, wake.Wake{Epic: filepath.Base(epicDir), Kind: wake.KindStatus,
+		Note: fmt.Sprintf("check: rearm-resurface - the watcher (pid %d) was down; drain the wakes queued during the downtime", pid)})
+	return err
 }
 
 // readPid reads a pidfile and returns the pid, or 0 when the file is absent or unparsable.
@@ -122,21 +174,37 @@ func readPid(path string) int {
 	return pid
 }
 
-// killAndWait sends SIGTERM to pid and polls until it exits or timeout elapses.
-func killAndWait(pid int, timeout time.Duration) error {
-	p, err := os.FindProcess(pid)
-	if err != nil {
-		return fmt.Errorf("replace watcher pid %d: %w", pid, err)
+// termAndWait sends SIGTERM to pid and reports whether it exited within timeout.
+func termAndWait(pid int, timeout time.Duration) bool {
+	if p, err := os.FindProcess(pid); err == nil {
+		_ = p.Signal(syscall.SIGTERM)
 	}
-	_ = p.Signal(syscall.SIGTERM)
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
+	for deadline := time.Now().Add(timeout); ; time.Sleep(50 * time.Millisecond) {
+		if !processAlive(pid) {
+			return true
+		}
+		if !time.Now().Before(deadline) {
+			return false
+		}
+	}
+}
+
+// killAndWait stops pid within a bounded time: SIGTERM and up to timeout for a clean exit, then SIGKILL and a short
+// bounded wait, so a stopped or TERM-resistant process never hangs the caller past its deadline (firstmate
+// wait_for_exit: "survived TERM; sending KILL"). It errors only when the process is still alive after the KILL.
+func killAndWait(pid int, timeout time.Duration) error {
+	if termAndWait(pid, timeout) {
+		return nil
+	}
+	if p, err := os.FindProcess(pid); err == nil {
+		_ = p.Signal(syscall.SIGKILL)
+	}
+	for end := time.Now().Add(time.Second); time.Now().Before(end); time.Sleep(20 * time.Millisecond) {
 		if !processAlive(pid) {
 			return nil
 		}
-		time.Sleep(50 * time.Millisecond)
 	}
-	return fmt.Errorf("watcher pid %d did not exit within %s", pid, timeout)
+	return fmt.Errorf("watcher pid %d survived TERM and KILL", pid)
 }
 
 // cmdWatch implements `cox watch --epic <dir> [--once] [--replace]`. It builds a watcher over the epic's Orca run,
@@ -181,13 +249,25 @@ func cmdWatch(args []string) int {
 		return fail("%v", err)
 	}
 	defer release()
+	if pid := readPid(watchPidPath(*epicDir)); pid != os.Getpid() {
+		fmt.Printf("watcher: attached pid=%d (a verified healthy watcher survived the replace)\n", pid)
+		return 0
+	}
 	stop := make(chan struct{})
 	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, syscall.SIGTERM, syscall.SIGINT)
+	signal.Notify(sig, watch.ExitSignals...) // HUP, INT and TERM all run the pidfile release (docs/watcher-continuity.md:117)
 	go func() {
 		<-sig
 		close(stop)
+		// Firstmate's watcher dies on HUP/TERM at once, running its exit cleanup even mid-poll: give the pass in flight a
+		// short grace to finish, then release the pidfile and exit without waiting for it.
+		time.Sleep(watcherStopGrace)
+		release()
+		os.Exit(0)
 	}()
 	w.Run(stop, 5*time.Second)
 	return 0
 }
+
+// watcherStopGrace bounds how long a signalled watcher lets its in-flight pass finish before it exits anyway.
+var watcherStopGrace = 2 * time.Second
