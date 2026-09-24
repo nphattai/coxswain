@@ -145,8 +145,6 @@ func TestFM(t *testing.T) {
 	t.Run("doc-watcher-continuity", fmDocWatcherContinuity)
 }
 
-func fmGuardStaleBanner(t *testing.T)     {}
-func fmWatchCheckpoint(t *testing.T)      {}
 func fmWatcherLock(t *testing.T)          {}
 func fmWatchArm(t *testing.T)             {}
 func fmDocTurnendGuard(t *testing.T)      {}
@@ -268,8 +266,6 @@ func fmWantOpenCount(t *testing.T, out string, n int) {
 		t.Fatalf("block must name the %d open story(ies) left unsupervised, got %q", n, out)
 	}
 }
-
-const fmTG = "tests/fm-turnend-guard.test.sh"
 
 // fmTurnendGuard translates tests/fm-turnend-guard.test.sh. Firstmate's predicate layer (fm-supervision-lib) maps to
 // watcherHealthy + watch.OpenStories; its hook layer (fm-turnend-guard.sh) maps to the stop-rewake guard
@@ -872,5 +868,344 @@ func fmTurnendGuard(t *testing.T) {
 		fmWatchPid(t, epic, os.Getpid())
 		fmBeacon(t, epic, 400*time.Second)
 		fmWantBlock(t, fmGuard(t, epic, launchWatcher, fmBlocks(t)), epic, "400s-old beacon")
+	})
+}
+
+// fmBanner is cox's pull-side watcher-down warning: the ISSUE line `cox doctor` and `cox state` print for an epic
+// (watcherIssue over watcherInfo), firstmate's fm-guard.sh banner. "" means silent.
+func fmBanner(epic string) string { return watcherIssue(epic, watcherInfo(epic)) }
+
+// fmWantFullBanner asserts firstmate's "exactly one full WATCHER DOWN banner" carrying the actionable repair.
+func fmWantFullBanner(t *testing.T, got, epic, why string) {
+	t.Helper()
+	if !strings.Contains(got, "cox watch --epic "+epic+" --replace") {
+		t.Fatalf("%s: want the full actionable watcher-down banner, got %q", why, got)
+	}
+}
+
+// fmWantReminder asserts firstmate's same-episode dedup: a later call in one down episode prints a concise reminder,
+// not the full banner again.
+func fmWantReminder(t *testing.T, full, got, why string) {
+	t.Helper()
+	if got == "" || got == full {
+		t.Fatalf("%s: a repeated call in the same down episode must print a concise reminder, not the full banner again; got %q", why, got)
+	}
+}
+
+// fmBannerEpic is make_guard_case: one epic with a working story and no watcher.
+func fmBannerEpic(t *testing.T) string { return fmEpic(t, "task") }
+
+// fmGuardStaleBanner translates tests/fm-guard-stale-banner.test.sh. Firstmate's fm-guard.sh is the pull warning other
+// supervision commands run mid-turn; cox's is the watcherIssue line of `cox doctor` / `cox state` (fmBanner). Cox runs
+// one persistent watcher per epic, i.e. firstmate's persistent model: the Claude auto-arm and Pi extension supervision
+// models (watcher only between turns, extension-owned hand-offs) are firstmate-only, so their tolerance cases are n/a,
+// while their "must stay loud" assertions translate against the persistent watcher.
+func fmGuardStaleBanner(t *testing.T) {
+	// fm: tests/fm-guard-stale-banner.test.sh:163
+	t.Run("first_stale_call_prints_full_banner", func(t *testing.T) {
+		epic := fmBannerEpic(t)
+		fmWantFullBanner(t, fmBanner(epic), epic, "first stale call")
+	})
+
+	// n/a: full_banner_names_quiet_mode_when_active (fm: tests/fm-guard-stale-banner.test.sh:176) - quiet/away mode (afk daemon) is firstmate-only.
+
+	// fm: tests/fm-guard-stale-banner.test.sh:192
+	t.Run("repeated_same_episode_prints_reminder_only", func(t *testing.T) {
+		epic := fmBannerEpic(t)
+		first := fmBanner(epic)
+		fmWantFullBanner(t, first, epic, "first stale call")
+		fmWantReminder(t, first, fmBanner(epic), "second stale call")
+	})
+
+	// fm: tests/fm-guard-stale-banner.test.sh:210
+	t.Run("fresh_beacon_without_live_watcher_stays_alarm", func(t *testing.T) {
+		epic := fmBannerEpic(t)
+		fmBeacon(t, epic, 0)
+		fmWantFullBanner(t, fmBanner(epic), epic, "fresh leftover beacon, no live watcher")
+	})
+
+	// n/a: x_mode_without_live_watcher_stays_alarm (fm: tests/fm-guard-stale-banner.test.sh:220) - relay/X-mode polling is firstmate-only.
+
+	// fm: tests/fm-guard-stale-banner.test.sh:231
+	t.Run("healthy_recovery_rearms_next_stale_episode", func(t *testing.T) {
+		epic := fmBannerEpic(t)
+		fmWantFullBanner(t, fmBanner(epic), epic, "first stale episode")
+		fmHealthy(t, epic)
+		if b := fmBanner(epic); b != "" {
+			t.Fatalf("banner must be silent after watcher recovery, got %q", b)
+		}
+		fmDead(t, epic)
+		fmWantFullBanner(t, fmBanner(epic), epic, "second stale episode")
+	})
+
+	// fm: tests/fm-guard-stale-banner.test.sh:258
+	t.Run("concurrent_same_episode_prints_one_full_banner", func(t *testing.T) {
+		epic := fmBannerEpic(t)
+		outs := make(chan string, 30)
+		for i := 0; i < 30; i++ {
+			go func() { outs <- fmBanner(epic) }()
+		}
+		full := 0
+		var one string
+		for i := 0; i < 30; i++ {
+			if o := <-outs; strings.Contains(o, "--replace") {
+				full++
+				one = o
+			}
+		}
+		if full != 1 {
+			t.Fatalf("30 concurrent same-episode calls must claim exactly one full banner (29 reminders), got %d full: %q", full, one)
+		}
+	})
+
+	// fm: tests/fm-guard-stale-banner.test.sh:283
+	t.Run("home_isolation", func(t *testing.T) {
+		a, b := fmBannerEpic(t), fmBannerEpic(t)
+		a1 := fmBanner(a)
+		fmWantFullBanner(t, a1, a, "epic A first call")
+		fmWantFullBanner(t, fmBanner(b), b, "epic B first call (not suppressed by A)")
+		fmWantReminder(t, a1, fmBanner(a), "epic A remembers its own episode")
+	})
+
+	// fm: tests/fm-guard-stale-banner.test.sh:299
+	t.Run("queued_wake_warning_stays_independent", func(t *testing.T) {
+		epic := fmBannerEpic(t)
+		first := fmBanner(epic)
+		fmWantFullBanner(t, first, epic, "first stale call")
+		seedWake(t, epic, wake.KindStatus)
+		second := fmBanner(epic)
+		fmWantReminder(t, first, second, "same-episode call with a queued wake")
+		if !strings.Contains(second, "wake") {
+			t.Fatalf("the queued-wake warning must not be suppressed by the dedup, got %q", second)
+		}
+	})
+
+	// fm: tests/fm-guard-stale-banner.test.sh:315
+	t.Run("read_only_before_writable_does_not_consume_full_banner", func(t *testing.T) {
+		// Needs the read-only vs writable caller split over the down-episode marker; cox has neither.
+		notImplemented(t, "stale-banner episode dedup: a per-epic down-episode marker claimed once and kept by read-only callers")
+	})
+
+	// fm: tests/fm-guard-stale-banner.test.sh:335
+	t.Run("read_only_during_episode_observes_without_mutating_marker", func(t *testing.T) {
+		epic := fmBannerEpic(t)
+		first := fmBanner(epic)
+		fmWantReminder(t, first, fmBanner(epic), "read-only call during a claimed episode")
+	})
+
+	// fm: tests/fm-guard-stale-banner.test.sh:351
+	t.Run("healthy_read_only_does_not_clear_marker", func(t *testing.T) {
+		// Needs the per-epic down-episode marker a writable call claims; cox keeps none.
+		notImplemented(t, "stale-banner episode dedup: a per-epic down-episode marker claimed once and kept by read-only callers")
+	})
+
+	// fm: tests/fm-guard-stale-banner.test.sh:373
+	t.Run("read_only_never_mutates_stale_banner_state_files", func(t *testing.T) {
+		epic := fmBannerEpic(t)
+		before := fmTree(t, epic)
+		fmBanner(epic)
+		if after := fmTree(t, epic); after != before {
+			t.Fatalf("a read-only stale call changed the control tree:\nbefore %s\nafter  %s", before, after)
+		}
+		quiet := fmEpic(t)
+		if b := fmBanner(quiet); b != "" {
+			t.Fatalf("no open story must stay silent, got %q", b)
+		}
+	})
+
+	// n/a: autoarm_fresh_beacon_without_watcher_is_healthy (fm: tests/fm-guard-stale-banner.test.sh:397) - the Claude Stop auto-arm model (watcher only between turns) is firstmate-only; cox runs a persistent watcher.
+	// n/a: autoarm_stale_beacon_alarms_with_correct_reason (fm: tests/fm-guard-stale-banner.test.sh:409) - auto-arm supervision model is firstmate-only.
+	// n/a: autoarm_stale_episode_is_stable (fm: tests/fm-guard-stale-banner.test.sh:421) - auto-arm supervision model is firstmate-only.
+	// n/a: autoarm_long_handling_turn_stays_silent (fm: tests/fm-guard-stale-banner.test.sh:439) - auto-arm supervision model is firstmate-only.
+	// n/a: autoarm_long_turn_requires_every_healthy_signal (fm: tests/fm-guard-stale-banner.test.sh:460) - auto-arm supervision model is firstmate-only.
+	// n/a: autoarm_open_claim_does_not_explain_stale_beacon (fm: tests/fm-guard-stale-banner.test.sh:519) - auto-arm supervision model is firstmate-only.
+
+	// fm: tests/fm-guard-stale-banner.test.sh:540
+	t.Run("autoarm_long_turn_does_not_silence_other_models", func(t *testing.T) {
+		// The persistent model must alarm on a stale beacon even while the watcher pid is alive.
+		epic := fmBannerEpic(t)
+		fmWatchPid(t, epic, os.Getpid())
+		fmBeacon(t, epic, time.Since(time.Date(2019, 1, 1, 0, 0, 0, 0, time.UTC)))
+		fmWantFullBanner(t, fmBanner(epic), epic, "live watcher pid with a stale beacon")
+	})
+
+	// fm: tests/fm-guard-stale-banner.test.sh:562
+	t.Run("persistent_no_watcher_banner_names_missing_process", func(t *testing.T) {
+		epic := fmBannerEpic(t)
+		fmBeacon(t, epic, 0)
+		b := fmBanner(epic)
+		fmWantFullBanner(t, b, epic, "fresh beacon, no watcher process")
+		if !strings.Contains(b, "not alive") || strings.Contains(b, "tick") {
+			t.Fatalf("banner must name the missing watcher process, not blame the beacon: %q", b)
+		}
+	})
+
+	// fm: tests/fm-guard-stale-banner.test.sh:576
+	t.Run("persistent_no_watcher_episode_survives_beacon_touch", func(t *testing.T) {
+		epic := fmBannerEpic(t)
+		fmBeacon(t, epic, 0)
+		first := fmBanner(epic)
+		fmWantFullBanner(t, first, epic, "first no-watcher call")
+		fmBeacon(t, epic, -time.Second) // the beacon mtime advances, still no live watcher
+		fmWantReminder(t, first, fmBanner(epic), "same no-watcher episode after a beacon touch")
+	})
+
+	// n/a: extension_handoff_with_live_session_is_healthy (fm: tests/fm-guard-stale-banner.test.sh:602) - the Pi extension supervision model (extension-owned watcher hand-offs) is firstmate-only; cox's Pi runs the persistent cox watcher.
+	// n/a: extension_handoff_with_empty_lock_is_healthy (fm: tests/fm-guard-stale-banner.test.sh:622) - extension supervision model is firstmate-only.
+
+	// fm: tests/fm-guard-stale-banner.test.sh:643
+	t.Run("extension_held_unhealthy_locks_stay_alarm", func(t *testing.T) {
+		// Every held-but-unhealthy watcher record stays loud: dead pid, malformed pid, and a live pid that is not this
+		// epic's watcher (firstmate's wrong-home / wrong-path / identity-mismatch: cox records a bare pid).
+		for _, c := range []struct {
+			name string
+			pid  func() string
+		}{
+			{"dead-pid", func() string { return strconv.Itoa(fmDeadPid(t)) }},
+			{"malformed-pid", func() string { return "not-a-pid" }},
+			{"wrong-home", func() string { return strconv.Itoa(fmLiveChild(t)) }},
+			{"wrong-path", func() string { return strconv.Itoa(fmLiveChild(t)) }},
+			{"identity-mismatch", func() string { return strconv.Itoa(fmLiveChild(t)) }},
+		} {
+			epic := fmBannerEpic(t)
+			mustWrite(t, watchPidPath(epic), c.pid())
+			fmBeacon(t, epic, 0)
+			if b := fmBanner(epic); !strings.Contains(b, "not alive") {
+				t.Errorf("%s: a held unhealthy watcher record must alarm with no-watcher, got %q", c.name, b)
+			}
+		}
+	})
+
+	// fm: tests/fm-guard-stale-banner.test.sh:697
+	t.Run("extension_without_ownership_evidence_stays_alarm", func(t *testing.T) {
+		epic := fmBannerEpic(t)
+		fmBeacon(t, epic, 0) // unheld (no watch.pid) with a fresh beacon
+		b := fmBanner(epic)
+		fmWantFullBanner(t, b, epic, "unheld watcher, fresh beacon")
+		if !strings.Contains(b, "not alive") {
+			t.Fatalf("banner must name the missing watcher process, got %q", b)
+		}
+	})
+
+	// n/a: extension_ownership_needs_every_signal (fm: tests/fm-guard-stale-banner.test.sh:713) - extension supervision model ownership proof is firstmate-only.
+
+	// fm: tests/fm-guard-stale-banner.test.sh:763
+	t.Run("extension_stale_beacon_alarms_despite_live_session", func(t *testing.T) {
+		epic := fmBannerEpic(t)
+		fmWatchPid(t, epic, os.Getpid())
+		fmBeacon(t, epic, time.Since(time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC))) // past any grace
+		b := fmBanner(epic)
+		fmWantFullBanner(t, b, epic, "beacon past grace under a live watcher pid")
+		if !strings.Contains(b, "tick") {
+			t.Fatalf("the stale-beacon banner must name the stale beacon, got %q", b)
+		}
+	})
+
+	// fm: tests/fm-guard-stale-banner.test.sh:786
+	t.Run("extension_handoff_keeps_queued_wake_warning", func(t *testing.T) {
+		// Healthy watcher + a queued wake: the queued-wake warning (cox: prompt-drain attaching the unacked wake) still
+		// fires and the watcher-down banner does not.
+		epic := fmBannerEpic(t)
+		fmHealthy(t, epic)
+		seedWake(t, epic, wake.KindStuck)
+		var out bytes.Buffer
+		if runPromptDrain(epic, &out) == 0 || !strings.Contains(out.String(), "stuck") {
+			t.Fatalf("the queued-wake warning must fire, got %q", out.String())
+		}
+		if b := fmBanner(epic); b != "" {
+			t.Fatalf("a queued wake must not resurrect the watcher-down banner, got %q", b)
+		}
+	})
+
+	// n/a: branch_actor_is_not_told_to_drain_queued_wakes (fm: tests/fm-guard-stale-banner.test.sh:812) - the Pi supervision branch actor is firstmate-only.
+
+	// fm: tests/fm-guard-stale-banner.test.sh:841
+	t.Run("persistent_model_ignores_pi_extension_evidence", func(t *testing.T) {
+		epic := fmBannerEpic(t)
+		mustWrite(t, filepath.Join(epic, controlDir, ".pi-watch-extension-loaded"), "sha256:x\n"+strconv.Itoa(os.Getpid())+"\n")
+		fmBeacon(t, epic, 0)
+		b := fmBanner(epic)
+		if !strings.Contains(b, "not alive") {
+			t.Fatalf("stray Pi markers must not silence the no-watcher banner, got %q", b)
+		}
+	})
+
+	// fm: tests/fm-guard-stale-banner.test.sh:861
+	t.Run("extension_live_watcher_is_healthy_without_ownership_evidence", func(t *testing.T) {
+		epic := fmBannerEpic(t)
+		fmHealthy(t, epic)
+		if b := fmBanner(epic); b != "" {
+			t.Fatalf("a live watcher with a fresh beacon must stay silent, got %q", b)
+		}
+	})
+
+	// n/a: pi_harness_routes_itself_to_the_extension_model (fm: tests/fm-guard-stale-banner.test.sh:884) - extension supervision model routing is firstmate-only.
+}
+
+// fmTree lists every path and size under epic's control tree, to prove a read-only caller mutated nothing.
+func fmTree(t *testing.T, epic string) string {
+	t.Helper()
+	var b strings.Builder
+	_ = filepath.Walk(filepath.Join(epic, controlDir), func(p string, info os.FileInfo, err error) error {
+		if err == nil {
+			b.WriteString(p + ":" + strconv.FormatInt(info.Size(), 10) + ":" + info.ModTime().String() + ";")
+		}
+		return nil
+	})
+	return b.String()
+}
+
+// fmWatchCheckpoint translates tests/fm-watch-checkpoint.test.sh. Firstmate's bounded foreground checkpoint for a pull
+// harness (Codex) is cox's `cox wake wait --epic <dir> --max <dur>` (exit 124 on a quiet window maps to cox's exit 3);
+// the checkpoint's own singleton watcher start maps to `cox watch`'s claimWatchPid.
+func fmWatchCheckpoint(t *testing.T) {
+	// fm: tests/fm-watch-checkpoint.test.sh:18
+	t.Run("quiet_checkpoint_exits_124_cleanly", func(t *testing.T) {
+		epic := fmEpic(t)
+		code, out := fmCapture(t, func() int { return wakeWait([]string{"--epic", epic, "--max", "1s"}) })
+		if code != 3 {
+			t.Fatalf("a quiet window must exit 3 (firstmate 124), got %d", code)
+		}
+		if _, err := os.Stat(watchPidPath(epic)); err == nil {
+			t.Fatal("a quiet checkpoint must leave no watcher pid behind")
+		}
+		if !strings.Contains(out, "1s") {
+			t.Fatalf("a quiet checkpoint must print a clean line naming the window (no actionable wake within 1s), got %q", out)
+		}
+	})
+
+	// fm: tests/fm-watch-checkpoint.test.sh:31
+	t.Run("signal_passes_through_and_exits_zero", func(t *testing.T) {
+		epic := fmEpic(t)
+		go func() {
+			time.Sleep(time.Second)
+			_, _ = wake.Append(epic, wake.Wake{Epic: filepath.Base(epic), Story: "demo", Kind: wake.KindWorkerDone, Note: "done: synthetic wake"})
+		}()
+		code, out := fmCapture(t, func() int { return wakeWait([]string{"--epic", epic, "--max", "8s"}) })
+		if code != 0 || !strings.Contains(out, "synthetic wake") {
+			t.Fatalf("a wake must pass through with exit 0, got %d %q", code, out)
+		}
+		if w, _ := wake.Drain(epic, true); len(w) != 1 {
+			t.Fatalf("the wake must stay queued for drain, got %d", len(w))
+		}
+	})
+
+	// fm: tests/fm-watch-checkpoint.test.sh:49
+	t.Run("registered_check_uses_preserved_watcher_environment", func(t *testing.T) {
+		notImplemented(t, "supervision-need registry: a registered source/check needs supervision with no open story")
+	})
+
+	// fm: tests/fm-watch-checkpoint.test.sh:69
+	t.Run("existing_singleton_watcher_is_not_success", func(t *testing.T) {
+		epic := fmEpic(t)
+		fmWatchPid(t, epic, fmLiveChild(t))
+		release, err := claimWatchPid(epic, false)
+		if err == nil {
+			release()
+			t.Fatal("a second watcher start over a live singleton must fail, not succeed")
+		}
+		if !strings.Contains(err.Error(), "already running") {
+			t.Fatalf("the refusal must say the watcher is already running, got %v", err)
+		}
 	})
 }
