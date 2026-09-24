@@ -41,7 +41,7 @@ Captain ruling 2026-09-24 (epic `cox-supervision-port`):
    - an active no-mistakes run-step is the story PR's CI running at the live head;
    - firstmate's Pi guard cases are translated into the extension's node suite;
    - firstmate's three memory files stay three files (`cox/notes/captain.md`, `captain-shared.md`, `learnings.md`)
-     with its 7,500-byte budget.
+     with its 7,500-token budget (ceil(bytes/3), firstmate `docs/configuration.md:262-268`).
 
 ## Method
 
