@@ -71,7 +71,9 @@ working" which 3-5 consume. 6 is independent. 7 last.
   `classifier_primitives`, `heartbeat_backstop_surfaces_a_masked_status`, `needs_decision_*`) fail only because
   `wake.Classify` misses `needs-decision` (w2-wake's package). Assumption: I do not touch `internal/wake`; those cases
   go green when I rebase onto the w2-wake merge, and the PR body lists which ones wait on it.
-- **Q4 (Makefile).** CI runs `go test ./...`, not `make test`. Assumption: `test:` runs `go test ./...` then
-  `test-port`, which prints the red count per package and fails only when a package's red count rises above the
-  ceiling recorded in the Makefile (`PORT_RED_MAX`), so `make test` stays green while reds remain and the count can
-  only fall. I do not edit `.github/`.
+- **Q4 (Makefile) - leader ruling q001:** `make test` runs `go test ./...` then `test-port`; `test-port` prints the red
+  count per package and never fails the build. No ceiling in the Makefile; the ratchet is enforced at audit from the
+  before/after counts in the PR body.
+
+Leader answer q001 (2026-09-24): approved; Q1 yes (one-line `AlertsChannel` default in `internal/workspace`, Shared
+files); Q2 yes (watch API only, w2-hooks wires it); Q3 yes (leave the Classify-dependent cases red, list them by name).

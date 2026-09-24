@@ -20,7 +20,7 @@ the turn end, and asserts an urgent wake for the leader within the grace window.
    `reports/evidence/kill-test/kill-test.sh` and the transcript beside it.
 2. Remove `//go:build port` from `port_lifecycle_test.go` if zero red (R16 x2 belong to w2-hooks, so likely stays
    tagged - reported). `port_triage_test.go` stays tagged (decision fold).
-3. Makefile `test:` runs `test-port` with the red ceiling (Q4).
+3. Makefile `test:` runs `go test ./...` then `test-port` (prints red count per package, never fails).
 4. One-line supersession notes: `docs/decisions/0016`, `0014` as applicable, `docs/ARCHITECTURE.md`.
 5. Before/after red counts per package from `go test -tags port -json` for the PR body.
 
