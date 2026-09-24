@@ -79,14 +79,15 @@ func fmWatchPid(t *testing.T, epic string, pid int) {
 	}
 }
 
-// fmDeadPid returns the pid of a process that has exited and been reaped (firstmate: nonexistent_pid).
+// fmDeadPid returns a pid no process holds (firstmate: nonexistent_pid; its stale fixtures use 99999999). A reaped
+// child's pid is not used: under heavy process churn the OS can hand it to a new process mid-case.
 func fmDeadPid(t *testing.T) int {
 	t.Helper()
-	cmd := exec.Command("true")
-	if err := cmd.Run(); err != nil {
-		t.Fatal(err)
+	const pid = 99999999
+	if processAlive(pid) {
+		t.Fatalf("pid %d unexpectedly names a live process", pid)
 	}
-	return cmd.Process.Pid
+	return pid
 }
 
 // fmLiveChild starts a long sleep standing in for a live foreign process (firstmate: `sleep 60 &`); cleanup kills it.
@@ -1653,6 +1654,58 @@ func TestPortClaimChild(t *testing.T) {
 	release()
 }
 
+// fmRealWatcher starts a real `cox watch --epic epic` (a failing fake orca on PATH) and waits until it holds watch.pid.
+// done closes when it exits; cleanup kills it.
+func fmRealWatcher(t *testing.T, epic string) (*exec.Cmd, <-chan struct{}) {
+	t.Helper()
+	bin := t.TempDir()
+	mustWrite(t, filepath.Join(bin, "orca"), "#!/bin/sh\necho '{\"ok\":false,\"error\":{\"message\":\"fake orca\"}}'\nexit 1\n")
+	if err := os.Chmod(filepath.Join(bin, "orca"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(fmCoxBin(t), "watch", "--epic", epic)
+	cmd.Env = append(os.Environ(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"), "ORCA_RUN_ID=run-fake")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() { _ = cmd.Wait(); close(done) }()
+	t.Cleanup(func() { _ = cmd.Process.Kill(); <-done })
+	for i := 0; i < 200 && readPid(watchPidPath(epic)) != cmd.Process.Pid; i++ {
+		time.Sleep(50 * time.Millisecond)
+	}
+	if readPid(watchPidPath(epic)) != cmd.Process.Pid {
+		t.Fatal("the real watcher never claimed watch.pid")
+	}
+	return cmd, done
+}
+
+// fmMarker reads the recovery marker token ("" when absent or unreadable).
+func fmMarker(epic string) string {
+	b, _ := os.ReadFile(recoveryMarker(epic))
+	return strings.TrimSpace(string(b))
+}
+
+// fmDrain runs `cox wake drain --epic epic` and returns the printed ack pair (through, generation) from its
+// WAKE_ACK_REQUIRED --recovery-generation line.
+func fmDrain(t *testing.T, epic string) (through, gen string, out string) {
+	t.Helper()
+	_, out = fmCapture(t, func() int { return wakeDrain([]string{"--epic", epic}) })
+	m := regexp.MustCompile(`ack-through (\d+) --epic \S+ --recovery-generation (\S+)`).FindStringSubmatch(out)
+	if m == nil {
+		return "", "", out
+	}
+	return m[1], m[2], out
+}
+
+// fmAck runs `cox wake ack-through <through> --epic epic --recovery-generation gen`.
+func fmAck(t *testing.T, epic, through, gen string) (int, string) {
+	t.Helper()
+	return fmCapture(t, func() int {
+		return wakeAckThrough([]string{through, "--epic", epic, "--recovery-generation", gen})
+	})
+}
+
 // fmGoCase runs one test of another package (the package that owns the mechanism) by name and fails unless it passed.
 func fmGoCase(t *testing.T, pkg, run string) {
 	t.Helper()
@@ -2119,7 +2172,25 @@ func fmWatcherLock(t *testing.T) {
 		if watcherHealthy(epic, time.Now()) {
 			t.Fatal("a SIGSTOPped watcher with a stale beacon must not read as healthy")
 		}
-		notImplemented(t, "watcher cycle-exit ledger: each watcher exit classified (signal/nonzero/clean) with its successor")
+		// The exit half runs a real `cox watch`: stopped, then continued and terminated, its exit is classified.
+		real := fmEpic(t, "s1")
+		cmd, done := fmRealWatcher(t, real)
+		_ = cmd.Process.Signal(syscall.SIGSTOP)
+		fmBeacon(t, real, time.Since(time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)))
+		if !processAlive(cmd.Process.Pid) || watcherHealthy(real, time.Now()) {
+			t.Fatal("a SIGSTOPped real watcher must be a live pid with an unhealthy (stale) beacon")
+		}
+		_ = cmd.Process.Signal(syscall.SIGCONT)
+		_ = cmd.Process.Signal(syscall.SIGTERM)
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			_ = cmd.Process.Kill()
+			t.Fatal("the terminated watcher did not exit")
+		}
+		if b, _ := os.ReadFile(cycleLogPath(real)); !strings.Contains(string(b), "reason=signal-exit") && !strings.Contains(string(b), "reason=nonzero-exit") {
+			t.Fatalf("the terminated watcher's exit was not classified in the lifecycle ledger: %q", b)
+		}
 	})
 
 	// fm: tests/fm-watcher-lock.test.sh:1005
@@ -2144,7 +2215,29 @@ func fmWatcherLock(t *testing.T) {
 
 	// fm: tests/fm-watcher-lock.test.sh:1102
 	t.Run("stale_watch_reclaim_publishes_before_clear", func(t *testing.T) {
-		notImplemented(t, "watcher-down recovery episode: durable downtime marker published before a stale lock is cleared")
+		// The reclaim is interrupted after the downtime publication and before the stale lock's removal (firstmate kills
+		// the reclaimer inside fm_lock_remove_path): the stale lock must still be there and the durable recovery
+		// evidence already published; a successor then reclaims normally.
+		epic := fmEpic(t)
+		fmWatchPid(t, epic, 99999999)
+		prev := watchStealHook
+		watchStealHook = func() error { return errWatchRefused }
+		_, err := claimWatchPid(epic, false)
+		watchStealHook = prev
+		if err == nil {
+			t.Fatal("the interrupted stale watcher reclaim unexpectedly completed")
+		}
+		if readPid(watchPidPath(epic)) != 99999999 {
+			t.Fatal("the stale watcher lock was cleared before the recovery publication boundary")
+		}
+		if tok := fmMarker(epic); !strings.HasPrefix(tok, "pending:downtime:") {
+			t.Fatalf("the interrupted reclaim left no valid durable recovery evidence: %q", tok)
+		}
+		release, err := claimWatchPid(epic, false)
+		if err != nil {
+			t.Fatalf("a successor could not reclaim the watcher lock after the interrupted clear: %v", err)
+		}
+		release()
 	})
 
 	// n/a: msys_pid_identity_uses_proc (fm: tests/fm-watcher-lock.test.sh:1144) - MSYS/Windows process identity; cox ships darwin and linux only.
@@ -2168,7 +2261,9 @@ func fmWatchArm(t *testing.T) {
 		if code != 2 || !strings.Contains(out, "worker_done") || strings.Contains(out, "not alive") {
 			t.Fatalf("the waiter must close on the delivered wake, not a failure, got %d %q", code, out)
 		}
-		notImplemented(t, "watcher cycle-exit ledger: each watcher exit classified (signal/nonzero/clean) with its successor")
+		if b, _ := os.ReadFile(cycleLogPath(epic)); !strings.Contains(string(b), "reason=attached-delivered-wake") {
+			t.Fatalf("the delivered-wake close was not classified in the lifecycle ledger: %q", b)
+		}
 	})
 
 	// fm: tests/fm-watch-arm.test.sh:214
@@ -2244,7 +2339,30 @@ func fmWatchArm(t *testing.T) {
 
 	// fm: tests/fm-watch-arm.test.sh:450
 	t.Run("marker_publish_failure_retains_recovery_evidence", func(t *testing.T) {
-		notImplemented(t, "watcher-down recovery episode: durable downtime marker published before a stale lock is cleared")
+		epic := fmEpic(t, "s1")
+		dead := fmDeadPid(t)
+		fmWatchPid(t, epic, dead)
+		if err := os.MkdirAll(recoveryMarker(epic), 0o755); err != nil { // the marker cannot be published
+			t.Fatal(err)
+		}
+		if _, err := claimWatchPid(epic, false); err == nil {
+			t.Fatal("a reclaim whose downtime could not be published must not clear the stale lock")
+		}
+		if readPid(watchPidPath(epic)) != dead {
+			t.Fatal("the marker publication failure discarded the stale-lock recovery evidence")
+		}
+		if err := os.Remove(recoveryMarker(epic)); err != nil {
+			t.Fatal(err)
+		}
+		release, err := claimWatchPid(epic, false)
+		if err != nil {
+			t.Fatalf("the stale-lock recovery did not proceed once the marker could be published: %v", err)
+		}
+		release()
+		w, _ := wake.Drain(epic, true)
+		if len(w) == 0 || !strings.Contains(w[len(w)-1].Note, "rearm-resurface") {
+			t.Fatalf("the stale-lock recovery did not emit the recovery wake: %+v", w)
+		}
 	})
 
 	// fm: tests/fm-watch-arm.test.sh:480
@@ -2289,7 +2407,25 @@ func fmWatchArm(t *testing.T) {
 
 	// fm: tests/fm-watch-arm.test.sh:612
 	t.Run("malformed_marker_is_quarantined_once", func(t *testing.T) {
-		notImplemented(t, "watcher-down recovery episode: durable downtime marker published before a stale lock is cleared")
+		epic := fmEpic(t, "s1")
+		mustWrite(t, filepath.Join(recoveryMarker(epic), "payload"), "foreign state\n")
+		if rec, err := recoveryArmCheck(epic, 0); err != nil || !rec {
+			t.Fatalf("a malformed marker must produce a bounded recovery wake, got %v %v", rec, err)
+		}
+		inv, _ := filepath.Glob(recoveryMarker(epic) + ".invalid.*")
+		if len(inv) != 1 {
+			t.Fatalf("the malformed marker was not quarantined exactly once: %v", inv)
+		}
+		through, gen, out := fmDrain(t, epic)
+		if gen == "" {
+			t.Fatalf("the recovery drain printed no acknowledgement: %q", out)
+		}
+		if code, out := fmAck(t, epic, through, gen); code != 0 {
+			t.Fatalf("the malformed-marker handling acknowledgement failed: %q", out)
+		}
+		if rec, err := recoveryArmCheck(epic, 0); err != nil || rec {
+			t.Fatalf("a malformed marker caused a persistent recovery loop (recover=%v err=%v)", rec, err)
+		}
 	})
 
 	// fm: tests/fm-watch-arm.test.sh:638
@@ -2337,50 +2473,98 @@ func fmWatchArm(t *testing.T) {
 
 	// fm: tests/fm-watch-arm.test.sh:721
 	t.Run("handling_window_close_keeps_the_acknowledgement_valid", func(t *testing.T) {
-		// The ack printed for a drain stays valid when newer wakes land during handling: it consumes only through its
-		// gen, the newer one survives and is acked by the next drain.
+		// A watcher cycle delivers a wake and closes (publishing downtime); the drain prints a generation-bound ack; a
+		// second cycle appends a wake and closes inside the handling window; the printed ack stays valid.
 		epic := fmEpic(t, "s1")
-		seedWake(t, epic, wake.KindWorkerDone)
-		first, _ := wake.Drain(epic, true)
-		gen := first[len(first)-1].Gen
-		seedWake(t, epic, wake.KindStatus)
-		if err := wake.AckThrough(epic, gen); err != nil {
-			t.Fatalf("the printed acknowledgement was rejected after a newer publication: %v", err)
-		}
-		rest, _ := wake.Drain(epic, true)
-		if len(rest) != 1 || rest[0].Gen <= gen {
-			t.Fatalf("the newer wake must survive the older ack, got %+v", rest)
-		}
-		if err := wake.AckThrough(epic, rest[0].Gen); err != nil {
+		_, _ = wake.Append(epic, wake.Wake{Epic: filepath.Base(epic), Story: "handled", Kind: wake.KindWorkerDone, Note: "done: wake handled while a watcher cycle closes"})
+		if err := publishRecoveryDowntime(epic); err != nil {
 			t.Fatal(err)
 		}
-		notImplemented(t, "watcher-down recovery episode: a recovery generation that the ack retires, kept across publications during handling")
+		through, gen, out := fmDrain(t, epic)
+		if gen == "" {
+			t.Fatalf("the drain did not print a generation-bound acknowledgement: %q", out)
+		}
+		_, _ = wake.Append(epic, wake.Wake{Epic: filepath.Base(epic), Story: "during-handling", Kind: wake.KindWorkerDone, Note: "done: wake published during handling"})
+		if err := publishRecoveryDowntime(epic); err != nil {
+			t.Fatal(err)
+		}
+		if tok := fmMarker(epic); tok != "pending:downtime:"+gen {
+			t.Fatalf("repeated publications during handling replaced the outstanding recovery generation: %q", tok)
+		}
+		if code, out := fmAck(t, epic, through, gen); code != 0 {
+			t.Fatalf("the printed acknowledgement was rejected after repeated publications: %q", out)
+		}
+		rest, _ := wake.Drain(epic, true)
+		if len(rest) != 1 || rest[0].Story != "during-handling" {
+			t.Fatalf("the ack must consume only the handled wake and keep the newer one, got %+v", rest)
+		}
+		through2, gen2, _ := fmDrain(t, epic)
+		if gen2 == "" {
+			t.Fatal("the remaining drain did not print an acknowledgement")
+		}
+		if code, out := fmAck(t, epic, through2, gen2); code != 0 {
+			t.Fatalf("the remaining handling-window wake could not be acknowledged: %q", out)
+		}
+		if w, _ := wake.Drain(epic, true); len(w) != 0 {
+			t.Fatalf("the remaining wake was not consumed: %+v", w)
+		}
+		if tok := fmMarker(epic); !strings.HasPrefix(tok, "acked:") {
+			t.Fatalf("the handled recovery episode was not retired: %q", tok)
+		}
+		if rec, _ := recoveryArmCheck(epic, 0); rec {
+			t.Fatal("the watcher armed after acknowledgement re-announced a retired recovery")
+		}
 	})
 
 	// fm: tests/fm-watch-arm.test.sh:789
 	t.Run("moved_generation_acknowledgement_is_self_healing", func(t *testing.T) {
-		// Replaying a stale ack degrades safely: no error, no over-consumption; a larger ack consumes what it names.
 		epic := fmEpic(t, "s1")
-		seedWake(t, epic, wake.KindWorkerDone)
-		first, _ := wake.Drain(epic, true)
-		gen := first[len(first)-1].Gen
-		if err := wake.AckThrough(epic, gen); err != nil {
+		_, _ = wake.Append(epic, wake.Wake{Epic: filepath.Base(epic), Story: "first", Kind: wake.KindWorkerDone, Note: "done: first handled wake"})
+		if err := publishRecoveryDowntime(epic); err != nil {
 			t.Fatal(err)
 		}
-		seedWake(t, epic, wake.KindStatus)
-		if err := wake.AckThrough(epic, gen); err != nil {
-			t.Fatalf("a replayed stale acknowledgement must degrade safely, got %v", err)
+		firstThrough, firstGen, _ := fmDrain(t, epic)
+		if code, out := fmAck(t, epic, firstThrough, firstGen); code != 0 || firstGen == "" {
+			t.Fatalf("the first handled wake could not be acknowledged: %q", out)
 		}
-		if w, _ := wake.Drain(epic, true); len(w) != 1 {
-			t.Fatalf("a stale acknowledgement must not consume a wake above its gen, got %d left", len(w))
-		}
-		if err := wake.AckThrough(epic, 999); err != nil {
+		// A retired episode does not freeze the generation: the next one is its own.
+		_, _ = wake.Append(epic, wake.Wake{Epic: filepath.Base(epic), Story: "second", Kind: wake.KindWorkerDone, Note: "done: second wake in a newer recovery episode"})
+		if err := publishRecoveryDowntime(epic); err != nil {
 			t.Fatal(err)
+		}
+		secondGen := strings.TrimPrefix(fmMarker(epic), "pending:downtime:")
+		if secondGen == "" || secondGen == fmMarker(epic) || secondGen == firstGen {
+			t.Fatalf("a wake after acknowledgement did not open its own recovery episode: %q", fmMarker(epic))
+		}
+		// Replaying the stale pair degrades safely and names the remedy.
+		code, out := fmAck(t, epic, firstThrough, firstGen)
+		if code != 0 || !strings.Contains(out, "WAKE_ACK_REQUIRED") || !strings.Contains(out, "re-run") {
+			t.Fatalf("a moved recovery generation did not name its own remedy: %d %q", code, out)
+		}
+		if w, _ := wake.Drain(epic, true); len(w) != 1 || w[0].Story != "second" {
+			t.Fatalf("a stale acknowledgement consumed a wake above its sequence: %+v", w)
+		}
+		if fmMarker(epic) != "pending:downtime:"+secondGen {
+			t.Fatalf("a stale acknowledgement retired the newer recovery episode: %q", fmMarker(epic))
+		}
+		// The sequence alone owns consumption.
+		if code, out := fmAck(t, epic, "999", firstGen); code != 0 {
+			t.Fatalf("a stale acknowledgement refused to consume the rows it was given: %q", out)
 		}
 		if w, _ := wake.Drain(epic, true); len(w) != 0 {
-			t.Fatalf("the sequence alone owns consumption, got %d left", len(w))
+			t.Fatalf("a stale acknowledgement left its handled rows on the durable queue: %+v", w)
 		}
-		notImplemented(t, "watcher-down recovery episode: a moved recovery generation names its own remedy (re-run the drain)")
+		if fmMarker(epic) != "pending:downtime:"+secondGen {
+			t.Fatalf("row consumption under a stale generation retired the pending episode: %q", fmMarker(epic))
+		}
+		// Following the printed remedy closes the episode.
+		through, gen, out := fmDrain(t, epic)
+		if gen != secondGen {
+			t.Fatalf("the remedy re-drain did not print the newer acknowledgement: %q", out)
+		}
+		if code, out := fmAck(t, epic, through, gen); code != 0 || !strings.HasPrefix(fmMarker(epic), "acked:") {
+			t.Fatalf("following the printed remedy did not retire the newer recovery episode: %q %q", out, fmMarker(epic))
+		}
 	})
 
 	// n/a: arm_refuses_an_unusable_launch_confirm_window (fm: tests/fm-watch-arm.test.sh:893) - the FM_PROCEVENT_LAUNCH_CONFIRM_SECONDS knob is firstmate-only; cox's confirm window (watcherConfirmWait) is compiled in, with no operator input to validate.
@@ -2544,7 +2728,7 @@ func fmDocWatcherContinuity(t *testing.T) {
 			}
 			done := make(chan struct{})
 			go func() { _ = cmd.Wait(); close(done) }()
-			for i := 0; i < 100 && readPid(watchPidPath(epic)) != cmd.Process.Pid; i++ {
+			for i := 0; i < 200 && readPid(watchPidPath(epic)) != cmd.Process.Pid; i++ {
 				time.Sleep(50 * time.Millisecond)
 			}
 			if readPid(watchPidPath(epic)) != cmd.Process.Pid {

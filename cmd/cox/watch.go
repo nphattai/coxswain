@@ -245,6 +245,9 @@ func claimWatchPid(epicDir string, replace bool) (func(), error) {
 	_ = watch.RecordIdentity(epicDir, os.Getpid())
 	return func() {
 		if readPid(path) == os.Getpid() {
+			// Every watcher close publishes downtime before the lock goes (firstmate: release-lock transition), so the
+			// next start re-surfaces what was queued while no watcher ran.
+			_ = publishRecoveryDowntime(epicDir)
 			_ = os.Remove(watch.IdentityPath(epicDir))
 			_ = os.Remove(path)
 		}
@@ -262,15 +265,6 @@ func clearStaleWatchLock(epicDir string, pid int) error {
 		_ = os.Remove(watchPidPath(epicDir))
 	}
 	return nil
-}
-
-// publishWatcherDowntime records that the epic's watcher was down (pid is the stale holder) before its lock is cleared,
-// so the wakes queued during the downtime are re-surfaced to the leader (fm-watch.sh resurface_after_downtime,
-// "check: rearm-resurface").
-func publishWatcherDowntime(epicDir string, pid int) error {
-	_, err := wake.Append(epicDir, wake.Wake{Epic: filepath.Base(epicDir), Kind: wake.KindStatus,
-		Note: fmt.Sprintf("check: rearm-resurface - the watcher (pid %d) was down; drain the wakes queued during the downtime", pid)})
-	return err
 }
 
 // readPid reads a pidfile and returns the pid, or 0 when the file is absent or unparsable.
@@ -352,6 +346,10 @@ func cmdWatch(args []string) int {
 		fmt.Printf("watch tick: %d wake(s) appended\n", n)
 		return 0
 	}
+	// Catch the exit signals before the claim, so one landing during start-up still runs the release (a signal that
+	// reached Go's default action would kill the watcher with its pidfile behind).
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, watch.ExitSignals...) // HUP, INT and TERM all run the pidfile release (docs/watcher-continuity.md:117)
 	release, err := claimWatchPid(*epicDir, *replace)
 	if err != nil {
 		return fail("%v", err)
@@ -361,11 +359,30 @@ func cmdWatch(args []string) int {
 		fmt.Printf("watcher: attached pid=%d (a verified healthy watcher survived the replace)\n", pid)
 		return 0
 	}
+	// A start after an announced-but-unacked episode is a new down stretch (a fresh generation); then announce what is
+	// pending once (fm-watch.sh reopen_announced + arm_check + resurface_after_downtime).
+	_ = recoveryReopenAnnounced(*epicDir)
+	if _, err := recoveryArmCheck(*epicDir, 0); err != nil {
+		return fail("watcher: recovery state could not be consumed safely; retaining stale lock evidence: %v", err)
+	}
+	// The cycle-exit ledger: this watcher is the verified successor of the last unlinked cycle, and records its own exit.
+	linkCycleSuccessor(*epicDir, fmt.Sprintf("started:%d", os.Getpid()))
+	cycle := cycleRecord{armPid: os.Getpid(), watcherPid: os.Getpid(), origin: "started", startedAt: time.Now(), lockBefore: lockSnapshot(*epicDir)}
+	var recordOnce sync.Once
+	recordExit := func(code, signal, reason string) {
+		recordOnce.Do(func() {
+			cycle.exitCode, cycle.signal, cycle.reason = code, signal, reason
+			appendCycle(*epicDir, cycle)
+		})
+	}
 	stop := make(chan struct{})
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, watch.ExitSignals...) // HUP, INT and TERM all run the pidfile release (docs/watcher-continuity.md:117)
 	go func() {
-		<-sig
+		s := <-sig
+		n := 0
+		if ss, ok := s.(syscall.Signal); ok {
+			n = int(ss)
+		}
+		recordExit(strconv.Itoa(128+n), signalName(s), "signal-exit")
 		close(stop)
 		// Firstmate's watcher dies on HUP/TERM at once, running its exit cleanup even mid-poll: give the pass in flight a
 		// short grace to finish, then release the pidfile and exit without waiting for it.
@@ -374,7 +391,21 @@ func cmdWatch(args []string) int {
 		os.Exit(0)
 	}()
 	w.Run(stop, 5*time.Second)
+	recordExit("0", "none", "unexpected-clean-exit") // evicted, closed or replaced: the loop ended on its own
 	return 0
+}
+
+// signalName is the short signal name the ledger records (HUP, INT, TERM).
+func signalName(s os.Signal) string {
+	switch s {
+	case syscall.SIGHUP:
+		return "HUP"
+	case syscall.SIGINT:
+		return "INT"
+	case syscall.SIGTERM:
+		return "TERM"
+	}
+	return s.String()
 }
 
 // watcherStopGrace bounds how long a signalled watcher lets its in-flight pass finish before it exits anyway.

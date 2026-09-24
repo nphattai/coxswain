@@ -494,6 +494,7 @@ func hookStopRewake(epicDir, harnessName string, runGuard bool) int {
 		sleep:      time.Sleep,
 		session:    nonEmpty(payload.SessionID, nonEmpty(handle, "unknown")),
 		foreign:    foreign,
+		noGuard:    !runGuard,
 		stopActive: payload.StopHookActive,
 	})
 }
@@ -544,6 +545,9 @@ type rewakeCfg struct {
 	stopActive bool
 	// foreign is the open-story epics a different, still-live leader terminal owns (guardSet): never guarded here.
 	foreign []foreignEpic
+	// noGuard is the Pi waiter the guard follow-up's own settle arms (--guard=false): it waits for wakes only, without
+	// the guard or the mid-wait watcher re-check, so one logical run gets at most one guard follow-up.
+	noGuard bool
 }
 
 // foreignEpic is an epic whose recorded leader is another live terminal.
@@ -574,13 +578,50 @@ func runStopRewake(cfg rewakeCfg) int {
 	if poll <= 0 {
 		poll = 15 * time.Second
 	}
+	// The waiter is the arm attached to each epic's live watcher cycle: it re-checks that watcher every poll, so one that
+	// dies or loses its lock mid-wait ends the wait loudly instead of at MAX_WAIT (firstmate fm-watch-arm.sh attached
+	// arm: "watcher: FAILED - cycle ended without an actionable reason"), and records each cycle close in the ledger.
+	attached := map[string]cycleRecord{}
+	for _, ep := range cfg.epics {
+		if pid, _ := watch.ReadPid(ep); pid > 0 && watcherHealthy(ep, time.Now()) {
+			attached[ep] = cycleRecord{armPid: os.Getpid(), watcherPid: pid, origin: "attached", startedAt: time.Now(), exitCode: "unknown", signal: "unknown", lockBefore: lockSnapshot(ep)}
+		}
+	}
+	closeCycles := func(reason string) {
+		for _, ep := range cfg.epics {
+			if r, ok := attached[ep]; ok {
+				r.reason = reason
+				appendCycle(ep, r)
+			}
+		}
+	}
 	batch := time.Duration(0)
 	for elapsed := time.Duration(0); elapsed < cfg.maxWait; elapsed += poll {
+		if !cfg.noGuard {
+			var down []string
+			for _, ep := range cfg.epics {
+				if _, ok := attached[ep]; ok && !watcherHealthy(ep, time.Now()) && supervisionNeeds(ep).needed() {
+					down = append(down, ep)
+				}
+			}
+			if len(down) > 0 {
+				closeCycles("attached-cycle-ended")
+				var b strings.Builder
+				for _, ep := range down {
+					fmt.Fprintf(&b, "watcher: FAILED - cycle ended without an actionable reason: the watcher for %s is not alive; run: cox watch --epic %s --replace\n", filepath.Base(ep), ep)
+				}
+				if wakes := drainAll(cfg.epics); len(wakes) > 0 {
+					b.WriteString("Queued wakes stay durable - run `" + drainHint(cfg.epics) + "` after the repair:\n" + wakesText(wakes))
+				}
+				return cfg.reopen(b.String())
+			}
+		}
 		wakes := drainAll(cfg.epics)
 		if len(wakes) > 0 {
 			// A re-arm re-surfaces the wakes queued while no watcher ran (firstmate's check: rearm-resurface) at once.
 			if anyUrgent(wakes) || batch >= cfg.batchMax || rearmed {
 				msg := "Watcher wake while idle. Run `" + drainHint(cfg.epics) + "`, handle them, then ack-through:\n" + wakesText(wakes)
+				closeCycles("attached-delivered-wake")
 				return cfg.reopen(msg)
 			}
 			batch += poll
