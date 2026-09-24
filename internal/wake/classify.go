@@ -42,14 +42,17 @@ const (
 	KindHeartbeat Kind = "heartbeat"
 )
 
-// urgentKinds start a leader turn at once (v1 hook-stop-rewake batching rule). The rest (stale, unknown_probe, status,
-// quota_health) batch up to WAKE_BATCH so several routine wakes cost one turn. quota_low is watcher-generated (never from
+// urgentKinds start a leader turn at once (v1 hook-stop-rewake batching rule). The rest (status, quota_health) batch up
+// to WAKE_BATCH so several routine wakes cost one turn. stale and unknown_probe are urgent: firstmate's stale: surfaces
+// (wedge escalation, stale surface, gone endpoint, pause recheck) wake the primary (leader ruling 2026-09-24,
+// cox-supervision-port wave 2). quota_low is watcher-generated (never from
 // mail), and its urgency varies per case (urgent on exhausted_now or below low_percent, routine on a projected shortfall),
 // so the quota pass rings the leader doorbell directly for the urgent case rather than relying on this map.
 var urgentKinds = map[Kind]bool{
 	KindQuestion: true, KindInputRequired: true, KindPRReady: true,
 	KindWorkerDone: true, KindStuck: true, KindRunaway: true,
 	KindIdleNoDone: true, KindReviewDecision: true,
+	KindStale: true, KindUnknownProbe: true,
 }
 
 // IsUrgent reports whether a wake of this kind should start a leader turn immediately.
