@@ -36,8 +36,8 @@ const (
 	DefaultRunawayMin   = 30 * time.Minute
 	DefaultInboxGrace   = 90 * time.Second
 	DefaultInboxRingMax = 3
-	// DefaultIdleNoDoneWait is kept for callers of the removed steer-gated idle pass; turn-end triage (triage.go) now
-	// surfaces a stopped worker with no report at once, with or without a steer.
+	// DefaultIdleNoDoneWait was the steer-gated idle pass's quiet window; turn-end triage (triage.go) now surfaces a
+	// stopped worker with no report at once. Kept as the port suite's reference to that window.
 	DefaultIdleNoDoneWait = 5 * time.Minute
 	// DefaultReconcileEvery is how many ticks between reconcile passes (policy override, phase-07). At the 5s poll that
 	// is one pass every ~50s; a story stuck in pending_external by a crash is finished within a window, not left forever.
@@ -77,7 +77,6 @@ type Watcher struct {
 	RunawayMin     time.Duration
 	InboxGrace     time.Duration
 	InboxRingMax   int
-	IdleNoDoneWait time.Duration
 	BlockedWait    time.Duration // how long a worker may be blocked on a local prompt before a stuck wake; 0 => default
 	BusyTurnMax    time.Duration // how long a busy record may stay busy with no fresh event/checkpoint before a status wake; 0 => DefaultBusyTurnMax
 	ReconcileEvery int           // ticks between reconcile passes; 0 => DefaultReconcileEvery
@@ -104,11 +103,13 @@ type Watcher struct {
 
 	// Per-tick triage scratch (reset by Tick): the no-verb signal batch, the stories that surfaced, the probe cache and
 	// the declaration the current stale alarm binds its throttle to.
-	signals  map[string]*signal
-	surfaced map[string]bool
-	mailbox  []backend.Message // this tick's mailbox read, for the heartbeat backstop
-	probes   map[string]probeResult
-	waitDecl string
+	signals    map[string]*signal
+	surfaced   map[string]bool
+	mailbox    []backend.Message // this tick's mailbox read, for the heartbeat backstop
+	pendingAck string            // this tick's delivery, acked once every wake it produced is written
+	ci         map[string]ciResult
+	probes     map[string]probeResult
+	waitDecl   string
 }
 
 func (w *Watcher) now() time.Time {
@@ -140,7 +141,7 @@ func orDur(v, def time.Duration) time.Duration {
 // appended (0 when nothing was actionable). It never blocks; Run wraps it in a poll loop.
 func (w *Watcher) Tick() (int, error) {
 	w.tickCount++
-	w.signals, w.surfaced, w.probes, w.mailbox, w.appendedCount = nil, nil, nil, nil, 0
+	w.signals, w.surfaced, w.probes, w.mailbox, w.ci, w.pendingAck, w.appendedCount = nil, nil, nil, nil, nil, "", 0
 	w.Sessions = LoadSessions(w.EpicDir) // pick up any story dispatched since the last tick (item 1)
 	dispatchStory, err := w.dispatchStoryMap()
 	if err != nil {
@@ -185,6 +186,13 @@ func (w *Watcher) Tick() (int, error) {
 		return appended, err
 	}
 	appended += w.appendedCount - before
+
+	if w.pendingAck != "" {
+		if err := w.Backend.Mail().Ack(w.pendingAck); err != nil {
+			return appended, fmt.Errorf("ack delivery: %w", err)
+		}
+		w.pendingAck = ""
+	}
 
 	n, _, err = w.blockedPass()
 	if err != nil {
@@ -467,7 +475,7 @@ func (w *Watcher) mailPass(dispatchStory map[string]string) (int, bool, error) {
 		if m.ID != "" && seen[m.ID] {
 			continue
 		}
-		disp, phase := payloadFields(m.Payload)
+		disp, _ := payloadFields(m.Payload)
 		if disp == "" {
 			disp = strings.TrimPrefix(m.From, "dispatch:")
 		}
@@ -479,14 +487,11 @@ func (w *Watcher) mailPass(dispatchStory map[string]string) (int, bool, error) {
 		if kind == wake.KindHeartbeat {
 			// A worker heartbeat is the pane-churn analog (a status line is a signal, never pane activity).
 			w.markActivity(story, "m"+m.ID)
-			w.touchHeartbeat(disp, phase)
+			w.bumpHeartbeat(disp)
 			w.markSeen(m.ID)
 			continue
 		}
 		w.recordStatus(story, statusFromMail(m))
-		if kind == wake.KindWorkerDone {
-			w.forgetHeartbeat(disp) // a finished worker must not be reported STALE forever (v1)
-		}
 		note := wakeNote(kind, m.Subject, m.Body)
 		wk := wake.Wake{
 			Epic: filepath.Base(w.EpicDir), Story: story, Kind: kind,
@@ -518,12 +523,9 @@ func (w *Watcher) mailPass(dispatchStory map[string]string) (int, bool, error) {
 		w.surfaced[story] = true
 		w.markSeen(m.ID)
 	}
-	// Only now, after every wake is durably written, ack the delivery (if the backend gave one).
-	if deliveryID != "" {
-		if err := w.Backend.Mail().Ack(deliveryID); err != nil {
-			return appended, urgent, fmt.Errorf("ack delivery: %w", err)
-		}
-	}
+	// The delivery is acked by Tick only after the signal triage has durably written every wake (and the heartbeat
+	// backstop has read this delivery), never before: the 2026-09-15 lesson.
+	w.pendingAck = deliveryID
 	return appended, urgent, nil
 }
 
@@ -1013,10 +1015,6 @@ func runAlarmChannel(channel, summary string) error {
 	}
 }
 
-func (w *Watcher) idleNoDoneWait() time.Duration {
-	return orDur(w.IdleNoDoneWait, DefaultIdleNoDoneWait)
-}
-
 func (w *Watcher) blockedWait() time.Duration { return orDur(w.BlockedWait, DefaultBlockedWait) }
 
 // blockedSince returns when the worker's current waiting interval began (zero when it is not currently blocked). The
@@ -1091,16 +1089,6 @@ func (w *Watcher) watchFileMtime(sub, key string) time.Time {
 	return info.ModTime()
 }
 
-func (w *Watcher) touchHeartbeat(disp, phase string) {
-	if disp == "" {
-		return
-	}
-	w.bumpHeartbeat(disp)
-	if phase != "" {
-		_ = os.WriteFile(filepath.Join(w.watchDir(), "phase", disp), []byte(phase), 0o644)
-	}
-}
-
 func (w *Watcher) bumpHeartbeat(disp string) {
 	if disp == "" {
 		return
@@ -1113,14 +1101,6 @@ func (w *Watcher) bumpHeartbeat(disp string) {
 		f.Close()
 	}
 	_ = os.Chtimes(path, now, now)
-}
-
-func (w *Watcher) forgetHeartbeat(disp string) {
-	if disp == "" {
-		return
-	}
-	_ = os.Remove(filepath.Join(w.watchDir(), "hb", disp))
-	_ = os.Remove(filepath.Join(w.watchDir(), "phase", disp))
 }
 
 func (w *Watcher) loadSeen() (map[string]bool, error) {

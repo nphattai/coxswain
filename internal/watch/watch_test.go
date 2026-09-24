@@ -951,3 +951,69 @@ func TestRunAlarmChannelKillsTheProcessGroup(t *testing.T) {
 		t.Fatalf("the notifier's child %d outlived the timeout", pid)
 	}
 }
+
+// Kill-test path (epic AC 3): a busy record that is still the dispatch seed (no harness hook ever ran) is not proof of
+// work once the backend's own reading - not the record - shows an idle agent; the quiet worker then surfaces.
+func TestSeedRecordAgainstAnIdleBackendSurfaces(t *testing.T) {
+	epic := t.TempDir()
+	must(t, state.Append(epic, ev(epic, "s", 1, state.Submitted, state.Working)))
+	writeSession(t, epic, "s", backend.Session{ID: "ctx_1", Handle: "term_1"})
+	_, err := busy.Arm(epic, "s", "claude", []string{"dispatch", "claude-hook", "recovery"})
+	must(t, err)
+	b := fake.New()
+	now := time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC)
+	w := &Watcher{EpicDir: epic, Backend: b, Now: func() time.Time { return now }}
+	b.ComposerState = backend.ComposerBusy // the agent is mid-turn
+	must(t, func() error { _, err := w.Tick(); return err }())
+	now = now.Add(time.Minute)
+	must(t, func() error { _, err := w.Tick(); return err }())
+	if got := mustDrain(t, epic); len(got) != 0 {
+		t.Fatalf("a busy agent on the seed record surfaced: %+v", got)
+	}
+	b.ComposerState = backend.ComposerEmpty // the turn ended; no hook could record it
+	now = now.Add(time.Minute)
+	must(t, func() error { _, err := w.Tick(); return err }())
+	got := mustDrain(t, epic)
+	if len(got) != 1 || !wake.IsUrgent(got[0].Kind) {
+		t.Fatalf("want one urgent wake for the stopped worker, got %+v", got)
+	}
+}
+
+// The delivery is acked only after every wake it produced is written: a failed append leaves it unacked for replay.
+func TestDeliveryAckedOnlyAfterTriageWrites(t *testing.T) {
+	epic := t.TempDir()
+	must(t, state.Append(epic, ev(epic, "s", 1, state.Submitted, state.Working)))
+	writeSession(t, epic, "s", backend.Session{ID: "ctx_1", Handle: "term_1"})
+	b := fake.New()
+	mb := b.Mail().(*fake.Mailbox)
+	mb.Delivery = "dlv"
+	mb.Queue = []backend.Message{{ID: "m1", From: "dispatch:ctx_1", Type: "status", Subject: "working: x", Payload: `{"dispatchId":"ctx_1"}`}}
+	w := &Watcher{EpicDir: epic, Backend: b}
+	q := filepath.Join(epic, ".cox", "wake.jsonl")
+	must(t, os.MkdirAll(q, 0o755)) // the queue cannot be written
+	if _, err := w.Tick(); err == nil {
+		t.Fatal("a tick whose wakes could not be written reported success")
+	}
+	if len(mb.Acked) != 0 {
+		t.Fatalf("the delivery was acked before its wakes were written: %v", mb.Acked)
+	}
+	must(t, os.Remove(q))
+	must(t, func() error { _, err := w.Tick(); return err }())
+	if len(mb.Acked) != 1 {
+		t.Fatalf("the delivery was not acked after its wakes were written: %v", mb.Acked)
+	}
+}
+
+// A first run (no report cursor) starts at the queue's tip: an old report is history, not a fresh signal.
+func TestReportCursorStartsAtTheQueueTip(t *testing.T) {
+	epic := t.TempDir()
+	must(t, state.Append(epic, ev(epic, "s", 1, state.Submitted, state.Working)))
+	writeSession(t, epic, "s", backend.Session{ID: "ctx_1", Handle: "term_1"})
+	_, err := wake.Append(epic, wake.Wake{Epic: "e", Story: "s", Kind: wake.KindStatus, Note: "working: old"})
+	must(t, err)
+	w := &Watcher{EpicDir: epic, Backend: fake.New()}
+	must(t, func() error { _, err := w.Tick(); return err }())
+	if got := mustDrain(t, epic); len(got) != 1 {
+		t.Fatalf("an old report was replayed as a fresh signal: %+v", got)
+	}
+}

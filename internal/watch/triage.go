@@ -182,11 +182,20 @@ func (w *Watcher) reportPass(working map[string]bool) {
 	if err != nil {
 		return
 	}
-	cursor := 0
-	if v, ok := w.sread("cursor", "reports"); ok {
+	cursor, max := 0, 0
+	v, ok := w.sread("cursor", "reports")
+	if ok {
 		cursor, _ = strconv.Atoi(strings.TrimSpace(v))
+	} else {
+		// First run (or wiped watch state): start at the queue's tip; history is not a fresh signal.
+		for _, wk := range wakes {
+			if wk.Gen > cursor {
+				cursor = wk.Gen
+			}
+		}
+		w.swrite("cursor", "reports", strconv.Itoa(cursor))
 	}
-	max := cursor
+	max = cursor
 	for _, wk := range wakes {
 		if wk.Gen <= cursor {
 			continue
@@ -280,13 +289,19 @@ func (w *Watcher) signalTriage(open map[string]bool) (int, error) {
 	// Actionable (fm signal_files_actionable / signal_crew_provably_working): a story in the batch already surfaced a
 	// captain-relevant event this tick, or some crew in it is not provably working.
 	class := map[string]string{}
+	relevant := map[string]string{} // a captain-relevant line wake.Classify left routine (fm signal_files_actionable)
 	actionable := false
 	for _, s := range stories {
 		if !open[s] {
 			continue
 		}
+		for _, l := range w.signals[s].lines {
+			if captainRelevantRE(l, w.CaptainRE) {
+				relevant[s] = l
+			}
+		}
 		class[s] = w.crewClass(s)
-		actionable = actionable || w.surfaced[s] || class[s] != crewWorking
+		actionable = actionable || w.surfaced[s] || class[s] != crewWorking || relevant[s] != ""
 	}
 	appended := 0
 	for _, s := range stories {
@@ -296,9 +311,15 @@ func (w *Watcher) signalTriage(open map[string]bool) (int, error) {
 			// Benign: every crew is provably working, so the batch is absorbed (the suppressor still advances).
 		case !open[s] || w.surfaced[s] || class[s] == crewWorking:
 			// Queued as routine: an unsupervised story's log line, a story that already surfaced, or a working crew in
-			// an actionable batch.
+			// an actionable batch; a captain-relevant line the classifier left routine surfaces on its own.
 			for _, wk := range sg.statuses {
 				if _, err := wake.Append(w.EpicDir, wk); err != nil {
+					return appended, err
+				}
+				appended++
+			}
+			if l := relevant[s]; l != "" && open[s] && !w.surfaced[s] {
+				if err := w.surface(s, wake.KindStale, s+" reported a captain-relevant status: "+l, nil); err != nil {
 					return appended, err
 				}
 				appended++
@@ -418,10 +439,7 @@ func (w *Watcher) stalePass(open map[string]bool) (int, error) {
 		}
 		if w.surfaced[story] {
 			// fm exits the cycle on a surface; cox keeps the bookkeeping so the next tick reads the same quiet interval.
-			if sig := w.activitySig(story); w.sage("hb", w.clockKey(story)) > 1<<61 || func() bool { p, _ := w.sread("sig", story); return p != sig }() {
-				w.swrite("sig", story, sig)
-				w.sstamp("hb", w.clockKey(story))
-			}
+			w.recordQuiet(story)
 			continue
 		}
 		if err := w.staleStory(story); err != nil {
@@ -429,6 +447,15 @@ func (w *Watcher) stalePass(open map[string]bool) (int, error) {
 		}
 	}
 	return w.appendedCount - before, nil
+}
+
+// recordQuiet keeps a surfaced story's quiet-interval bookkeeping (signature and clock) current without classifying it.
+func (w *Watcher) recordQuiet(story string) {
+	sig := w.activitySig(story)
+	if prev, _ := w.sread("sig", story); prev != sig || w.sage("hb", w.clockKey(story)) > 1<<61 {
+		w.swrite("sig", story, sig)
+		w.sstamp("hb", w.clockKey(story))
+	}
 }
 
 func (w *Watcher) staleStory(story string) error {
@@ -861,7 +888,7 @@ func (w *Watcher) staleWaitRecord(story string) {
 // captain call. The idle timer then starts, so the same quiet interval escalates on the wedge schedule.
 func (w *Watcher) surfaceNonterminalStale(story, sig string) error {
 	last, _ := w.statusLine(story)
-	declared, bounded, throttled := false, false, true
+	declared, bounded, fire := false, false, true
 	w.waitDecl = ""
 	switch {
 	case statusPaused(last):
@@ -869,28 +896,28 @@ func (w *Watcher) surfaceNonterminalStale(story, sig string) error {
 		w.waitDecl = "declared:" + w.statusSig(story)
 		if until, ok := statusPausedUntil(last); ok {
 			if w.now().Before(until) {
-				throttled = false
+				fire = false
 			} else {
 				w.waitDecl += ":due"
 				if w.waitThrottled(story, w.waitDecl) {
-					throttled = false
+					fire = false
 				}
 			}
 		} else if w.waitThrottled(story, w.waitDecl) {
-			throttled = false
+			fire = false
 		}
 	case statusCaptainHeld(last):
 		declared, bounded = true, true
 		w.waitDecl = "declared:" + w.statusSig(story)
 		if w.waitThrottled(story, w.waitDecl) {
-			throttled = false
+			fire = false
 		}
 	case w.captainCallBound(story):
-		bounded, throttled = true, false
+		bounded, fire = true, false
 	case w.waitDecl != "":
 		bounded = true
 	}
-	if throttled {
+	if fire {
 		kind, note, ev := wake.KindStale, "stale: "+story, map[string]any{}
 		if _, err := w.probe(story); err != nil {
 			// F08: a failed probe is presence-not-proof - an unknown_probe, and the quiet clock is kept.
@@ -1016,11 +1043,12 @@ func (w *Watcher) heartbeatPass(open map[string]bool, dispatchStory map[string]s
 			return err
 		}
 		w.appendedCount++
+		w.markSurfaced(m.ID) // recorded per append, so a later failure never re-surfaces this one
 		found = append(found, m.ID)
 	}
 	w.sstamp("heartbeat", "last")
 	if len(found) > 0 {
-		w.markSurfaced(found...)
+		w.swrite("heartbeat", "streak", "0")
 		return nil
 	}
 	w.swrite("heartbeat", "streak", strconv.Itoa(streak+1))

@@ -30,8 +30,23 @@ const (
 )
 
 // ciRunning reports whether the story's PR has a CI check queued or in progress at its head: yes, no, or unknown (the
-// forge could not be read, or no forge is configured). The PR is resolved from the story branch story/<id>.
+// forge could not be read, or no forge is configured). The PR is resolved from the story branch story/<id>; the read is
+// cached for the tick (two forge calls).
 func (w *Watcher) ciRunning(story string) (running, known bool) {
+	if r, ok := w.ci[story]; ok {
+		return r.running, r.known
+	}
+	running, known = w.readCI(story)
+	if w.ci == nil {
+		w.ci = map[string]ciResult{}
+	}
+	w.ci[story] = ciResult{running, known}
+	return running, known
+}
+
+type ciResult struct{ running, known bool }
+
+func (w *Watcher) readCI(story string) (running, known bool) {
 	if w.Forge == nil {
 		return false, false
 	}
@@ -83,8 +98,7 @@ func (w *Watcher) busyNow(story string) bool {
 		if busyRecordPresent(w.EpicDir, story) || !hasSess {
 			return false
 		}
-		cs, err := w.Backend.Composer(sess)
-		return err == nil && cs == backend.ComposerBusy
+		return w.nativeComposer(sess) == backend.ComposerBusy
 	default:
 		return false
 	}
@@ -93,11 +107,22 @@ func (w *Watcher) busyNow(story string) bool {
 	}
 	if rec, ok := busy.ReadRecord(w.EpicDir, story); ok && rec.Source == "dispatch" && hasSess {
 		// The dispatch seed with no harness event since is evidence only while the backend does not see an idle agent.
-		if cs, err := w.Backend.Composer(sess); err == nil && cs == backend.ComposerEmpty {
+		if w.nativeComposer(sess) == backend.ComposerEmpty {
 			return false
 		}
 	}
 	return true
+}
+
+// nativeComposer is the backend's own reading of the worker's composer (Orca agents[] state and screen classifier),
+// never the busy record: the session is passed without its story, which is what makes a backend consult the record.
+func (w *Watcher) nativeComposer(sess backend.Session) string {
+	sess.Story = ""
+	cs, err := w.Backend.Composer(sess)
+	if err != nil {
+		return backend.ComposerUnknown
+	}
+	return cs
 }
 
 func busyRecordPresent(epic, story string) bool {
