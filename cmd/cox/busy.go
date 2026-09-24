@@ -10,7 +10,7 @@ import (
 	"github.com/nphattai/coxswain/internal/protocol/busy"
 )
 
-// cmdBusy implements `cox busy arm|apply|read|retire <story> --epic <dir>`, the harness-neutral entry point to the
+// cmdBusy implements `cox busy arm|apply|progress|read|retire <story> --epic <dir>`, the harness-neutral entry point to the
 // busy-state record (DESIGN wave-2 item 6). Any harness hook - a Claude UserPromptSubmit/Stop/SessionEnd hook, the Pi
 // extension, or a future Codex hook - reports idle/busy through this command instead of a backend guessing from a UI.
 // The gen minted by `arm` is threaded to the harness via the launch env (COX_BUSY_GEN); `apply` and `retire` present it
@@ -23,12 +23,14 @@ func cmdBusy(args []string) int {
 		return busyArm(rest)
 	case "apply":
 		return busyApply(rest)
+	case "progress":
+		return busyProgress(rest)
 	case "read":
 		return busyRead(rest)
 	case "retire":
 		return busyRetire(rest)
 	default:
-		return usageErr("cox busy arm|apply|read|retire <story> --epic <dir>")
+		return usageErr("cox busy arm|apply|progress|read|retire <story> --epic <dir>")
 	}
 }
 
@@ -84,6 +86,28 @@ func busyApply(args []string) int {
 		return usageErr("cox busy apply <busy|idle|unknown> --story <id> --gen <g> --source <s> --event <e> --epic <dir>")
 	}
 	if err := busy.Apply(*epicDir, story, state, *gen, *source, *event); err != nil {
+		return fail("%v", err)
+	}
+	return 0
+}
+
+// busyProgress is fm-busy-event.sh progress: record observed native-harness activity for the armed incarnation
+// (the progress marker) without changing the semantic busy state; a stale gen is refused and writes nothing.
+func busyProgress(args []string) int {
+	story, rest := onePositional(args)
+	fs := flag.NewFlagSet("busy progress", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	epicDir := fs.String("epic", os.Getenv("COX_EPIC"), "epic directory")
+	storyFlag := fs.String("story", os.Getenv("COX_STORY"), "story id (defaults to $COX_STORY)")
+	gen := fs.String("gen", os.Getenv("COX_BUSY_GEN"), "the incarnation gen minted at arm (defaults to $COX_BUSY_GEN)")
+	if err := fs.Parse(rest); err != nil {
+		return 2
+	}
+	story = nonEmpty(story, *storyFlag)
+	if *epicDir == "" || story == "" || *gen == "" {
+		return usageErr("cox busy progress <story> --gen <g> --epic <dir>")
+	}
+	if err := busy.Progress(*epicDir, story, *gen); err != nil {
 		return fail("%v", err)
 	}
 	return 0
