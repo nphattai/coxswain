@@ -1231,7 +1231,10 @@ func fmPiNodeCase(t *testing.T, name string) {
 
 // fmBanner is cox's pull-side watcher-down warning: the ISSUE line `cox doctor` and `cox state` print for an epic
 // (watcherIssue over watcherInfo), firstmate's fm-guard.sh banner. "" means silent.
-func fmBanner(epic string) string { return watcherIssue(epic, watcherInfo(epic)) }
+func fmBanner(epic string) string { return guardBanner(epic, false) }
+
+// fmBannerRO is the read-only caller (firstmate FM_GUARD_READ_ONLY=1; cox doctor).
+func fmBannerRO(epic string) string { return guardBanner(epic, true) }
 
 // fmWantFullBanner asserts firstmate's "exactly one full WATCHER DOWN banner" carrying the actionable repair.
 func fmWantFullBanner(t *testing.T, got, epic, why string) {
@@ -1340,34 +1343,66 @@ func fmGuardStaleBanner(t *testing.T) {
 
 	// fm: tests/fm-guard-stale-banner.test.sh:315
 	t.Run("read_only_before_writable_does_not_consume_full_banner", func(t *testing.T) {
-		// Needs the read-only vs writable caller split over the down-episode marker; cox has neither.
-		notImplemented(t, "stale-banner episode dedup: a per-epic down-episode marker claimed once and kept by read-only callers")
+		epic := fmBannerEpic(t)
+		marker := coxPath(epic, "guard-watcher-stale-banner")
+		ro := fmBannerRO(epic)
+		fmWantFullBanner(t, ro, epic, "read-only stale call (advisory full banner)")
+		if fmExists(marker) || fmExists(marker+".lock") {
+			t.Fatal("a read-only stale call must not create the stale-banner marker or its lock")
+		}
+		fmWantFullBanner(t, fmBanner(epic), epic, "writable stale call after the read-only one")
+		if !fmExists(marker) {
+			t.Fatal("the writable stale call must claim the stale-banner marker")
+		}
 	})
 
 	// fm: tests/fm-guard-stale-banner.test.sh:335
 	t.Run("read_only_during_episode_observes_without_mutating_marker", func(t *testing.T) {
 		epic := fmBannerEpic(t)
 		first := fmBanner(epic)
-		fmWantReminder(t, first, fmBanner(epic), "read-only call during a claimed episode")
+		before, _ := os.ReadFile(coxPath(epic, "guard-watcher-stale-banner"))
+		fmWantReminder(t, first, fmBannerRO(epic), "read-only call during a claimed episode")
+		if after, _ := os.ReadFile(coxPath(epic, "guard-watcher-stale-banner")); string(after) != string(before) {
+			t.Fatalf("a read-only stale call must not update an existing marker: %q -> %q", before, after)
+		}
 	})
 
 	// fm: tests/fm-guard-stale-banner.test.sh:351
 	t.Run("healthy_read_only_does_not_clear_marker", func(t *testing.T) {
-		// Needs the per-epic down-episode marker a writable call claims; cox keeps none.
-		notImplemented(t, "stale-banner episode dedup: a per-epic down-episode marker claimed once and kept by read-only callers")
+		epic := fmBannerEpic(t)
+		fmBanner(epic)
+		before, _ := os.ReadFile(coxPath(epic, "guard-watcher-stale-banner"))
+		fmHealthy(t, epic)
+		if b := fmBannerRO(epic); b != "" {
+			t.Fatalf("a healthy read-only guard must stay silent, got %q", b)
+		}
+		after, err := os.ReadFile(coxPath(epic, "guard-watcher-stale-banner"))
+		if err != nil || string(after) != string(before) {
+			t.Fatalf("a healthy read-only guard must not clear or update the marker: %q -> %q (%v)", before, after, err)
+		}
 	})
 
 	// fm: tests/fm-guard-stale-banner.test.sh:373
 	t.Run("read_only_never_mutates_stale_banner_state_files", func(t *testing.T) {
 		epic := fmBannerEpic(t)
+		marker := coxPath(epic, "guard-watcher-stale-banner")
+		mustWrite(t, marker, "sentinel-marker\n")
 		before := fmTree(t, epic)
-		fmBanner(epic)
+		fmBannerRO(epic)
 		if after := fmTree(t, epic); after != before {
 			t.Fatalf("a read-only stale call changed the control tree:\nbefore %s\nafter  %s", before, after)
 		}
+		if fmExists(marker + ".lock") {
+			t.Fatal("a read-only stale call must not create the stale-banner lock")
+		}
 		quiet := fmEpic(t)
-		if b := fmBanner(quiet); b != "" {
+		mustWrite(t, coxPath(quiet, "guard-watcher-stale-banner"), "sentinel-marker\n")
+		qBefore := fmTree(t, quiet)
+		if b := fmBannerRO(quiet); b != "" {
 			t.Fatalf("no open story must stay silent, got %q", b)
+		}
+		if fmTree(t, quiet) != qBefore {
+			t.Fatal("a no-work read-only call changed the stale-banner state files")
 		}
 	})
 
@@ -1470,7 +1505,11 @@ func fmGuardStaleBanner(t *testing.T) {
 		if runPromptDrain(epic, &out) == 0 || !strings.Contains(out.String(), "stuck") {
 			t.Fatalf("the queued-wake warning must fire, got %q", out.String())
 		}
-		if b := fmBanner(epic); b != "" {
+		b := fmBanner(epic)
+		if !strings.Contains(b, "queued wakes pending") {
+			t.Fatalf("the pull guard's queued-wake warning must still fire, got %q", b)
+		}
+		if strings.Contains(b, "WATCHER DOWN - SUPERVISION IS OFF") {
 			t.Fatalf("a queued wake must not resurrect the watcher-down banner, got %q", b)
 		}
 	})

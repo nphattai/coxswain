@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -61,18 +62,125 @@ func watcherLine(wi watchInfo, now time.Time) string {
 	return fmt.Sprintf("watcher: pid %d %s, %s", wi.Pid, alive, tick)
 }
 
-// watcherIssue returns a non-empty ISSUE string when the watcher is not alive but the epic still has an active story
-// (working or input_required): nobody is delivering its wakes, and nothing else surfaces it (the dogfood gap, M14).
-func watcherIssue(epicDir string, wi watchInfo) string {
-	if wi.Alive {
+// watcherIssue is the read-only pull warning `cox doctor` prints for an epic (guardBanner, readOnly): "" when the epic
+// needs no supervision or its watcher is healthy.
+func watcherIssue(epicDir string) string { return guardBanner(epicDir, true) }
+
+// staleBannerMu serializes this process's own episode claims; the file lock serializes processes (it keys on the pid).
+var staleBannerMu sync.Mutex
+
+// guardBanner is firstmate's pull-based guard (bin/fm-guard.sh, persistent-watcher model) for one epic, the warning
+// supervision commands print mid-turn. When the epic needs supervision and its watcher is not healthy (watcherHealthy)
+// it returns the full WATCHER DOWN banner once per down episode - keyed on the failing condition (no-watcher: a fresh
+// beacon with no live identity-matched watcher; stale-beacon: otherwise), never on the beacon mtime - claimed under
+// <epic>/.cox/guard-watcher-stale-banner(.lock), and a one-line reminder for every later call in that episode. A healthy
+// or no-need call ends the episode. A read-only caller (`cox doctor`; firstmate's session-start with
+// FM_GUARD_READ_ONLY=1) never creates, updates or clears the marker or its lock: it prints the full banner until a
+// writable caller has claimed the episode, then the reminder. The queued-wakes warning is independent of the dedup and
+// follows the banner.
+func guardBanner(epicDir string, readOnly bool) string {
+	marker := coxPath(epicDir, "guard-watcher-stale-banner")
+	need := supervisionNeeds(epicDir)
+	if !need.needed() {
+		if !readOnly {
+			_ = os.Remove(marker)
+		}
 		return ""
 	}
-	open, err := watch.OpenStories(epicDir)
-	if err != nil || len(open) == 0 {
-		return ""
+	var b strings.Builder
+	if !watcherHealthy(epicDir, time.Now()) {
+		reason := "stale-beacon"
+		if pathAge(beaconPath(epicDir)) < watch.DefaultGrace {
+			reason = "no-watcher"
+		}
+		full := false
+		if readOnly {
+			full = readTrimmed(marker) != reason
+		} else {
+			full = claimStaleBanner(epicDir, reason)
+		}
+		grace := int(watch.DefaultGrace.Seconds())
+		if full {
+			const rule = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+			cause := fmt.Sprintf("no live watcher process holds this epic's lock (last beat: %s)", beaconDesc(epicDir))
+			if reason == "stale-beacon" {
+				cause = fmt.Sprintf("no watcher has a fresh beacon (watch/lasttick last beat: %s, grace %ds)", beaconDesc(epicDir), grace)
+			}
+			fmt.Fprintf(&b, "●%s\n●  WATCHER DOWN - SUPERVISION IS OFF\n", rule)
+			fmt.Fprintf(&b, "●  %s, but %s.\n", need.desc(), cause)
+			if readOnly {
+				b.WriteString("●  This read-only check should report the lapse, not repair it.\n")
+			} else {
+				b.WriteString("●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.\n")
+			}
+			b.WriteString("●  This is a supervision warning only; the guarded operation WILL still run.\n")
+			fmt.Fprintf(&b, "●  Watcher for %s is not alive; run: cox watch --epic %s --replace\n", filepath.Base(epicDir), epicDir)
+			fmt.Fprintf(&b, "●%s\n", rule)
+		} else {
+			fmt.Fprintf(&b, "WARNING: watcher still down (same stale episode; last beat: %s, grace %ds) - full banner already printed this episode.\n", beaconDesc(epicDir), grace)
+		}
+	} else if !readOnly {
+		_ = os.Remove(marker)
 	}
-	return fmt.Sprintf("watcher not alive for %s but %d story(ies) still active (%s); run cox watch --epic %s --replace",
-		filepath.Base(epicDir), len(open), strings.Join(open, ","), epicDir)
+	if w, err := wake.Drain(epicDir, true); err == nil && len(w) > 0 {
+		if readOnly {
+			fmt.Fprintf(&b, "WARNING: queued wakes pending - this read-only check leaves them untouched; drain them with cox wake drain --epic %s.\n", epicDir)
+		} else {
+			fmt.Fprintf(&b, "WARNING: queued wakes pending - drain them with cox wake drain --epic %s before anything else.\n", epicDir)
+		}
+	}
+	return b.String()
+}
+
+// claimStaleBanner is fm_guard_claim_stale_banner: true when this call owns the episode's full banner. The marker is one
+// line (the episode key), re-checked under the lock so concurrent claims are idempotent; contention past the spin
+// budget stays loud rather than dropping the alarm.
+func claimStaleBanner(epicDir, key string) bool {
+	staleBannerMu.Lock()
+	defer staleBannerMu.Unlock()
+	marker := coxPath(epicDir, "guard-watcher-stale-banner")
+	lock := marker + ".lock"
+	for i := 0; i < 50; i++ {
+		if readTrimmed(marker) == key {
+			return false
+		}
+		if _, err := tryLock(lock, nil); err == nil {
+			seen := readTrimmed(marker)
+			if seen != key {
+				_ = os.WriteFile(marker, []byte(key+"\n"), 0o644)
+			}
+			releaseLock(lock)
+			return seen != key
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return true
+}
+
+// supervisionNeed is fm_supervision_status's need counts for an epic.
+type supervisionNeed struct{ open, sources, checks int }
+
+func (n supervisionNeed) needed() bool { return n.open+n.sources+n.checks > 0 }
+
+// desc is the banner's need clause (firstmate's precedence: tasks, then sources, then checks).
+func (n supervisionNeed) desc() string {
+	switch {
+	case n.open > 0:
+		return fmt.Sprintf("%d story(ies) in flight", n.open)
+	case n.sources > 0:
+		return fmt.Sprintf("%d process-event source(s) registered", n.sources)
+	default:
+		return fmt.Sprintf("%d registered custom check(s)", n.checks)
+	}
+}
+
+// supervisionNeeds counts what needs a watcher: open stories (working or input_required).
+func supervisionNeeds(epicDir string) supervisionNeed {
+	var n supervisionNeed
+	if open, err := watch.OpenStories(epicDir); err == nil {
+		n.open = len(open)
+	}
+	return n
 }
 
 // agoStr renders a short human age (12s, 4m, 2h) for the watcher's last-tick line.

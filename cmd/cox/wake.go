@@ -86,6 +86,8 @@ func wakeWait(args []string) int {
 		return fail("%v", err)
 	}
 	if timedOut {
+		// fm-watch-checkpoint.sh's quiet line (exit 124 there, 3 here): a clean statement naming the window.
+		fmt.Printf("checkpoint: no actionable wake within %s\n", *max)
 		return 3 // exit 3 on timeout (brief F)
 	}
 	printWakes(wakes, false)
