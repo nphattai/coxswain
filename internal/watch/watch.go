@@ -95,7 +95,11 @@ type Watcher struct {
 	// CaptainRE overrides the captain-relevance regex a quiet worker's last status line is read with (FM_CAPTAIN_RE);
 	// nil => the default verbs and tokens.
 	CaptainRE *regexp.Regexp
-	Now       func() time.Time
+	// CheckInterval / CheckTimeout pace the registered custom-check sweep (FM_CHECK_INTERVAL / FM_CHECK_TIMEOUT);
+	// 0 => COX_CHECK_INTERVAL / COX_CHECK_TIMEOUT seconds, else DefaultCheckInterval / DefaultCheckTimeout.
+	CheckInterval time.Duration
+	CheckTimeout  time.Duration
+	Now           func() time.Time
 
 	tickCount     int       // ticks since start, for pacing the reconcile pass
 	prevTick      time.Time // when the previous Tick ran (zero before the first)
@@ -111,6 +115,7 @@ type Watcher struct {
 	ci         map[string]ciResult
 	probes     map[string]probeResult
 	waitDecl   string
+	stop       <-chan struct{} // Run's stop channel; a running custom check is cancelled when it closes
 }
 
 func (w *Watcher) now() time.Time {
@@ -154,9 +159,17 @@ func (w *Watcher) Tick() (int, error) {
 	}
 	appended := 0
 
+	// Registered custom checks run before the signal scan (fm-watch.sh:2470: a check placed after it would starve
+	// behind a chatty crew).
+	n, err := w.checkPass()
+	if err != nil {
+		return appended, err
+	}
+	appended += n
+
 	// Per-tick urgency no longer gates the doorbell; nudgeLeader reads the standing unacked backlog and rate-limits the
 	// re-nudge itself (item 3, B-33), so the urg return of each pass is discarded here.
-	n, _, err := w.mailPass(dispatchStory)
+	n, _, err = w.mailPass(dispatchStory)
 	if err != nil {
 		return appended, err
 	}
@@ -373,6 +386,7 @@ func (w *Watcher) Run(stop <-chan struct{}, poll time.Duration) {
 	if poll <= 0 {
 		poll = DefaultPoll
 	}
+	w.stop = stop
 	for {
 		// Self-eviction (item 2, B-37): a watcher whose epic dir, .cox control tree, or own binary has vanished, or whose
 		// epic has been closed (.cox.closed), keeps polling a temp root forever otherwise. Check before Tick so the pass

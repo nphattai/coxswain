@@ -34,7 +34,7 @@ Superseded by cox-supervision-port wave 2 (firstmate `1e0e773` translated):
 - `stale` and `unknown_probe` are urgent, not routine (leader ruling 2026-09-24).
 - `check` (urgent) carries a registered custom check's output as `check: <path>: <out>`, or
   `check: rejected unauthenticated state checks: <paths>` for a check whose bytes no longer match its registration
-  (firstmate's check row, `bin/fm-watch.sh` check sweep). See `cox watch check register`.
+  (firstmate's check row, `bin/fm-watch.sh` check sweep). Cadence and timeout: [Registered checks](../handoff.md#registered-checks-and-the-cycle-ledger).
 - A corrupt queue line is retired instead of failing every drain, and a schema-less row is adopted instead of
   skipped.
 

@@ -40,6 +40,7 @@ import (
 	"github.com/nphattai/coxswain/internal/protocol/report"
 	"github.com/nphattai/coxswain/internal/protocol/status"
 	"github.com/nphattai/coxswain/internal/state"
+	"github.com/nphattai/coxswain/internal/supervision"
 	"github.com/nphattai/coxswain/internal/wake"
 	"github.com/nphattai/coxswain/internal/watch"
 	"github.com/nphattai/coxswain/internal/workspace"
@@ -236,7 +237,27 @@ func TestPortWakeQueue(t *testing.T) {
 		staleEnqueueBeforeSuppressor(t, errors.New("probe: terminal gone"))
 	})
 
-	// n/a check_output_is_queued fm:tests/fm-wake-queue.test.sh:157 - registered custom checks (fm-check-register.sh) have no cox counterpart
+	// fm: tests/fm-wake-queue.test.sh:157
+	t.Run("FM/fm-wake-queue/check_output_is_queued", func(t *testing.T) {
+		epic := newEpic(t)
+		control := filepath.Join(epic, state.ControlDir)
+		check := filepath.Join(control, "task.check.sh")
+		must(t, os.WriteFile(check, []byte("#!/usr/bin/env bash\nprintf 'merged: https://example.test/pr/1\\n'\n"), 0o700))
+		must(t, supervision.Register(control, "task"))
+		t.Setenv("COX_CHECK_INTERVAL", "0")
+		w := &watch.Watcher{EpicDir: epic, Backend: fake.New()}
+		_, _ = w.Tick()
+		found := false
+		for _, wk := range drain(t, epic) {
+			found = found || wk.Kind == wake.KindCheck && wk.Note == "check: "+check+": merged: https://example.test/pr/1"
+		}
+		if !found {
+			red(t, "watch.check-sweep", "check wake was not queued")
+		}
+		if _, err := os.Stat(filepath.Join(control, "watch", "check", "last")); err != nil {
+			red(t, "watch.check-sweep", "check cadence marker was not written after queue append")
+		}
+	})
 
 	// fm: tests/fm-wake-queue.test.sh:181
 	t.Run("FM/fm-wake-queue/atomic_double_drain", func(t *testing.T) {
