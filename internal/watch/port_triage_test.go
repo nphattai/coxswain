@@ -8,9 +8,11 @@ package watch
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -853,5 +855,1495 @@ func TestPortTriageA2(t *testing.T) {
 		wantSurfaced(t, r.tick(), "a captain-relevant needs-decision signal")
 		// fm also records the .hb-surfaced marker the heartbeat backstop reads; cox has no backstop.
 		notImplemented(t, pA2MechHBBackstop)
+	})
+}
+
+const (
+	pBMechTurnEnd    = "turn-end triage: a stopped worker with no report since its turn began surfaces (idleNoDonePass requires a steer)"
+	pBMechStale      = "stale escalation: a silent worker past the stale threshold escalates (stalePass only fires on a failed/unknown probe)"
+	pBMechDeclWait   = "declared wait: paused / captain-held status verbs"
+	pBMechFold       = "decision fold: open/close decisions by [key=] across a worker's status history"
+	pBMechWedge      = "wedge detector: escalation schedule, deep inspection, write deferral"
+	pBMechRunStep    = "run-step authority: an active pipeline run overrides a stale/terminal status"
+	pBMechCadence    = "wait cadence: paused-until / resurface throttle"
+	pBMechUnreadable = "unreadable status source: a failed status read is reported once per failure state and preserved content surfaces on recovery"
+
+	pBPoll       = 5 * time.Second // one watcher poll (DefaultPoll)
+	pBDeepInsp   = "demand-deep-inspection: same pane has wedge-escalated 3 times in a row"
+	pBGateKeyLog = "needs-decision [key=nm-01RUNGATE-review]: the gate raised an authority question"
+)
+
+// pBRig builds a port rig whose backend Probe reports live and whose busy record is set to st ("" leaves none).
+func pBRig(t *testing.T, live backend.Liveness, st string) *portRig {
+	t.Helper()
+	r := newPortRig(t)
+	r.liveness(live)
+	if st != "" {
+		r.busySet(st)
+	}
+	return r
+}
+
+// pBSay queues one worker status line (a firstmate status-file line) with a unique message id.
+func pBSay(r *portRig, line string) { r.mail(fmt.Sprintf("pB%d", len(r.mb.Queue)), "status", line) }
+
+// pBPrime delivers lines plus a closing heartbeat and consumes them in one tick, discarding the wakes: the firstmate
+// fixture's `.seen-*` priming (the lines were already classified and handled) with the worker's last liveness ping.
+func pBPrime(r *portRig, lines ...string) {
+	r.t.Helper()
+	for _, l := range lines {
+		pBSay(r, l)
+	}
+	r.heartbeat(fmt.Sprintf("pB%d", len(r.mb.Queue)))
+	r.tick()
+}
+
+// pBRound advances the clock by d and runs one tick.
+func pBRound(r *portRig, d time.Duration) []wake.Wake {
+	r.t.Helper()
+	r.advance(d)
+	return r.tick()
+}
+
+// pBText is a wake's note plus its full text, for wording assertions.
+func pBText(w wake.Wake) string { return w.Note + "\n" + w.Full }
+
+// pBAlarms counts the story's wakes that alarm the leader: an urgent kind, or a stale / unknown_probe wake (firstmate
+// counts `stale` queue rows).
+func pBAlarms(ws []wake.Wake) int {
+	n := 0
+	for _, w := range ws {
+		if w.Story == portStory && (wake.IsUrgent(w.Kind) || w.Kind == wake.KindStale || w.Kind == wake.KindUnknownProbe) {
+			n++
+		}
+	}
+	return n
+}
+
+// pBWantNote asserts an urgent wake for the story whose text contains sub.
+func pBWantNote(t *testing.T, ws []wake.Wake, sub, why string) {
+	t.Helper()
+	for _, w := range ws {
+		if w.Story == portStory && wake.IsUrgent(w.Kind) && strings.Contains(pBText(w), sub) {
+			return
+		}
+	}
+	t.Errorf("want an urgent wake containing %q (%s), got %v", sub, why, kinds(ws))
+}
+
+// pBNoNote asserts no wake for the story carries sub.
+func pBNoNote(t *testing.T, ws []wake.Wake, sub, why string) {
+	t.Helper()
+	for _, w := range ws {
+		if w.Story == portStory && strings.Contains(pBText(w), sub) {
+			t.Errorf("unwanted %q in a %s wake (%s): %s", sub, w.Kind, why, w.Note)
+		}
+	}
+}
+
+// pBWantKind asserts a wake of kind k for the story.
+func pBWantKind(t *testing.T, ws []wake.Wake, k wake.Kind, why string) {
+	t.Helper()
+	for _, w := range ws {
+		if w.Story == portStory && w.Kind == k {
+			return
+		}
+	}
+	t.Errorf("want a %s wake (%s), got %v", k, why, kinds(ws))
+}
+
+// pBNoKind asserts no wake of kind k for the story.
+func pBNoKind(t *testing.T, ws []wake.Wake, k wake.Kind, why string) {
+	t.Helper()
+	for _, w := range ws {
+		if w.Story == portStory && w.Kind == k {
+			t.Errorf("unwanted %s wake (%s): %s", k, why, w.Note)
+		}
+	}
+}
+
+// pBWantStale asserts the tick raised a stale-kind wake (stale or unknown_probe) for the story.
+func pBWantStale(t *testing.T, ws []wake.Wake, why string) {
+	t.Helper()
+	for _, w := range ws {
+		if w.Story == portStory && (w.Kind == wake.KindStale || w.Kind == wake.KindUnknownProbe) {
+			return
+		}
+	}
+	t.Errorf("want a stale wake (%s), got %v", why, kinds(ws))
+}
+
+// pBLadder runs n wedge-threshold rounds and wants escalation k at round k, with the deep-inspection demand at 3.
+func pBLadder(t *testing.T, r *portRig, n int, why string) {
+	t.Helper()
+	var all []wake.Wake
+	for k := 1; k <= n; k++ {
+		ws := pBRound(r, pBPoll)
+		all = append(all, ws...)
+		pBWantNote(t, ws, fmt.Sprintf("possible wedge, escalation %d", k), why)
+	}
+	if n >= 3 {
+		pBWantNote(t, all, pBDeepInsp, why)
+	}
+}
+
+// pBAbsorbRounds runs n poll rounds and wants no alarm and no wedge wording in any.
+func pBAbsorbRounds(t *testing.T, r *portRig, n int, why string) {
+	t.Helper()
+	for k := 1; k <= n; k++ {
+		ws := pBRound(r, pBPoll)
+		if a := pBAlarms(ws); a != 0 {
+			t.Errorf("round %d: %d alarm(s) (%s): %v", k, a, why, kinds(ws))
+		}
+		pBNoNote(t, ws, "possible wedge", why)
+	}
+}
+
+// pBWaitSecs reads the wait age a recheck publishes ("waiting <N>s"), -1 when absent.
+func pBWaitSecs(ws []wake.Wake) int {
+	re := regexp.MustCompile(`waiting (\d+)s`)
+	for _, w := range ws {
+		if m := re.FindStringSubmatch(pBText(w)); w.Story == portStory && m != nil {
+			n, _ := strconv.Atoi(m[1])
+			return n
+		}
+	}
+	return -1
+}
+
+// pBFlakyMail is the fake mailbox with an injectable read failure (an unreadable status source).
+type pBFlakyMail struct {
+	*fake.Mailbox
+	err error
+}
+
+func (m *pBFlakyMail) Check() ([]backend.Message, string, error) {
+	if m.err != nil {
+		return nil, "", m.err
+	}
+	return m.Mailbox.Check()
+}
+
+type pBFlakyBackend struct {
+	*fake.Backend
+	mb *pBFlakyMail
+}
+
+func (b *pBFlakyBackend) Mail() backend.Mailbox { return b.mb }
+
+// pBFlaky swaps the rig's watcher onto a mailbox whose reads can fail.
+func pBFlaky(r *portRig) *pBFlakyMail {
+	m := &pBFlakyMail{Mailbox: r.mb}
+	r.w.Backend = &pBFlakyBackend{Backend: r.b, mb: m}
+	return m
+}
+
+// pBTickErr runs one tick that may fail and returns the wakes it appended (for any story) and the tick error.
+func pBTickErr(r *portRig) ([]wake.Wake, error) {
+	r.t.Helper()
+	before, err := wake.Drain(r.epic, true)
+	portMust(r.t, err)
+	_, tickErr := r.w.Tick()
+	after, err := wake.Drain(r.epic, true)
+	portMust(r.t, err)
+	return after[len(before):], tickErr
+}
+
+func TestPortTriageB(t *testing.T) {
+	const s = "FM/fm-watch-triage/"
+
+	t.Run(s+"needs_decision_signal_payload_marked_for_branch_exclusion", func(t *testing.T) {
+		// fm: tests/fm-watch-triage.test.sh:1797
+		// cox: mailPass (wake.Classify)
+		// The branch-exclusion payload marker is firstmate's main-vs-branch routing; cox has one leader, so the
+		// requirement is that the needs-decision reaches it as a leader-blocking decision (input_required, urgent).
+		r := pBRig(t, backend.Alive, "")
+		pBSay(r, "working: setup")
+		pBSay(r, "needs-decision: pick A or B")
+		ws := r.tick()
+		wantSurfaced(t, ws, "an actionable needs-decision signal")
+		pBWantKind(t, ws, wake.KindInputRequired, "needs-decision is a leader-owed decision")
+	})
+
+	t.Run(s+"needs_decision_reconciliation_required_still_marked", func(t *testing.T) {
+		// fm: tests/fm-watch-triage.test.sh:1816
+		// cox: mailPass (wake.Classify)
+		// firstmate wraps a rejected reserved key as reconciliation-required; the decision must still reach the leader.
+		r := pBRig(t, backend.Alive, "")
+		pBSay(r, "needs-decision [key=pending-reply-x]: unrelated request")
+		pBSay(r, "working: awaiting reconciliation")
+		ws := r.tick()
+		wantSurfaced(t, ws, "a rejected-reserved-key needs-decision")
+		pBWantKind(t, ws, wake.KindInputRequired, "still a needs-decision")
+	})
+
+	t.Run(s+"captain_held_signal_payload_marked_for_branch_exclusion", func(t *testing.T) {
+		// fm: tests/fm-watch-triage.test.sh:1834
+		// cox: mechDeclWait (mailPass)
+		r := pBRig(t, backend.Alive, busy.Busy) // positive evidence the worker is still working
+		pBSay(r, "captain-held [key=route]: awaiting the captain")
+		ws := r.tick()
+		wantSurfaced(t, ws, "a captain-held declaration stays actionable while the worker is busy")
+		pBWantKind(t, ws, wake.KindInputRequired, "captain-held is a leader-owed decision")
+	})
+
+	t.Run(s+"pending_reply_escalation_signal_payload_marked_for_branch_exclusion", func(t *testing.T) {
+		// fm: tests/fm-watch-triage.test.sh:1851
+		// cox: mailPass (wake.Classify)
+		r := pBRig(t, backend.Alive, "")
+		const corr = "0123456789abcdef"
+		pBSay(r, "blocked [key=pending-reply-"+corr+"]: pending-reply-missed: task=task pending-reply-id="+corr+" request=finish report")
+		ws := r.tick()
+		wantSurfaced(t, ws, "a pending-reply escalation")
+		pBWantKind(t, ws, wake.KindInputRequired, "a missed pending reply is a leader-owed decision")
+	})
+
+	t.Run(s+"ordinary_blocked_signal_payload_remains_branch_eligible", func(t *testing.T) {
+		// fm: tests/fm-watch-triage.test.sh:1867
+		// cox: mailPass (wake.Classify)
+		// Branch eligibility has no cox analog (one leader); the translatable half is that an ordinary blocker surfaces.
+		r := pBRig(t, backend.Alive, "")
+		pBSay(r, "blocked [key=dependency]: waiting for an upstream release")
+		wantSurfaced(t, r.tick(), "an ordinary blocked event")
+	})
+
+	t.Run(s+"routine_signal_payload_not_marked_needs_decision", func(t *testing.T) {
+		// fm: tests/fm-watch-triage.test.sh:1886
+		// cox: mailPass (wake.Classify)
+		r := pBRig(t, backend.Alive, "")
+		pBSay(r, "working: setup")
+		pBSay(r, "done: migration complete ; needs-decision: documented in follow-up")
+		ws := r.tick()
+		wantSurfaced(t, ws, "an actionable done signal")
+		pBWantKind(t, ws, wake.KindWorkerDone, "done: is the completion verb")
+		pBNoKind(t, ws, wake.KindInputRequired, "a done line quoting a needs-decision phrase is not a decision")
+	})
+
+	t.Run(s+"actionable_signal_survives_a_later_routine_append", func(t *testing.T) {
+		// fm: tests/fm-watch-triage.test.sh:1909
+		// cox: mailPass (wake.Classify); firstmate mechanism: mechSpan
+		r := pBRig(t, backend.Alive, busy.Busy)
+		pBPrime(r, "working: setup")
+		pBSay(r, "needs-decision: pick A or B")
+		pBSay(r, "working: still tidying the branch")
+		ws := r.tick()
+		wantSurfaced(t, ws, "a needs-decision followed by a routine working: line while the worker is busy")
+		pBWantKind(t, ws, wake.KindInputRequired, "the masked decision")
+	})
+
+	t.Run(s+"keyed_decision_signal_reads_only_the_new_span", func(t *testing.T) {
+		// fm: tests/fm-watch-triage.test.sh:1941
+		// cox: mechFold (mailPass)
+		// The span-reader byte bound is a bash cost concern; the cox analog is that a long, already-classified history
+		// yields no wake again and only the new messages are classified.
+		r := pBRig(t, backend.Alive, "")
+		var hist []string
+		for i := 1; i <= 60; i++ {
+			hist = append(hist, fmt.Sprintf("needs-decision [key=q%d]: choose option %d", i, i),
+				fmt.Sprintf("resolved [key=q%d]: took the first option", i))
+		}
+		pBPrime(r, hist...)
+		pBSay(r, "needs-decision [key=fresh]: pick the rollout window")
+		pBSay(r, "working: preparing both windows")
+		ws := r.tick()
+		n := 0
+		for _, w := range ws {
+			if w.Story == portStory {
+				n++
+			}
+		}
+		if n > 2 {
+			t.Errorf("classifying 2 new lines re-read the history: %d wakes %v", n, kinds(ws))
+		}
+		wantSurfaced(t, ws, "a still-open keyed decision appended to a long decision history")
+		pBWantKind(t, ws, wake.KindInputRequired, "the fresh keyed decision is open")
+	})
+
+	t.Run(s+"release_completion_survives_a_later_routine_append", func(t *testing.T) {
+		// fm: tests/fm-watch-triage.test.sh:1978
+		// cox: mailPass (wake.Classify)
+		r := pBRig(t, backend.Alive, busy.Busy)
+		pBPrime(r, "working: publishing")
+		pBSay(r, "done: release 1.4.0 published and installed")
+		pBSay(r, "working: cleaning the build dir")
+		ws := r.tick()
+		wantSurfaced(t, ws, "a finished release before routine cleanup chatter")
+		pBWantKind(t, ws, wake.KindWorkerDone, "done: is the completion verb")
+	})
+
+	t.Run(s+"routine_appends_after_a_classified_event_stay_absorbed", func(t *testing.T) {
+		// fm: tests/fm-watch-triage.test.sh:1999
+		// cox: mailPass (wake.Classify)
+		r := pBRig(t, backend.Alive, busy.Busy)
+		pBPrime(r, "working: setup", "needs-decision: pick A or B")
+		pBSay(r, "working: still tidying the branch")
+		ws := r.tick()
+		if urgentFor(ws, portStory) {
+			t.Errorf("a routine append re-surfaced an already-classified decision: %v", kinds(ws))
+		}
+		wantAbsorbed(t, ws, "a routine append after an already-classified event")
+	})
+
+	t.Run(s+"unreadable_status_reports_once_per_file_state", func(t *testing.T) {
+		// fm: tests/fm-watch-triage.test.sh:2021
+		// cox: mechUnreadable (mailPass)
+		// The status source is the mailbox; a dangling status symlink is a mailbox read that fails, and a changed target
+		// is a failure with a different cause.
+		r := pBRig(t, backend.Alive, "")
+		m := pBFlaky(r)
+		m.err = errors.New("status source dangling: missing-status-target")
+		ws, err := pBTickErr(r)
+		if err != nil {
+			t.Errorf("an unreadable status source aborted the whole watch pass: %v", err)
+		}
+		if len(ws) == 0 {
+			t.Errorf("an unreadable status source was not reported to the leader")
+		}
+		if ws, _ := pBTickErr(r); len(ws) != 0 {
+			t.Errorf("an unchanged unreadable status source reported again: %v", kinds(ws))
+		}
+		m.err = errors.New("status source dangling: status-target-two-longer")
+		if ws, _ := pBTickErr(r); len(ws) == 0 {
+			t.Errorf("a changed unreadable status source did not report again")
+		}
+		m.err = nil
+		pBSay(r, "blocked: changed target state with a longer path")
+		ws, err = pBTickErr(r)
+		if err != nil {
+			t.Fatalf("recovered status source tick failed: %v", err)
+		}
+		wantSurfaced(t, ws, "content preserved across the unreadable window surfaces on recovery")
+	})
+
+	t.Run(s+"permission_recovery_surfaces_preserved_status", func(t *testing.T) {
+		// fm: tests/fm-watch-triage.test.sh:2067
+		// cox: mechUnreadable (mailPass)
+		r := pBRig(t, backend.Alive, "")
+		m := pBFlaky(r)
+		pBSay(r, "blocked: release approval required")
+		pBSay(r, "working: preserving context")
+		m.err = errors.New("status source: permission denied")
+		ws, err := pBTickErr(r)
+		if err != nil {
+			t.Errorf("an unreadable status source aborted the whole watch pass: %v", err)
+		}
+		if len(ws) == 0 {
+			t.Errorf("an unreadable regular status source was not reported")
+		}
+		if ws, _ := pBTickErr(r); len(ws) != 0 {
+			t.Errorf("an unchanged unreadable status source reported again: %v", kinds(ws))
+		}
+		m.err = nil
+		ws, err = pBTickErr(r)
+		if err != nil {
+			t.Fatalf("recovered status source tick failed: %v", err)
+		}
+		wantSurfaced(t, ws, "readability recovery surfaces the preserved blocked line")
+		pBWantKind(t, ws, wake.KindInputRequired, "the preserved blocker")
+	})
+
+	t.Run(s+"terminal_stale_surfaced", func(t *testing.T) {
+		// fm: tests/fm-watch-triage.test.sh:2104
+		// cox: mechStale (stalePass)
+		// Crew state unset in firstmate (not provably working): no busy record. The done: line was already handled.
+		r := pBRig(t, backend.Alive, "")
+		pBPrime(r, "done: PR https://example.test/pr/3")
+		ws := pBRound(r, DefaultStaleMin+time.Second)
+		pBWantStale(t, ws, "a silent worker sitting on a terminal status")
+		wantSurfaced(t, ws, "a stale worker on a terminal status is surfaced")
+	})
+
+	t.Run(s+"stale_terminal_status_overridden_by_active_run", func(t *testing.T) {
+		// fm: tests/fm-watch-triage.test.sh:2137
+		// cox: mechRunStep (stalePass)
+		r := pBRig(t, backend.Alive, busy.Busy) // the active run: provably working
+		pBPrime(r, "done: implementation complete, ready to validate")
+		r.w.StaleMin = 999 * time.Second
+		wantAbsorbed(t, pBRound(r, pBPoll), "a stale done: under an active run is absorbed")
+		r.w.StaleMin = 240 * time.Second
+		ws := pBRound(r, 500*time.Second)
+		pBWantStale(t, ws, "the run wedges past the threshold")
+		wantSurfaced(t, ws, "the wedged run is escalated")
+		pBWantNote(t, ws, "possible wedge", "escalation flags a possible wedge")
+		notImplemented(t, pBMechRunStep)
+	})
+
+	t.Run(s+"nonterminal_stale_provably_working_absorbed_then_escalated", func(t *testing.T) {
+		// fm: tests/fm-watch-triage.test.sh:2192
+		// cox: mechStale (stalePass)
+		r := pBRig(t, backend.Alive, busy.Busy)
+		pBPrime(r, "working: still compiling")
+		r.w.StaleMin = 999 * time.Second
+		wantAbsorbed(t, pBRound(r, pBPoll), "a fresh provably-working stale is absorbed")
+		r.w.StaleMin = 240 * time.Second
+		ws := pBRound(r, 500*time.Second)
+		pBWantStale(t, ws, "a provably-working stale past the threshold")
+		wantSurfaced(t, ws, "a provably-working stale past the threshold escalates")
+		pBWantNote(t, ws, "possible wedge", "escalation flags a possible wedge")
+	})
+
+	t.Run(s+"nonterminal_stale_not_working_surfaced", func(t *testing.T) {
+		// fm: tests/fm-watch-triage.test.sh:2248
+		// cox: mechTurnEnd (idleNoDonePass)
+		// Not provably working: the turn ended (busy idle, composer empty) on a non-terminal status and no steer is
+		// outstanding. The clock is given the full stale and idle windows, far more than firstmate's first poll.
+		r := pBRig(t, backend.Alive, busy.Idle)
+		r.composer(backend.ComposerEmpty)
+		r.w.StaleMin = 999 * time.Second
+		pBPrime(r, "working: implementing")
+		ws := pBRound(r, DefaultIdleNoDoneWait+time.Second)
+		wantSurfaced(t, ws, "a stopped worker on a non-terminal status surfaces at once")
+		pBNoNote(t, ws, "possible wedge", "an immediate stopped-worker surface is not a wedge")
+	})
+
+	t.Run(s+"nonterminal_stale_paused_absorbed_then_resurfaced", func(t *testing.T) {
+		// fm: tests/fm-watch-triage.test.sh:2289
+		// cox: mechDeclWait (stalePass)
+		r := pBRig(t, backend.Alive, busy.Idle)
+		pBPrime(r, "paused: holding for the upstream tool release")
+		wantAbsorbed(t, pBRound(r, pBPoll), "a fresh declared pause is absorbed")
+		ws := pBRound(r, 500*time.Second) // past FM_PAUSE_RESURFACE_SECS=240
+		wantSurfaced(t, ws, "a declared pause past the resurface threshold is rechecked")
+		pBWantNote(t, ws, "awaiting external", "labelled a paused / awaiting-external recheck")
+		pBNoNote(t, ws, "possible wedge", "a declared pause is never a wedge")
+	})
+
+	t.Run(s+"exited_declared_pause_is_bounded_but_live_gate_surfaces", func(t *testing.T) {
+		// fm: tests/fm-watch-triage.test.sh:2358
+		// cox: mechDeclWait (stalePass)
+		// Exited agent: the backend probe reports Settled.
+		r := pBRig(t, backend.Settled, busy.Idle)
+		pBPrime(r, "paused: held per captain while an external decision is pending")
+		r.advance(500 * time.Second)
+		var all []wake.Wake
+		for round := 1; round <= 6; round++ {
+			all = append(all, pBRound(r, pBPoll)...)
+		}
+		if a := pBAlarms(all); a > 1 {
+			t.Errorf("an exited declared pause flooded %d alarms across six unchanged polls", a)
+		}
+		pBWantNote(t, all, "awaiting external", "an exited declared pause takes the bounded paused recheck")
+
+		r = pBRig(t, backend.Settled, busy.Idle)
+		pBPrime(r, "captain-held [key=route]: tracked by held-decision-route")
+		ws := pBRound(r, 500*time.Second)
+		pBWantNote(t, ws, "awaiting the captain", "an exited captain-held lane is a captain-owned recheck")
+		pBNoNote(t, ws, "awaiting external", "captain-held must not borrow the pause wording")
+
+		r = pBRig(t, backend.Alive, busy.Idle)
+		pBPrime(r, "paused: waiting at an active external-decision gate")
+		wantSurfaced(t, pBRound(r, pBPoll), "a live external-decision gate surfaces on first sight")
+		r.w.StaleMin = 240 * time.Second
+		ws = pBRound(r, 500*time.Second)
+		if a := pBAlarms(ws); a != 0 {
+			t.Errorf("an acknowledged live gate replayed %d alarm(s): %v", a, kinds(ws))
+		}
+		pBNoNote(t, ws, "possible wedge", "a live gate keeps the pause cadence, not the wedge timer")
+	})
+
+	t.Run(s+"absorbed_replacement_wait_does_not_inherit_the_old_throttle", func(t *testing.T) {
+		// fm: tests/fm-watch-triage.test.sh:2481
+		// cox: mechCadence (stalePass)
+		for _, c := range []struct{ name, initial, replacement, expected string }{
+			{"paused-replacement", "paused: waiting on validation run one", "paused: waiting on validation run two", "awaiting external"},
+			{"captain-held-replacement", "captain-held [key=route]: awaiting the routing call", "captain-held [key=release]: awaiting the release call", "awaiting the captain"},
+		} {
+			r := pBRig(t, backend.Settled, busy.Idle)
+			pBPrime(r, c.initial)
+			if !urgentFor(pBRound(r, 500*time.Second), portStory) {
+				t.Errorf("[%s] the initial declared wait did not re-surface", c.name)
+			}
+			pBSay(r, c.replacement)
+			ws := r.tick()
+			if a := pBAlarms(ws); a != 1 {
+				t.Errorf("[%s] the replacement declared wait produced %d alarms instead of one: %v", c.name, a, kinds(ws))
+			}
+			pBWantNote(t, ws, c.expected, c.name+" replacement recheck reason")
+		}
+	})
+
+	t.Run(s+"live_declared_wait_churn_honors_the_resurface_throttle", func(t *testing.T) {
+		// fm: tests/fm-watch-triage.test.sh:2582
+		// cox: mechCadence (stalePass)
+		// Pane churn (a ticking clock on an idle pane) has no cox signal; the rounds are plain polls.
+		for _, c := range []struct{ name, line, replacement string }{
+			{"paused-pipeline-churn", "paused: waiting on the validation run to finish", "paused: waiting on the replacement validation run"},
+			{"captain-held-churn", "captain-held [key=route]: awaiting the captain on the routing call", "captain-held [key=release]: awaiting the captain on the release call"},
+		} {
+			r := pBRig(t, backend.Alive, busy.Idle)
+			pBPrime(r, c.line)
+			if !urgentFor(pBRound(r, pBPoll), portStory) {
+				t.Errorf("[%s] first sight of a parked live worker did not surface", c.name)
+			}
+			pBAbsorbRounds(t, r, 3, c.name+" churn inside the resurface window")
+			pBSay(r, c.replacement)
+			if a := pBAlarms(r.tick()); a != 1 {
+				t.Errorf("[%s] the replacement declared wait produced %d first alarms instead of one", c.name, a)
+			}
+			pBAbsorbRounds(t, r, 1, c.name+" replacement inside its own window")
+			if a := pBAlarms(pBRound(r, 2000*time.Second)); a != 1 {
+				t.Errorf("[%s] the elapsed resurface window produced %d alarms instead of one", c.name, a)
+			}
+		}
+	})
+
+	t.Run(s+"live_paused_until_controls_recheck_time", func(t *testing.T) {
+		// fm: tests/fm-watch-triage.test.sh:2669
+		// cox: mechCadence (stalePass)
+		r := pBRig(t, backend.Alive, busy.Idle)
+		pBPrime(r, "paused: rate limit until "+r.clock.Add(2*time.Hour).UTC().Format(time.RFC3339))
+		pBAbsorbRounds(t, r, 2, "a live worker before its declared future time")
+		pBSay(r, "paused: rate limit until "+r.clock.Add(-2*time.Minute).UTC().Format(time.RFC3339))
+		if a := pBAlarms(r.tick()); a != 1 {
+			t.Errorf("a passed declared time produced %d alarms instead of one", a)
+		}
+		pBAbsorbRounds(t, r, 1, "a due declared time rechecks only once inside the long cadence")
+	})
+
+	t.Run(s+"wedge_threshold_defers_to_a_declared_wait_under_a_working_verdict", func(t *testing.T) {
+		// fm: tests/fm-watch-triage.test.sh:2814
+		// cox: mechWedge (stalePass)
+		// FM_STALE_ESCALATE_SECS=1 puts every round at the threshold: StaleMin 1s, one poll per round.
+		rig := func(line string) *portRig {
+			r := pBRig(t, backend.Alive, busy.Busy) // working verdict
+			r.w.StaleMin = time.Second
+			pBPrime(r, line)
+			return r
+		}
+		r := rig("paused: final validation at step 6/6 - clean whole-assembly baseline (~20 min)")
+		pBAbsorbRounds(t, r, 3, "a declared wait under a working verdict is not wedge-escalated")
+
+		r = rig("paused: waiting on the upstream release cut")
+		ws := pBRound(r, 2000*time.Second)
+		pBWantNote(t, ws, "declared wait", "the recheck names its evidence as declared")
+		pBWantNote(t, ws, "awaiting external", "the recheck names who the wait is on")
+		pBWantNote(t, ws, "confirm the wait still holds", "the external-wait action")
+		if n := pBWaitSecs(ws); n < 1900 {
+			t.Errorf("the declared-wait recheck reported %ds rather than the declaration's own age", n)
+		}
+		pBNoNote(t, ws, "release the hold", "an external wait must not borrow the captain-held action")
+		pBNoNote(t, ws, "possible wedge", "a declared-wait recheck is not a wedge")
+
+		r = rig("paused: waiting on the build queue until " + time.Now().Add(-2*time.Hour).UTC().Format(time.RFC3339))
+		pBWantNote(t, pBRound(r, pBPoll), "possible wedge, escalation 1", "an elapsed declaration keeps the unchanged ladder")
+
+		r = rig("working: validation under way")
+		pBLadder(t, r, 3, "an undeclared working lane keeps the ladder")
+	})
+
+	t.Run(s+"wedge_threshold_recheck_names_the_captain_for_a_held_lane", func(t *testing.T) {
+		// fm: tests/fm-watch-triage.test.sh:2899
+		// cox: mechWedge (stalePass); firstmate mechanism: mechDeclWait
+		// The away-posture legs (write_away_record / archive_away_record) are the afk daemon: n/a, not translated.
+		r := pBRig(t, backend.Alive, busy.Busy)
+		r.w.StaleMin = time.Second
+		pBPrime(r, "captain-held: which retention window wins")
+		ws := pBRound(r, 2000*time.Second)
+		pBWantNote(t, ws, "awaiting the captain", "the hold names the captain")
+		pBWantNote(t, ws, "answer the held decision or release the hold", "the action that clears the hold")
+		pBNoNote(t, ws, "awaiting external", "a hold is not an external wait")
+		pBNoNote(t, ws, "confirm the wait still holds", "a hold must not borrow the external-wait action")
+		pBNoNote(t, ws, "possible wedge", "a hold is not a wedge")
+
+		r = pBRig(t, backend.Alive, busy.Busy)
+		r.w.StaleMin = time.Second
+		pBPrime(r, "captain-held: which retention window wins")
+		pBAbsorbRounds(t, r, 3, "a fresh hold inside its recheck cadence is absorbed")
+	})
+
+	t.Run(s+"wedge_threshold_defers_to_a_parked_gate_awaiting_a_human", func(t *testing.T) {
+		// fm: tests/fm-watch-triage.test.sh:3000
+		// cox: mechRunStep (stalePass)
+		// The parked-gate verdict (human- vs crewmate-owed) comes from the run pipeline's gate state, which cox has no
+		// analog of. What cox can express: the crewmate-owed / unrelated-key / runless directions keep the ladder.
+		for _, c := range []struct {
+			name, log string
+			rounds    int
+		}{
+			{"crewmate", pBGateKeyLog + "\nworking: still parked at that gate", 3},
+			{"unrelated-key", "needs-decision [key=earlier-question]: which changelog section fits\nworking: still parked at that gate", 3},
+			{"runless", pBGateKeyLog + "\nworking: still parked at that gate", 1},
+		} {
+			r := pBRig(t, backend.Alive, busy.Idle) // parked: not working
+			r.w.StaleMin = time.Second
+			pBPrime(r, strings.Split(c.log, "\n")...)
+			pBLadder(t, r, c.rounds, c.name+" gate keeps the unchanged ladder")
+		}
+		notImplemented(t, pBMechRunStep)
+	})
+
+	t.Run(s+"wedge_threshold_parked_gate_is_off_until_armed", func(t *testing.T) {
+		// fm: tests/fm-watch-triage.test.sh:3164
+		// cox: mechRunStep (stalePass)
+		// The config/wedge-defer-parked-gate flag gates run-pipeline evidence; unarmed, the lane keeps the ladder.
+		r := pBRig(t, backend.Alive, busy.Idle)
+		r.w.StaleMin = time.Second
+		pBPrime(r, pBGateKeyLog, "working: still parked at that gate")
+		pBLadder(t, r, 3, "an unarmed home keeps the unchanged ladder")
+		pBNoNote(t, r.tick(), "verified wait at a parked gate", "an unarmed home never defers a parked gate")
+		notImplemented(t, pBMechRunStep)
+	})
+
+	t.Run(s+"wedge_threshold_parked_gate_needs_an_unanswered_decision", func(t *testing.T) {
+		// fm: tests/fm-watch-triage.test.sh:3231
+		// cox: mechRunStep (stalePass); firstmate mechanism: mechFold
+		for _, c := range []struct {
+			name   string
+			lines  []string
+			rounds int
+		}{
+			{"decided", []string{pBGateKeyLog, "resolved [key=nm-01RUNGATE-review]: firstmate chose the second fix"}, 3},
+			{"unescalated", []string{"working: validation under way"}, 1},
+			{"blocked", []string{"blocked [key=nm-01RUNGATE-review]: the fixture cannot reach its dependency"}, 1},
+		} {
+			r := pBRig(t, backend.Alive, busy.Idle)
+			r.w.StaleMin = time.Second
+			pBPrime(r, c.lines...)
+			pBLadder(t, r, c.rounds, c.name+" gate keeps the unchanged ladder")
+		}
+		notImplemented(t, pBMechRunStep)
+	})
+
+	// n/a test_wedge_defer_refuses_a_half_filled_wait_record (fm-watch-triage.test.sh:3344): bash-only - it sources
+	// fm-watch.sh, overrides wedge_wait_evidence and checks the US-delimited wait_record field parsing (empty/surplus
+	// fields under `IFS= read`); cox has no serialized wait record, so there is no cox-side requirement.
+}
+
+// Mechanism names for the report's red list (exact strings from the translator brief).
+const (
+	pCMechDeclWait    = "declared wait: paused / captain-held status verbs"
+	pCMechWedge       = "wedge detector: escalation schedule, deep inspection, write deferral"
+	pCMechRunStep     = "run-step authority: an active pipeline run overrides a stale/terminal status"
+	pCMechWaitCadence = "wait cadence: paused-until / resurface throttle"
+)
+
+// pCWedge mirrors firstmate's FM_STALE_ESCALATE_SECS=240 wedge threshold as the watcher's StaleMin.
+const pCWedge = 240 * time.Second
+
+// pCWedgeRig is a rig whose stale threshold is the firstmate wedge threshold.
+func pCWedgeRig(t *testing.T) *portRig {
+	r := newPortRig(t)
+	r.w.StaleMin = pCWedge
+	return r
+}
+
+// pCSilentPast advances the clock past the stale threshold (one wedge-threshold sighting).
+func (r *portRig) pCSilentPast() { r.advance(r.w.staleMin() + time.Minute) }
+
+// pCAgeBusy backdates the story's busy record so its last busy event is d before the rig clock (firstmate: touch -t on
+// the spawn record / turn-ended marker). The record's trust fields are kept, so busy.Read still trusts it.
+func (r *portRig) pCAgeBusy(d time.Duration) {
+	r.t.Helper()
+	rec, ok := busy.ReadRecord(r.epic, portStory)
+	if !ok {
+		r.t.Fatal("pCAgeBusy: no busy record")
+	}
+	rec.TS = r.clock.Add(-d).Unix()
+	b, err := json.Marshal(rec)
+	portMust(r.t, err)
+	portMust(r.t, os.WriteFile(busy.Path(r.epic, portStory), b, 0o644))
+}
+
+// pCApply appends one busy event to the current incarnation through the trusted claude-hook source.
+func (r *portRig) pCApply(s, event string) {
+	r.t.Helper()
+	rec, ok := busy.ReadRecord(r.epic, portStory)
+	if !ok {
+		r.t.Fatal("pCApply: no busy record")
+	}
+	portMust(r.t, busy.Apply(r.epic, portStory, s, rec.Gen, "claude-hook", event))
+}
+
+// pCWantNotSurfaced asserts the tick raised no urgent wake for the story (firstmate: the watcher kept running).
+func pCWantNotSurfaced(t *testing.T, ws []wake.Wake, why string) {
+	t.Helper()
+	if urgentFor(ws, portStory) {
+		t.Errorf("want not surfaced (%s), got %v", why, kinds(ws))
+	}
+}
+
+// pCUrgentCount counts the story's urgent wakes (firstmate: wedge_stale_wakes / hold_stale_wakes).
+func pCUrgentCount(ws []wake.Wake) int {
+	n := 0
+	for _, w := range ws {
+		if w.Story == portStory && wake.IsUrgent(w.Kind) {
+			n++
+		}
+	}
+	return n
+}
+
+// pCWantKindFor asserts the tick raised a wake of kind k for the story.
+func pCWantKindFor(t *testing.T, ws []wake.Wake, k wake.Kind, why string) {
+	t.Helper()
+	for _, w := range ws {
+		if w.Story == portStory && w.Kind == k {
+			return
+		}
+	}
+	t.Errorf("want a %s wake (%s), got %v", k, why, kinds(ws))
+}
+
+func TestPortTriageC(t *testing.T) {
+	const s = "FM/fm-watch-triage/"
+	const donePR = "done: PR https://example.invalid/pull/1 checks green"
+
+	t.Run(s+"gone_endpoint_reports_once_instead_of_escalating_forever", func(t *testing.T) {
+		// fm: tests/fm-watch-triage.test.sh:3400
+		// cox: gone endpoint
+		// A dead or missing endpoint is a backend probe that proves the session ended (Settled). cox cannot tell dead from
+		// missing; both are Settled. Firstmate reports it once (surfaced, naming the verdict, not as a wedge), then stays
+		// silent on every later threshold.
+		for _, verdict := range []string{"dead", "missing"} {
+			r := pCWedgeRig(t)
+			r.heartbeat("hb1")
+			r.tick()
+			r.liveness(backend.Settled)
+			r.pCSilentPast()
+			ws := r.tick()
+			wantSurfaced(t, ws, "a "+verdict+" endpoint is reported once at the wedge threshold")
+			if n := pCUrgentCount(ws); n > 1 {
+				t.Errorf("a %s endpoint queued %d urgent wakes instead of one", verdict, n)
+			}
+			for round := 1; round <= 3; round++ {
+				r.pCSilentPast()
+				wantAbsorbed(t, r.tick(), verdict+" endpoint must not re-alarm on a later threshold")
+			}
+		}
+	})
+
+	t.Run(s+"live_and_unproven_endpoints_still_wedge_escalate", func(t *testing.T) {
+		// fm: tests/fm-watch-triage.test.sh:3444
+		// cox: stale escalation
+		// A live wedged agent, an unattributable one, and an unreadable endpoint keep escalating (escalation 1, 2): cox
+		// Alive / Unknown / a failed probe on a silent worker past the threshold.
+		for _, spec := range []string{"alive", "ambiguous", "unreadable"} {
+			r := pCWedgeRig(t)
+			r.heartbeat("hb1")
+			r.tick()
+			for round := 1; round <= 2; round++ {
+				switch spec {
+				case "alive":
+					r.liveness(backend.Alive)
+				case "ambiguous":
+					r.liveness(backend.Unknown)
+				case "unreadable":
+					r.b.FailNext("Probe", nil)
+				}
+				r.pCSilentPast()
+				wantSurfaced(t, r.tick(), spec+" endpoint escalates as a possible wedge, round "+string(rune('0'+round)))
+			}
+		}
+		notImplemented(t, pCMechWedge) // the climbing "escalation N" count has no cox analog
+	})
+
+	t.Run(s+"gone_report_rearms_when_the_endpoint_comes_back", func(t *testing.T) {
+		// fm: tests/fm-watch-triage.test.sh:3478
+		// cox: gone endpoint
+		r := pCWedgeRig(t)
+		r.heartbeat("hb1")
+		r.tick()
+		r.liveness(backend.Settled)
+		r.pCSilentPast()
+		wantSurfaced(t, r.tick(), "the gone endpoint is reported")
+		// A replacement is launched (it heartbeats) and then wedges for real.
+		r.heartbeat("hb2")
+		r.tick()
+		r.liveness(backend.Alive)
+		r.pCSilentPast()
+		wantSurfaced(t, r.tick(), "a replacement agent's wedge escalates, not swallowed by the earlier gone report")
+		// The replacement dies too: reported again in full.
+		r.liveness(backend.Settled)
+		r.pCSilentPast()
+		wantSurfaced(t, r.tick(), "a second death in the same window is reported")
+	})
+
+	t.Run(s+"second_death_after_a_same_window_relaunch_reports_in_full", func(t *testing.T) {
+		// fm: tests/fm-watch-triage.test.sh:3525
+		// cox: gone endpoint
+		r := pCWedgeRig(t)
+		r.heartbeat("hb1")
+		r.tick()
+		r.liveness(backend.Settled)
+		r.pCSilentPast()
+		wantSurfaced(t, r.tick(), "the first death is reported")
+		// Relaunch: activity, then a quiet round that ends before any threshold (no probe reads it alive).
+		r.heartbeat("hb2")
+		r.tick()
+		r.liveness(backend.Alive)
+		r.advance(time.Minute)
+		wantAbsorbed(t, r.tick(), "the relaunch round ends before its fresh window elapses")
+		// The replacement dies without any intervening probe reading it alive.
+		r.liveness(backend.Settled)
+		r.pCSilentPast()
+		ws := r.tick()
+		wantSurfaced(t, ws, "a second death after a same-window relaunch is reported")
+		if n := pCUrgentCount(ws); n > 1 {
+			t.Errorf("the second death queued %d urgent wakes instead of one", n)
+		}
+		r.pCSilentPast()
+		wantAbsorbed(t, r.tick(), "an unchanged dead endpoint stays silent after the second report")
+	})
+
+	t.Run(s+"identical_dead_display_of_a_successor_still_reports", func(t *testing.T) {
+		// fm: tests/fm-watch-triage.test.sh:3597
+		// cox: gone endpoint
+		// The busy incarnation (busy.Arm gen) is the only discriminator between the reported death and a successor that
+		// dies into an identical display without ever being probed alive.
+		r := pCWedgeRig(t)
+		r.busySet(busy.Busy) // armed at spawn
+		r.heartbeat("hb1")
+		r.tick()
+		r.liveness(backend.Settled)
+		r.pCSilentPast()
+		ws := r.tick()
+		wantSurfaced(t, ws, "the first death (busy record still says busy) is reported")
+		if n := pCUrgentCount(ws); n > 1 {
+			t.Errorf("the first death queued %d urgent wakes instead of one", n)
+		}
+		// A successor re-arms the incarnation and stays quiet under the threshold.
+		r.busySet(busy.Busy)
+		r.advance(time.Minute)
+		wantAbsorbed(t, r.tick(), "the successor's quiet round")
+		// The successor dies into the identical display.
+		r.pCSilentPast()
+		ws = r.tick()
+		wantSurfaced(t, ws, "a successor's death (new incarnation) is reported")
+		if n := pCUrgentCount(ws); n > 1 {
+			t.Errorf("the successor's death queued %d urgent wakes instead of one", n)
+		}
+		r.pCSilentPast()
+		wantAbsorbed(t, r.tick(), "the same incarnation's unchanged dead endpoint stays silent")
+	})
+
+	t.Run(s+"open_captain_call_bounds_stale_churn", func(t *testing.T) {
+		// fm: tests/fm-watch-triage.test.sh:3773
+		// cox: declared wait
+		// A stopped worker (busy idle) whose work is captain-held: first sight alarms, churn inside the window is absorbed,
+		// and the next sighting after the window re-surfaces once.
+		for _, line := range []string{donePR, "working: still tidying the branch"} {
+			r := newPortRig(t)
+			r.busySet(busy.Idle)
+			r.mail("m1", "status", line)
+			ws := r.tick()
+			wantSurfaced(t, ws, "first sight of held work surfaces: "+line)
+			if n := pCUrgentCount(ws); n > 1 {
+				t.Errorf("first sight produced %d urgent wakes instead of one: %s", n, line)
+			}
+			for i := 0; i < 2; i++ {
+				r.advance(time.Minute)
+				wantAbsorbed(t, r.tick(), "churn inside the re-surface window: "+line)
+			}
+			r.advance(5000 * time.Second)
+			wantSurfaced(t, r.tick(), "held work re-surfaces once its window elapsed: "+line)
+		}
+		notImplemented(t, pCMechDeclWait) // the captain-hold record that bounds the churn is not a cox signal
+	})
+
+	t.Run(s+"stale_churn_without_a_captain_call_still_alarms", func(t *testing.T) {
+		// fm: tests/fm-watch-triage.test.sh:3819
+		// cox: stale escalation
+		// Unheld: a stopped worker keeps alarming once per new sighting (firstmate: a new pane hash; cox: a new stale
+		// window).
+		for _, line := range []string{donePR, "blocked: cannot reach the release host", "working: still tidying the branch"} {
+			r := newPortRig(t)
+			r.busySet(busy.Idle)
+			r.mail("m1", "status", line)
+			for round := 1; round <= 2; round++ {
+				if round > 1 {
+					r.advance(r.w.staleMin() + time.Minute)
+				}
+				ws := r.tick()
+				wantSurfaced(t, ws, "unheld stale window alarms on round "+string(rune('0'+round))+": "+line)
+				if n := pCUrgentCount(ws); n > 1 {
+					t.Errorf("round %d produced %d urgent wakes instead of one: %s", round, n, line)
+				}
+			}
+		}
+	})
+
+	t.Run(s+"failed_wake_append_does_not_arm_the_captain_hold_throttle", func(t *testing.T) {
+		// fm: tests/fm-watch-triage.test.sh:3852
+		// cox: mailPass
+		// A wake that never reached the durable queue must not be recorded as delivered: the watcher fails, and the retry
+		// alarms exactly once.
+		r := newPortRig(t)
+		r.busySet(busy.Idle)
+		r.mail("m1", "status", donePR)
+		q := filepath.Join(r.epic, state.ControlDir, "wake.jsonl")
+		_ = os.Remove(q)
+		portMust(t, os.MkdirAll(q, 0o755))
+		if _, err := r.w.Tick(); err == nil {
+			t.Errorf("the watcher reported success despite an unwritable durable queue")
+		}
+		portMust(t, os.Remove(q))
+		ws := r.tick()
+		wantSurfaced(t, ws, "the retry after a failed wake append alarms")
+		if n := pCUrgentCount(ws); n != 1 {
+			t.Errorf("the retry produced %d urgent wakes instead of one", n)
+		}
+	})
+
+	t.Run(s+"reheld_captain_call_starts_its_own_resurface_window", func(t *testing.T) {
+		// fm: tests/fm-watch-triage.test.sh:3893
+		// cox: declared wait
+		r := newPortRig(t)
+		r.busySet(busy.Idle)
+		r.mail("m1", "status", donePR)
+		wantSurfaced(t, r.tick(), "first sight of the first captain call")
+		r.advance(time.Minute)
+		wantAbsorbed(t, r.tick(), "the first call's churn inside its window")
+		// Answer + release, then re-hold with no status append: a distinct captain call cox has no record of.
+		notImplemented(t, pCMechDeclWait)
+	})
+
+	t.Run(s+"secondmate_paused_resurfaces_in_normal_mode", func(t *testing.T) {
+		// fm: tests/fm-watch-triage.test.sh:3927
+		// cox: wait cadence
+		// The secondmate kind is firstmate-only; the requirement (a declared paused wait re-surfaces on a bounded cadence,
+		// naming its external dependency, never as a wedge) applies to any cox worker.
+		r := newPortRig(t)
+		r.busySet(busy.Idle)
+		r.mail("m1", "status", "paused: awaiting the upstream release")
+		r.tick()                     // the status line itself (pre-seen in firstmate)
+		r.advance(500 * time.Second) // past FM_PAUSE_RESURFACE_SECS=240
+		wantSurfaced(t, r.tick(), "a declared paused wait re-surfaces as a recheck")
+		notImplemented(t, pCMechWaitCadence) // the recheck naming the external wait (not the captain, not a wedge)
+	})
+
+	t.Run(s+"secondmate_captain_held_resurfaces_in_normal_mode", func(t *testing.T) {
+		// fm: tests/fm-watch-triage.test.sh:3961
+		// cox: declared wait
+		r := newPortRig(t)
+		r.busySet(busy.Idle)
+		r.mail("m1", "status", "captain-held [key=route]: tracked by task-decision-route")
+		r.tick()
+		r.advance(500 * time.Second)
+		wantSurfaced(t, r.tick(), "a captain-held wait re-surfaces as a recheck")
+		notImplemented(t, pCMechDeclWait) // the recheck naming the captain as the blocker
+	})
+
+	// n/a test_secondmate_nonpaused_stale_remains_suppressed (fm-watch-triage.test.sh:3991): the parent-supervises stale
+	// exemption exists only for firstmate secondmates; cox has no nested supervisor kind, so there is no requirement.
+
+	// n/a test_secondmate_unpause_clears_pause_tracking (fm-watch-triage.test.sh:4015): clears secondmate-only .paused-* /
+	// .stale-* marker files before the secondmate stale exemption; no cox-side behavior beyond that bookkeeping.
+
+	t.Run(s+"nonterminal_stale_pause_transitions_reclassify_unchanged_hash", func(t *testing.T) {
+		// fm: tests/fm-watch-triage.test.sh:4041
+		// cox: declared wait
+		r := newPortRig(t)
+		r.liveness(backend.Alive)
+		r.heartbeat("hb1")
+		r.mail("m1", "status", "paused: awaiting the upstream release")
+		r.tick()
+		r.advance(r.w.staleMin() + time.Minute)
+		wantAbsorbed(t, r.tick(), "a stale worker that entered a declared pause is not wedge-escalated")
+		r.mail("m2", "status", "working: upstream landed, resuming")
+		r.tick()
+		r.advance(time.Minute)
+		wantAbsorbed(t, r.tick(), "leaving the pause restarts wedge tracking without surfacing")
+		notImplemented(t, pCMechDeclWait) // entering/leaving pause reclassifying the same stale worker
+	})
+
+	t.Run(s+"nonterminal_paused_rechecks_authoritative_state", func(t *testing.T) {
+		// fm: tests/fm-watch-triage.test.sh:4098
+		// cox: run-step authority
+		r := newPortRig(t)
+		r.liveness(backend.Alive)
+		r.heartbeat("hb1")
+		r.mail("m1", "status", "paused: awaiting the upstream release")
+		r.tick()
+		r.advance(r.w.staleMin() + time.Minute)
+		wantAbsorbed(t, r.tick(), "an active run behind a declared pause resumes wedge tracking without surfacing")
+		notImplemented(t, pCMechRunStep)
+	})
+
+	t.Run(s+"paused_authoritative_working_preserves_wedge_timer", func(t *testing.T) {
+		// fm: tests/fm-watch-triage.test.sh:4128
+		// cox: stale escalation
+		// Authoritative working = busy record busy. While the pause is declared, past the threshold is absorbed; once it
+		// is lifted the same silent worker escalates as a possible wedge. (The timer-not-reset half is marker bookkeeping.)
+		r := pCWedgeRig(t)
+		r.liveness(backend.Alive)
+		r.busySet(busy.Busy)
+		r.heartbeat("hb1")
+		r.mail("m1", "status", "paused: awaiting the upstream release")
+		r.tick()
+		r.pCSilentPast()
+		wantAbsorbed(t, r.tick(), "a still-declared wait is not wedge-escalated past the threshold")
+		r.mail("m2", "status", "working: resumed after the release landed")
+		r.tick()
+		r.pCSilentPast()
+		wantSurfaced(t, r.tick(), "lifting the declaration restores the wedge escalation")
+	})
+
+	t.Run(s+"wedge_escalation_marks_demand_deep_inspection_after_threshold", func(t *testing.T) {
+		// fm: tests/fm-watch-triage.test.sh:4207
+		// cox: wedge detector
+		r := pCWedgeRig(t)
+		r.liveness(backend.Alive)
+		r.heartbeat("hb1")
+		wantAbsorbed(t, r.tick(), "the priming round absorbs")
+		for n := 1; n <= 3; n++ {
+			r.pCSilentPast()
+			wantSurfaced(t, r.tick(), "consecutive wedge escalation round "+string(rune('0'+n)))
+		}
+		notImplemented(t, pCMechWedge) // escalation count and the demand-deep-inspection marker at the threshold
+	})
+
+	t.Run(s+"wedge_escalation_resets_when_pane_becomes_active", func(t *testing.T) {
+		// fm: tests/fm-watch-triage.test.sh:4262
+		// cox: wedge detector
+		r := pCWedgeRig(t)
+		r.liveness(backend.Alive)
+		r.heartbeat("hb1")
+		r.tick()
+		r.pCSilentPast()
+		r.tick()           // a prior wedge round
+		r.heartbeat("hb2") // the worker is active again
+		wantAbsorbed(t, r.tick(), "fresh activity is absorbed")
+		notImplemented(t, pCMechWedge) // resetting the consecutive escalation counter
+	})
+
+	// n/a test_term_stops_a_watcher_blocked_inside_a_poll (fm-watch-triage.test.sh:4305): bash TERM-trap deferral inside
+	// a blocked command substitution; cox's Run stops on a channel between Ticks, no bash loop to signal.
+
+	t.Run(s+"busy_pane_below_turn_age_bound_is_absorbed", func(t *testing.T) {
+		// fm: tests/fm-watch-triage.test.sh:4354
+		// cox: busyTurnMaxPass
+		r := newPortRig(t)
+		r.w.BusyTurnMax = 999 * time.Second
+		r.busySet(busy.Busy) // a fresh busy event (turn-ended just touched)
+		wantAbsorbed(t, r.tick(), "a busy worker below the turn-age bound")
+	})
+
+	t.Run(s+"busy_pane_stable_hash_escalates_past_turn_age_bound", func(t *testing.T) {
+		// fm: tests/fm-watch-triage.test.sh:4380
+		// cox: stale escalation
+		r := newPortRig(t)
+		r.w.BusyTurnMax = time.Second
+		r.busySet(busy.Busy)
+		r.pCAgeBusy(24 * time.Hour) // no completed turn ever: the spawn record is old
+		pCWantNotSurfaced(t, r.tick(), "phase A: past the bound but below the wedge threshold starts the timer only")
+		r.advance(500 * time.Second) // past FM_STALE_ESCALATE_SECS=240
+		wantSurfaced(t, r.tick(), "phase B: a busy worker past the turn-age bound escalates as a possible wedge")
+	})
+
+	t.Run(s+"busy_pane_changing_hash_escalates_past_turn_age_bound", func(t *testing.T) {
+		// fm: tests/fm-watch-triage.test.sh:4425
+		// cox: stale escalation
+		// The ticking footer maps to a screen that changes on every read; cox must not treat that as progress.
+		r := newPortRig(t)
+		r.w.BusyTurnMax = time.Second
+		r.busySet(busy.Busy)
+		r.pCAgeBusy(24 * time.Hour)
+		r.b.ScreenRows = []string{"Working... (3600.1s)"}
+		pCWantNotSurfaced(t, r.tick(), "phase A: first sight past the bound starts the timer only")
+		r.b.ScreenRows = []string{"Working... (3601.2s)"}
+		r.advance(500 * time.Second)
+		wantSurfaced(t, r.tick(), "phase B: a busy worker whose display ticks still escalates past the bound")
+	})
+
+	t.Run(s+"busy_pane_turn_end_touch_resets_age", func(t *testing.T) {
+		// fm: tests/fm-watch-triage.test.sh:4467
+		// cox: busyTurnMaxPass
+		r := newPortRig(t)
+		r.w.BusyTurnMax = time.Hour
+		r.busySet(busy.Busy)
+		r.pCAgeBusy(2 * time.Hour)
+		r.tick()                                 // mid-escalation, as if several over-age polls already ran
+		r.pCApply(busy.Idle, "Stop")             // the turn just completed
+		r.pCApply(busy.Busy, "UserPromptSubmit") // and the next one began
+		wantAbsorbed(t, r.tick(), "a freshly completed turn resets the busy age")
+		notImplemented(t, pCMechWedge) // clearing the wedge timer and escalation counter
+	})
+
+	t.Run(s+"busy_pane_native_progress_resets_age", func(t *testing.T) {
+		// fm: tests/fm-watch-triage.test.sh:4501
+		// cox: busyTurnMaxPass
+		// Native progress without a completed turn = a fresh busy event on the same incarnation.
+		r := newPortRig(t)
+		r.w.BusyTurnMax = time.Hour
+		r.busySet(busy.Busy)
+		r.pCAgeBusy(2 * time.Hour)
+		r.tick()
+		r.pCApply(busy.Busy, "PostToolUse")
+		wantAbsorbed(t, r.tick(), "fresh native progress resets the busy age")
+		notImplemented(t, pCMechWedge) // clearing the wedge timer and escalation counter
+	})
+
+	t.Run(s+"busy_pane_repeated_escalation_reaches_demand_deep_inspection", func(t *testing.T) {
+		// fm: tests/fm-watch-triage.test.sh:4537
+		// cox: wedge detector
+		r := newPortRig(t)
+		r.w.BusyTurnMax = time.Second
+		r.busySet(busy.Busy)
+		r.pCAgeBusy(24 * time.Hour)
+		pCWantNotSurfaced(t, r.tick(), "the priming round past the bound")
+		for n := 1; n <= 3; n++ {
+			r.advance(500 * time.Second)
+			wantSurfaced(t, r.tick(), "busy turn-age escalation round "+string(rune('0'+n)))
+		}
+		notImplemented(t, pCMechWedge) // escalation count and demand-deep-inspection at the threshold
+	})
+
+	t.Run(s+"busy_declared_pause_is_rechecked_not_wedge_escalated", func(t *testing.T) {
+		// fm: tests/fm-watch-triage.test.sh:4596
+		// cox: declared wait
+		r := newPortRig(t)
+		r.busySet(busy.Busy)
+		r.mail("m1", "status", "paused: hosting the Lavish review, awaiting captain feedback")
+		r.tick() // the declaration itself (pre-seen in firstmate)
+		r.w.BusyTurnMax = time.Second
+		r.pCAgeBusy(24 * time.Hour)
+		// Phase A: past the bound, the declared pause is absorbed and never starts a wedge.
+		wantAbsorbed(t, r.tick(), "phase A: a declared pause on an over-age busy worker")
+		// Phase B: past the long cadence it re-surfaces once as a recheck, never as a wedge.
+		r.advance(500 * time.Second)
+		wantSurfaced(t, r.tick(), "phase B: a declared pause past its cadence is rechecked")
+		// Phase C: lifting the declaration on the same busy over-age worker restores the wedge escalation.
+		r.mail("m2", "status", "working: review closed, resuming the sweep")
+		pCWantNotSurfaced(t, r.tick(), "phase C priming: a lifted pause starts the wedge timer")
+		r.advance(500 * time.Second)
+		wantSurfaced(t, r.tick(), "phase C: a lifted pause on an over-age busy worker wedge-escalates")
+		notImplemented(t, pCMechDeclWait) // the recheck labeled as an external wait, not a wedge
+	})
+
+	// n/a test_afk_busy_declared_pause_hands_off_plain_stale (fm-watch-triage.test.sh:4703): the away-mode handoff to the
+	// afk daemon (one-shot watcher, daemon-owned pause verdict); cox has no away daemon.
+
+	// n/a test_afk_busy_declared_pause_ticking_pane_hands_off_once (fm-watch-triage.test.sh:4789): the same away-mode
+	// daemon handoff, keyed against tmux pane-hash churn; afk daemon + pane hashing are firstmate-only surfaces.
+
+	t.Run(s+"busy_pane_default_turn_age_bound_is_3600s", func(t *testing.T) {
+		// fm: tests/fm-watch-triage.test.sh:4894
+		// cox: busyTurnMaxPass
+		if DefaultBusyTurnMax != 3600*time.Second {
+			t.Errorf("DefaultBusyTurnMax = %v, want 3600s", DefaultBusyTurnMax)
+		}
+		r := newPortRig(t) // BusyTurnMax unset: the production default
+		r.busySet(busy.Busy)
+		r.pCAgeBusy(5 * time.Minute)
+		wantAbsorbed(t, r.tick(), "a 5-minute-old turn is under the default bound")
+		r.pCAgeBusy(66 * time.Minute)
+		ws := r.tick()
+		pCWantKindFor(t, ws, wake.KindStatus, "a 66-minute-old turn reaches the default bound")
+		pCWantNotSurfaced(t, ws, "reaching the bound starts the timer, it does not surface before the wedge threshold")
+	})
+}
+
+const (
+	pDMechStale       = "stale escalation: a silent worker past the stale threshold escalates (stalePass only fires on a failed/unknown probe)"
+	pDMechWedge       = "wedge detector: escalation schedule, deep inspection, write deferral"
+	pDMechHeartbeat   = "heartbeat backstop: periodic re-surface of unsurfaced status"
+	pDMechDeclWait    = "declared wait: paused / captain-held status verbs"
+	pDMechWaitCadence = "wait cadence: paused-until / resurface throttle"
+)
+
+// pDHbPath is cox's stale timer for the story's dispatch: the heartbeat file whose mtime stalePass ages.
+func pDHbPath(r *portRig) string {
+	return filepath.Join(r.epic, state.ControlDir, "watch", "hb", "ctx_"+portStory)
+}
+
+// pDSeen delivers an already-seen status line: the arrival tick is consumed and its wakes discarded (firstmate seeds the
+// .seen-* signature so only the later poll is under test).
+func pDSeen(r *portRig, id, line string) {
+	r.mail(id, "status", line)
+	r.tick()
+}
+
+// pDStaleWorker puts the story into firstmate's "quiet pane past the escalation threshold" shape: a heartbeat that
+// aged `age` past a StaleMin of `threshold`, a live worker, and an idle busy record.
+func pDStaleWorker(r *portRig, threshold, age time.Duration) {
+	r.w.StaleMin = threshold
+	r.liveness(backend.Alive)
+	r.busySet(busy.Idle)
+	r.heartbeat("hb1")
+	r.tick()
+	r.advance(age)
+}
+
+func pDUntil(t time.Time) string { return t.UTC().Format("2006-01-02T15:04:05Z") }
+
+func TestPortTriageD(t *testing.T) {
+	const s = "FM/fm-watch-triage/"
+
+	t.Run(s+"nonterminal_stale_repairs_missing_or_corrupt_timer", func(t *testing.T) {
+		// fm: tests/fm-watch-triage.test.sh:4936
+		// cox: pDMechStale
+		// Missing timer: a working worker (quiet, idle, status already seen) whose stale clock was never started. Firstmate
+		// initializes stale-since without waking; cox's clock is watch/hb/<dispatch>, which only a heartbeat creates.
+		r := newPortRig(t)
+		r.w.StaleMin = 999 * time.Second
+		r.busySet(busy.Idle)
+		pDSeen(r, "m1", "working: still compiling")
+		r.advance(time.Second)
+		wantAbsorbed(t, r.tick(), "missing stale timer repair must not wake")
+		if _, err := os.Stat(pDHbPath(r)); err != nil {
+			t.Errorf("missing stale timer was not initialized for a working worker: %v", err)
+		}
+		// Corrupt timer: cox's timer is an mtime, so the corrupt analog is a timer in the future (it would never age).
+		// Firstmate replaces a corrupt stale-since with now, without waking.
+		p := pDHbPath(r)
+		portMust(t, os.MkdirAll(filepath.Dir(p), 0o755))
+		portMust(t, os.WriteFile(p, []byte("corrupt\n"), 0o644))
+		future := r.clock.Add(24 * time.Hour)
+		portMust(t, os.Chtimes(p, future, future))
+		r.advance(time.Second)
+		wantAbsorbed(t, r.tick(), "corrupt stale timer repair must not wake")
+		if info, err := os.Stat(p); err != nil || info.ModTime().After(r.clock) {
+			t.Errorf("corrupt (future) stale timer was left in place: %v", err)
+		}
+	})
+
+	t.Run(s+"wedge_escalation_deferred_while_worktree_is_written", func(t *testing.T) {
+		// fm: tests/fm-watch-triage.test.sh:4991
+		// cox: pDMechWedge
+		// Phase B (the half cox can express): same quiet worker, nothing written, 500s into a 240s threshold -> the
+		// unchanged schedule escalates a possible wedge (surfaced stale).
+		r := newPortRig(t)
+		pDSeen(r, "m1", "working: implementing")
+		pDStaleWorker(r, 240*time.Second, 500*time.Second)
+		wantSurfaced(t, r.tick(), "a silent worker past the stale threshold escalates as a possible wedge")
+		// Phase A needs worktree write evidence to defer the escalation; cox has none.
+		notImplemented(t, pDMechWedge)
+	})
+
+	t.Run(s+"write_deferral_resurfaces_on_the_bounded_cadence", func(t *testing.T) {
+		// fm: tests/fm-watch-triage.test.sh:5059
+		// cox: pDMechWedge
+		// A write-deferral chain aged past PAUSE_RESURFACE_SECS re-surfaces as a "writing its worktree" recheck; cox has
+		// no write deferral and no resurface throttle to age.
+		notImplemented(t, pDMechWedge)
+	})
+
+	t.Run(s+"secondmate_home_supervision_churn_is_not_write_evidence", func(t *testing.T) {
+		// fm: tests/fm-watch-triage.test.sh:5104
+		// cox: pDMechWedge
+		// The secondmate home is firstmate-only; the requirement kept is the kind-agnostic busy-turn backstop: a worker
+		// busy past the busy-turn bound with no real progress escalates (surfaced stale, possible wedge), not a nudge.
+		r := newPortRig(t)
+		r.w.StaleMin = 240 * time.Second
+		r.w.BusyTurnMax = time.Second // FM_BUSY_TURN_MAX_SECS=1
+		r.liveness(backend.Alive)
+		r.busySet(busy.Busy)
+		pDSeen(r, "m1", "working: implementing")
+		r.advance(500 * time.Second)
+		wantSurfaced(t, r.tick(), "busy past the turn bound with no progress escalates a possible wedge")
+		notImplemented(t, pDMechWedge)
+	})
+
+	t.Run(s+"timer_repair_drops_a_finished_write_deferral_chain", func(t *testing.T) {
+		// fm: tests/fm-watch-triage.test.sh:5154
+		// cox: pDMechWedge
+		// Phase 1: a corrupt idle timer is repaired without a wake (cox analog: a future-dated heartbeat timer).
+		r := newPortRig(t)
+		r.busySet(busy.Idle)
+		pDSeen(r, "m1", "working: implementing")
+		p := pDHbPath(r)
+		portMust(t, os.MkdirAll(filepath.Dir(p), 0o755))
+		portMust(t, os.WriteFile(p, []byte("corrupt\n"), 0o644))
+		future := r.clock.Add(24 * time.Hour)
+		portMust(t, os.Chtimes(p, future, future))
+		wantAbsorbed(t, r.tick(), "idle-window timer repair must not enqueue a wake")
+		// Dropping the write-deferral chain with the repaired timer (and the fresh re-surface window after it) needs the
+		// write-deferral chain cox does not have.
+		notImplemented(t, pDMechWedge)
+	})
+
+	t.Run(s+"terminal_first_sight_drops_a_finished_write_deferral_chain", func(t *testing.T) {
+		// fm: tests/fm-watch-triage.test.sh:5223
+		// cox: pDMechWedge
+		// Phase B: nothing overrides a captain-relevant terminal status, so its first sight surfaces.
+		r := newPortRig(t)
+		r.busySet(busy.Idle)
+		r.mail("m1", "status", "done: implementation complete, ready to validate")
+		wantSurfaced(t, r.tick(), "first sight of a done: status with no active run surfaces")
+		// Phase A (an active run-step outranks the stale done: line, mechRunStep) and the chain drop on both first-sight
+		// paths need the write-deferral chain cox does not have.
+		notImplemented(t, pDMechWedge)
+	})
+
+	// n/a test_triage_log_size_cap_accepts_spaced_wc_counts (fm-watch-triage.test.sh:5283): bash-only concern - a fake
+	// `wc -c` printing a space-padded byte count for firstmate's triage debug log cap; cox has no triage log and no wc.
+
+	// n/a test_procevent_captured_result_surfaces_proactively (fm-watch-triage.test.sh:5383): procevent (fm process-event
+	// runner publishing `check` rows into its own queue); cox has no process-event sources.
+
+	// n/a test_procevent_unacknowledged_result_redrains_until_handled (fm-watch-triage.test.sh:5409): procevent re-arm
+	// recovery and the WAKE_ACK_REQUIRED replay boundary of fm-wake-drain; cox's queue is drained/acked by the leader,
+	// not re-surfaced by the watcher.
+
+	// n/a test_procevent_marker_keys_are_injective (fm-watch-triage.test.sh:5456): procevent .seen-procevent-* marker
+	// file naming; no cox analog.
+
+	// n/a test_procevent_headlines_classify_queue_keys (fm-watch-triage.test.sh:5485): procevent headline wording per
+	// queue-key glob (captured / stranded / failed to start); no cox analog.
+
+	// n/a test_procevent_launch_failed_episodes_are_each_delivered (fm-watch-triage.test.sh:5522): procevent
+	// launch-failure episode keys; no cox analog.
+
+	// n/a test_procevent_surface_serializes_with_drain (fm-watch-triage.test.sh:5599): procevent marker commit vs a
+	// concurrent fm drain, driven by a fake `mv`; no cox analog.
+
+	// n/a test_procevent_surface_crash_boundaries (fm-watch-triage.test.sh:5621): procevent output/marker crash
+	// boundaries (fifo, killed mv); no cox analog.
+
+	// n/a test_procevent_marker_failure_exits_and_replays (fm-watch-triage.test.sh:5686): procevent marker failure and
+	// the fm queue lock; no cox analog.
+
+	t.Run(s+"heartbeat_no_change_absorbed", func(t *testing.T) {
+		// fm: tests/fm-watch-triage.test.sh:5711
+		// cox: pDMechHeartbeat
+		r := newPortRig(t)
+		pDSeen(r, "m1", "working: routine heartbeat history")
+		r.advance(time.Second)
+		r.heartbeat("h1")
+		wantAbsorbed(t, r.tick(), "a heartbeat with no captain-relevant change is absorbed")
+		// The backoff streak and the committed heartbeat endpoint (.hb-surfaced-*) belong to the backstop cox lacks.
+		notImplemented(t, pDMechHeartbeat)
+	})
+
+	t.Run(s+"heartbeat_backstop_surfaces_a_masked_status", func(t *testing.T) {
+		// fm: tests/fm-watch-triage.test.sh:5743
+		// cox: pDMechHeartbeat
+		// The decision hidden behind a later routine append must reach the leader; cox sees each line as its own status
+		// mail, so at least the needs-decision line should surface (classify gap: needs-decision: is not urgent in cox).
+		r := newPortRig(t)
+		r.mail("m1", "status", "working: setup")
+		r.mail("m2", "status", "needs-decision: pick A or B")
+		r.mail("m3", "status", "working: tidying the branch")
+		wantSurfaced(t, r.tick(), "a needs-decision line followed by a routine append still surfaces")
+		// The periodic backstop re-surface of a masked status is absent in cox.
+		notImplemented(t, pDMechHeartbeat)
+	})
+
+	t.Run(s+"heartbeat_backstop_surfaces_unsurfaced_status", func(t *testing.T) {
+		// fm: tests/fm-watch-triage.test.sh:5764
+		// cox: pDMechHeartbeat
+		// A captain-relevant status already marked seen but never surfaced (a per-wake-path miss): the next heartbeat
+		// must catch it.
+		r := newPortRig(t)
+		r.w.markSeen("m1")
+		r.mail("m1", "status", "done: PR https://example.test/pr/5")
+		r.heartbeat("h1")
+		wantSurfaced(t, r.tick(), "heartbeat backstop surfaces a seen-but-unsurfaced done: status")
+		notImplemented(t, pDMechHeartbeat)
+	})
+
+	t.Run(s+"beacon_stays_fresh_while_absorbing", func(t *testing.T) {
+		// fm: tests/fm-watch-triage.test.sh:5789
+		// cox: markTick beacon (<epic>/.cox/watch/lasttick) + mailPass absorb
+		// Provably working (busy record busy) so the working: notes must be absorbed; each pass is Run's body: Tick then
+		// markTick.
+		r := newPortRig(t)
+		r.busySet(busy.Busy)
+		beacon := filepath.Join(r.epic, state.ControlDir, "watch", "lasttick")
+		readBeacon := func() time.Time {
+			b, err := os.ReadFile(beacon)
+			if err != nil {
+				t.Errorf("watcher beacon missing while absorbing: %v", err)
+				return time.Time{}
+			}
+			ts, err := time.Parse(time.RFC3339, string(b))
+			if err != nil {
+				t.Errorf("watcher beacon unparsable: %q", b)
+			}
+			return ts
+		}
+		r.mail("m1", "status", "working: a")
+		wantAbsorbed(t, r.tick(), "absorbing a benign working: note enqueues nothing")
+		r.w.markTick()
+		m1 := readBeacon()
+		r.advance(5 * time.Second)
+		r.mail("m2", "status", "working: b")
+		wantAbsorbed(t, r.tick(), "absorbing a second benign working: note enqueues nothing")
+		r.w.markTick()
+		m2 := readBeacon()
+		if m2.Before(m1) {
+			t.Errorf("beacon regressed while absorbing: %v -> %v", m1, m2)
+		}
+		if age := r.clock.Sub(m2); age >= 10*time.Second {
+			t.Errorf("beacon went stale while absorbing (age %v)", age)
+		}
+	})
+
+	// n/a test_afk_signal_records_heartbeat_endpoint (fm-watch-triage.test.sh:5822): afk/away daemon handoff (.afk makes
+	// the watcher one-shot for the supervise daemon); cox has no away daemon.
+
+	// n/a test_afk_present_reverts_watcher_to_one_shot (fm-watch-triage.test.sh:5839): afk/away daemon owning triage; no
+	// cox analog.
+
+	// n/a test_afk_paused_changed_pane_hands_off_plain_stale (fm-watch-triage.test.sh:5863): afk daemon handoff of a
+	// changed paused pane's plain stale identity; afk-only, and pane hashing.
+
+	t.Run(s+"captain_held_never_rechecked_while_away_record_exists", func(t *testing.T) {
+		// fm: tests/fm-watch-triage.test.sh:5920
+		// cox: pDMechDeclWait
+		// Phase A (silence under the away-posture record) is afk-only. Phase B is a cox-side requirement: once no away
+		// record exists, a captain-held item past the recheck cadence (240s) is rechecked, naming the captain.
+		r := newPortRig(t)
+		r.busySet(busy.Idle)
+		r.liveness(backend.Alive)
+		pDSeen(r, "m1", "captain-held [key=route]: tracked by task-decision-route")
+		r.advance(500 * time.Second)
+		wantSurfaced(t, r.tick(), "a captain-held item past the recheck cadence is rechecked")
+		notImplemented(t, pDMechDeclWait)
+	})
+
+	// n/a test_live_captain_held_first_sight_silenced_by_away_record (fm-watch-triage.test.sh:5967): the only behavior is
+	// the away-posture record (afk contract) silencing a live captain-held first sight; cox has no away record.
+
+	// n/a test_backlog_hold_never_rechecked_while_away_record_exists (fm-watch-triage.test.sh:5996): away-posture record
+	// over a tasks-axi backlog hold with pane-hash churn; afk-only and tasks-axi-only.
+
+	// n/a test_afk_one_shot_never_hands_off_captain_held_under_away_record (fm-watch-triage.test.sh:6014): afk daemon
+	// one-shot handoff under the away record; afk-only.
+
+	t.Run(s+"paused_until_near_future_is_quiet_before_the_cadence", func(t *testing.T) {
+		// fm: tests/fm-watch-triage.test.sh:6073
+		// cox: pDMechWaitCadence
+		// A declared wait whose until time (120s ahead) falls inside the 240s cadence stays quiet until then.
+		r := newPortRig(t)
+		r.busySet(busy.Idle)
+		r.liveness(backend.Alive)
+		start := r.clock
+		pDSeen(r, "m1", "paused: rate limit resets, until "+pDUntil(start.Add(180*time.Second))+", then resuming")
+		r.advance(60 * time.Second)
+		wantAbsorbed(t, r.tick(), "near-future declared wait is quiet before its time (poll 1)")
+		r.advance(time.Second)
+		wantAbsorbed(t, r.tick(), "near-future declared wait is quiet before its time (poll 2)")
+		// Quiet here is vacuous in cox (it never rechecks a declared wait); citing "declared time not reached" needs the
+		// until-aware cadence.
+		notImplemented(t, pDMechWaitCadence)
+	})
+
+	t.Run(s+"paused_until_wrong_year_is_bounded_by_the_cadence", func(t *testing.T) {
+		// fm: tests/fm-watch-triage.test.sh:6087
+		// cox: pDMechWaitCadence
+		// A declared time a year out cannot silence the wait past the 240s cadence: a status 300s old is rechecked.
+		r := newPortRig(t)
+		r.busySet(busy.Idle)
+		r.liveness(backend.Alive)
+		pDSeen(r, "m1", "paused: rate limit resets, until "+pDUntil(r.clock.Add(365*24*time.Hour))+", then resuming")
+		r.advance(300 * time.Second)
+		wantSurfaced(t, r.tick(), "a wrong-year declared time is bounded by the recheck cadence")
+		notImplemented(t, pDMechWaitCadence)
+	})
+
+	t.Run(s+"paused_until_that_passed_is_rechecked_before_the_cadence", func(t *testing.T) {
+		// fm: tests/fm-watch-triage.test.sh:6102
+		// cox: pDMechWaitCadence
+		// The until time passed 30s ago (cadence 999s): rechecked at once, then once per declaration.
+		r := newPortRig(t)
+		r.busySet(busy.Idle)
+		r.liveness(backend.Alive)
+		pDSeen(r, "m1", "paused: rate limit resets, until "+pDUntil(r.clock.Add(30*time.Second))+", then resuming")
+		r.advance(60 * time.Second)
+		wantSurfaced(t, r.tick(), "a declared wait whose until time passed is rechecked ahead of the cadence")
+		r.advance(time.Second)
+		wantAbsorbed(t, r.tick(), "the due recheck fires once per declaration")
+		notImplemented(t, pDMechWaitCadence)
 	})
 }
