@@ -298,6 +298,7 @@ func TestPortWakeQueue(t *testing.T) {
 			red(t, "wake.drain-liveness", "drain with a working story and no live watcher printed no watcher-down warning (stderr %q)", se)
 		}
 		must(t, os.WriteFile(filepath.Join(epic, state.ControlDir, "watch.pid"), []byte(fmt.Sprint(os.Getpid())), 0o644))
+		must(t, watch.RecordIdentity(epic, os.Getpid())) // fm :943 records pid-identity; health is identity-bound
 		must(t, os.MkdirAll(filepath.Join(epic, state.ControlDir, "watch"), 0o755))
 		must(t, os.WriteFile(filepath.Join(epic, state.ControlDir, "watch", "lasttick"), nil, 0o644))
 		if _, se, _ := cox(t, "wake", "drain", "--epic", epic); strings.Contains(se, "WATCHER DOWN") {

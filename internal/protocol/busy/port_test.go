@@ -592,7 +592,7 @@ func coxBin(t *testing.T) string {
 const fakeOrca = `#!/bin/sh
 case "$1 $2" in
 'terminal create') echo '{"ok":true,"result":{"terminal":{"handle":"h1"}}}' ;;
-'terminal close') echo '{"ok":true,"result":{}}' ;;
+'terminal close'|'terminal send') echo '{"ok":true,"result":{}}' ;;
 *) echo '{"ok":false,"error":{"message":"fake orca"}}'; exit 1 ;;
 esac
 `
@@ -626,7 +626,8 @@ func launchCase(t *testing.T, harnessName string) (epic, wt string, env []string
 	bin := t.TempDir()
 	must(t, os.WriteFile(filepath.Join(bin, "orca"), []byte(fakeOrca), 0o755))
 	env = append(os.Environ(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"), "ORCA_RUN_ID=run-fake",
-		"COX_PLANE=terminal", "ORCA_TERMINAL_HANDLE=", "COX_BIN="+cox)
+		"COX_PLANE=terminal", "ORCA_TERMINAL_HANDLE=", "COX_BIN="+cox,
+		"COX_SPAWN_CONFIRM=200ms") // the fake never renders a busy composer: do not wait out the 60s launch confirmation
 	cmd := exec.Command(cox, "story", "resume", "s1", "--epic", epic, "--allow-unsandboxed")
 	cmd.Env = env
 	_, _ = cmd.CombinedOutput() // the fake launch line fails after arming; the arm and hook write are what matter
