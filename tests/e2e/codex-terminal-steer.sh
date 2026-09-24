@@ -117,8 +117,8 @@ DLOG="$WS/dispatch.log"
 HANDLE="$(grep -o '"Handle": *"[^"]*"' "$EPIC/.cox/sessions/$STORY_ID.json" 2>/dev/null | head -1 | grep -o 'term_[A-Za-z0-9_-]*')"
 if [ -n "$HANDLE" ]; then
   SCREEN="$(orca terminal read --terminal "$HANDLE" --screen --json 2>/dev/null)"
-  echo "$SCREEN" | grep -q -- "--model" && ok "launch carries --model" || no "launch missing --model (screen may have scrolled)"
-  echo "$SCREEN" | grep -qE -- "-a +never| -s +workspace-write" && ok "launch carries codex approval flags" || no "launch missing codex approval flags"
+  grep -q -- "--model" <<<"$SCREEN" && ok "launch carries --model" || no "launch missing --model (screen may have scrolled)"
+  grep -qE -- "-a +never| -s +workspace-write" <<<"$SCREEN" && ok "launch carries codex approval flags" || no "launch missing codex approval flags"
 else
   no "no worker terminal handle in the session file"
 fi
@@ -185,7 +185,7 @@ step "9. cox epic close --yes --force"
 cleanup; WATCH_PID=""
 "$COX" epic close --epic "$EPIC" --yes --force && ok "epic closed" || no "close failed"
 for br in "story/$STORY_ID" "epic/$SLUG"; do
-  git -C "$REPO" branch --list "$br" | grep -q . && ok "branch kept: $br" || no "branch missing: $br"
+  [ -n "$(git -C "$REPO" branch --list "$br")" ] && ok "branch kept: $br" || no "branch missing: $br"
 done
 
 echo

@@ -181,13 +181,13 @@ if [ "$PLANE" = "terminal" ]; then
   HANDLE="$(grep -o '"Handle": *"[^"]*"' "$EPIC/.cox/sessions/$STORY_ID.json" 2>/dev/null | head -1 | grep -o 'term_[A-Za-z0-9_-]*')"
   if [ -n "$HANDLE" ]; then
     SCREEN="$(orca terminal read --terminal "$HANDLE" --screen --json 2>/dev/null)"
-    if echo "$SCREEN" | grep -q -- "--model"; then
+    if grep -q -- "--model" <<<"$SCREEN"; then
       ok "launch command carries --model"
     else
       no "launch command missing --model (screen may have scrolled; check the terminal)"
     fi
     # claude uses --permission-mode; codex uses -a never -s workspace-write. Accept either shape.
-    if echo "$SCREEN" | grep -qE -- "--permission-mode|-a +never| -s +workspace-write"; then
+    if grep -qE -- "--permission-mode|-a +never| -s +workspace-write" <<<"$SCREEN"; then
       ok "launch command carries the approval flag"
     else
       no "launch command missing the approval flag (screen may have scrolled; check the terminal)"
@@ -250,7 +250,7 @@ fi
 step "4. cox state --json"
 STATE_JSON="$("$COX" state $STORY_ID --epic "$EPIC" --json 2>/dev/null)"
 echo "$STATE_JSON" | head -c 400; echo
-if echo "$STATE_JSON" | grep -q '"state": *"working"'; then
+if grep -q '"state": *"working"' <<<"$STATE_JSON"; then
   ok "state is working (dispatched, not yet merged)"
 else
   no "unexpected state"
@@ -316,7 +316,7 @@ fi
 
 # Branches must survive.
 for br in "story/$STORY_ID" "epic/$SLUG"; do
-  if git -C "$REPO" branch --list "$br" | grep -q .; then ok "branch kept: $br"; else no "branch missing: $br"; fi
+  if [ -n "$(git -C "$REPO" branch --list "$br")" ]; then ok "branch kept: $br"; else no "branch missing: $br"; fi
 done
 
 # ---------------------------------------------------------------------------

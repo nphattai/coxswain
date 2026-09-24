@@ -138,10 +138,10 @@ step "5. cox doctor exits 0 and lists workspace, epic, watcher, hooks"
 OUT="$("$COX" doctor --root "$WS" --epic "$EPIC" 2>&1)"; code=$?
 echo "$OUT"
 [ $code -eq 0 ] && ok "doctor exit 0" || no "doctor exit $code (want 0)"
-echo "$OUT" | grep -q "workspace $WS" && ok "workspace listed" || no "workspace not listed"
-echo "$OUT" | grep -q "epic hello" && ok "epic listed" || no "epic not listed"
-echo "$OUT" | grep -q "watcher" && ok "watcher listed" || no "watcher not listed"
-echo "$OUT" | grep -q "hooks:" && ok "hooks listed" || no "hooks not listed"
+grep -q "workspace $WS" <<<"$OUT" && ok "workspace listed" || no "workspace not listed"
+grep -q "epic hello" <<<"$OUT" && ok "epic listed" || no "epic not listed"
+grep -q "watcher" <<<"$OUT" && ok "watcher listed" || no "watcher not listed"
+grep -q "hooks:" <<<"$OUT" && ok "hooks listed" || no "hooks not listed"
 
 step "5c. cox ship merge --check reads the forge and reports unknown, never merging (item 8)"
 # No gh on PATH here, so the forge read fails: --check must print the verdict and exit 3 (unknown, retrieval failed),
@@ -195,8 +195,8 @@ CLOSED="$WS/proj/epics/donezo"
 mkdir -p "$CLOSED/.cox.closed"
 printf '# donezo\n\nStatus: active (signed 2026-09-21)\n' > "$CLOSED/DESIGN.md"
 OUT="$("$COX" doctor --root "$WS" 2>&1)"; code=$?
-echo "$OUT" | grep -qE "epic donezo +closed" && ok "closed epic printed as closed" || no "closed epic not printed as closed"
-echo "$OUT" | grep -q "epic donezo.*watcher dead" && no "closed epic wrongly shown as watcher dead" || ok "closed epic not shown as watcher dead"
+grep -qE "epic donezo +closed" <<<"$OUT" && ok "closed epic printed as closed" || no "closed epic not printed as closed"
+grep -q "epic donezo.*watcher dead" <<<"$OUT" && no "closed epic wrongly shown as watcher dead" || ok "closed epic not shown as watcher dead"
 [ $code -eq 0 ] && ok "doctor exit 0 with a closed epic" || no "doctor exit $code with a closed epic (want 0)"
 rm -rf "$CLOSED"
 
@@ -204,7 +204,7 @@ step "10. a duplicate PATH entry for cox still passes the 'exactly one cox' chec
 # A second PATH dir whose cox symlinks to the same real binary must resolve to one install, not fail as two.
 BIN2="$TMP/bin2"; mkdir -p "$BIN2"; ln -sf "$BIN/cox" "$BIN2/cox"
 OUT="$(PATH="$BIN:$BIN2:/usr/bin:/bin" "$COX" doctor --root "$WS" --epic "$EPIC" 2>&1)"; code=$?
-echo "$OUT" | grep -qE "cox on PATH +pass" && ok "duplicate PATH cox de-duplicated (pass)" || { echo "$OUT" | grep -i "cox on PATH"; no "duplicate PATH cox not de-duplicated"; }
+grep -qE "cox on PATH +pass" <<<"$OUT" && ok "duplicate PATH cox de-duplicated (pass)" || { grep -i "cox on PATH" <<<"$OUT"; no "duplicate PATH cox not de-duplicated"; }
 [ $code -eq 0 ] && ok "doctor exit 0 with a duplicate PATH entry" || no "doctor exit $code with a duplicate PATH entry (want 0)"
 
 step "11. cox epic close on an epic with no .cox (v1-migrated) writes .cox.closed with no_runtime (B-38)"
