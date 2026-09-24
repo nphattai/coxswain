@@ -6,7 +6,6 @@
 package watch
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,8 +13,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/nphattai/coxswain/internal/adapter/backend"
@@ -82,7 +83,7 @@ type Watcher struct {
 	ReconcileEvery int           // ticks between reconcile passes; 0 => DefaultReconcileEvery
 	Quota          QuotaProbe    // quota source + targets + thresholds; nil disables the quota pass
 	NudgeWindow    time.Duration // leader re-nudge rate limit for an unchanged backlog; 0 => DefaultNudgeWindow (B-33)
-	AlarmChannel   string        // policy.alerts.channel: off|osascript|command:<cmd>; "" or "off" disables the alarm (item 3)
+	AlarmChannel   string        // policy.alerts.channel directives, one per line: off|auto|default|osascript|command:<cmd>; "" => auto
 	AlarmWindow    time.Duration // out-of-band leader-unreachable alarm rate limit; 0 => DefaultAlarmWindow (item 3)
 	// AlarmRun runs the out-of-band alarm channel with the summary. nil => runAlarmChannel (the real osascript/command
 	// dispatcher); a test injects a recorder so no real notification fires and channel selection can be asserted (item 3).
@@ -306,12 +307,12 @@ func (w *Watcher) logLeaderDoorbellFailure(handle string, cause error) {
 	fmt.Fprintf(f, "%s leader-doorbell %s %v\n", w.now().UTC().Format(time.RFC3339), handle, cause)
 }
 
-// fireAlarm runs the configured out-of-band alarm channel with the summary, rate-limited to one per AlarmWindow via
-// watch/alarm-last. An unset or "off" channel is a no-op. The runner is w.AlarmRun (a test recorder) or the real
-// osascript/command dispatcher; a runner error is logged but never disturbs the loop.
+// fireAlarm runs every configured out-of-band alarm channel with the summary (firstmate docs/wedge-alarm.md: one
+// directive per non-empty, non-comment line, every non-off channel fires best-effort), rate-limited to one alarm per
+// AlarmWindow via watch/alarm-last. An unset channel is auto. A failing channel is logged and the next one still runs.
 func (w *Watcher) fireAlarm(summary string) {
-	ch := strings.TrimSpace(w.AlarmChannel)
-	if ch == "" || ch == "off" {
+	channels := alarmChannels(w.AlarmChannel)
+	if len(channels) == 0 {
 		return
 	}
 	last := w.readAlarmLast()
@@ -323,10 +324,37 @@ func (w *Watcher) fireAlarm(summary string) {
 	if run == nil {
 		run = runAlarmChannel
 	}
-	if err := run(ch, summary); err != nil {
-		w.logLeaderDoorbellFailure("alarm:"+ch, err)
+	for _, ch := range channels {
+		if err := run(ch, summary); err != nil {
+			w.logLeaderDoorbellFailure("alarm:"+ch, err)
+		}
 	}
 	w.recordAlarmLast(now)
+}
+
+// alarmGOOS is the platform auto resolves against; a var so a test can pin it.
+var alarmGOOS = runtime.GOOS
+
+// alarmChannels parses the channel directives: blank and # lines are skipped, off lines fire nothing, and auto (or
+// default) resolves to osascript on macOS; other platforms have no built-in channel, so auto fires nothing there.
+func alarmChannels(spec string) []string {
+	if strings.TrimSpace(spec) == "" {
+		spec = "auto"
+	}
+	var out []string
+	for _, line := range strings.Split(spec, "\n") {
+		d := strings.TrimSpace(line)
+		switch {
+		case d == "" || strings.HasPrefix(d, "#") || d == "off":
+		case d == "auto" || d == "default":
+			if alarmGOOS == "darwin" {
+				out = append(out, "osascript")
+			}
+		default:
+			out = append(out, d)
+		}
+	}
+	return out
 }
 
 // Run polls Tick every poll interval until the context-like stop channel is closed. Polling is mandatory (no fsnotify;
@@ -944,29 +972,44 @@ func (w *Watcher) recordAlarmLast(ts time.Time) {
 	_ = os.WriteFile(filepath.Join(w.watchDir(), "alarm-last"), []byte(ts.UTC().Format(time.RFC3339)), 0o644)
 }
 
-// runAlarmChannel is the real out-of-band notifier for a leader-unreachable alarm (item 3, adapts firstmate's
-// wedge-alarm channels). "osascript" posts a macOS Notification Center banner with the summary passed as an argv item
-// (never interpolated into the AppleScript source, so summary text cannot alter the script). "command:<cmd>" runs <cmd>
-// through sh -c with the summary as $1 and on stdin, for delivery to a phone or pager. Every invocation is bounded to 10s.
+// alarmTimeout bounds every alarm invocation (FM_WEDGE_ALARM_TIMEOUT_SECS default, 10s); a var so a test can shorten it.
+var alarmTimeout = 10 * time.Second
+
+// runAlarmChannel is the real out-of-band notifier for a leader-unreachable alarm (firstmate docs/wedge-alarm.md).
+// "osascript" posts a macOS Notification Center banner with the summary passed as an argv item (never interpolated into
+// the AppleScript source). "command:<cmd>" runs <cmd> through sh -c with the summary as $1 and on stdin. Every
+// invocation runs in its own process group bounded by alarmTimeout; on timeout the whole group is killed, so a
+// notifier's children cannot outlive it.
 func runAlarmChannel(channel, summary string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	var cmd *exec.Cmd
 	switch {
 	case channel == "osascript":
-		cmd := exec.CommandContext(ctx, "osascript",
+		cmd = exec.Command("osascript",
 			"-e", "on run argv", "-e", `display notification (item 1 of argv) with title "coxswain"`, "-e", "end run",
 			"--", summary)
-		return cmd.Run()
 	case strings.HasPrefix(channel, "command:"):
 		script := strings.TrimSpace(strings.TrimPrefix(channel, "command:"))
 		if script == "" {
 			return fmt.Errorf("alerts channel command: empty command")
 		}
-		cmd := exec.CommandContext(ctx, "sh", "-c", script, "sh", summary)
+		cmd = exec.Command("sh", "-c", script, "sh", summary)
 		cmd.Stdin = strings.NewReader(summary)
-		return cmd.Run()
 	default:
-		return fmt.Errorf("alerts channel %q not recognized (want off|osascript|command:<cmd>)", channel)
+		return fmt.Errorf("alerts channel %q not recognized (want off|auto|osascript|command:<cmd>)", channel)
+	}
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(alarmTimeout):
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		<-done
+		return fmt.Errorf("alerts channel %q timed out after %s; its process group was killed", channel, alarmTimeout)
 	}
 }
 

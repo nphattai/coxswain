@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -904,5 +906,48 @@ func TestMarkTickDoesNotResurrectControlTree(t *testing.T) {
 	w.markTick()
 	if _, err := os.Stat(filepath.Join(epic, state.ControlDir)); !os.IsNotExist(err) {
 		t.Fatalf(".cox was resurrected by markTick (err=%v); it must stay gone so the watcher evicts", err)
+	}
+}
+
+// firstmate docs/wedge-alarm.md: one directive per line, every non-off channel fires, an absent config is auto, and
+// auto resolves to osascript on macOS only.
+func TestAlarmChannels(t *testing.T) {
+	saved := alarmGOOS
+	defer func() { alarmGOOS = saved }()
+	alarmGOOS = "darwin"
+	for spec, want := range map[string]string{
+		"":                                     "osascript",
+		"auto":                                 "osascript",
+		"default":                              "osascript",
+		"off":                                  "",
+		"# comment\n\nosascript\ncommand:true": "osascript|command:true",
+		"off\ncommand:true":                    "command:true",
+	} {
+		if got := strings.Join(alarmChannels(spec), "|"); got != want {
+			t.Errorf("alarmChannels(%q) = %q, want %q", spec, got, want)
+		}
+	}
+	alarmGOOS = "linux"
+	if got := alarmChannels("auto"); len(got) != 0 {
+		t.Errorf("auto on linux resolved to %v; firstmate has no built-in channel there", got)
+	}
+}
+
+// A timed-out notifier's whole process group is killed, not just its shell.
+func TestRunAlarmChannelKillsTheProcessGroup(t *testing.T) {
+	saved := alarmTimeout
+	defer func() { alarmTimeout = saved }()
+	alarmTimeout = 300 * time.Millisecond
+	pidFile := filepath.Join(t.TempDir(), "pid")
+	start := time.Now()
+	err := runAlarmChannel("command:sleep 30 & echo $! > "+pidFile+"; wait", "summary")
+	if err == nil || time.Since(start) > 5*time.Second {
+		t.Fatalf("want a timeout error inside the bound, got %v after %s", err, time.Since(start))
+	}
+	b, _ := os.ReadFile(pidFile)
+	pid, _ := strconv.Atoi(strings.TrimSpace(string(b)))
+	if pid > 0 && syscall.Kill(pid, 0) == nil {
+		_ = syscall.Kill(pid, syscall.SIGKILL)
+		t.Fatalf("the notifier's child %d outlived the timeout", pid)
 	}
 }

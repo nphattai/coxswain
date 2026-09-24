@@ -402,11 +402,12 @@ func (p *Policy) BusyTurnMaxMinutes() int {
 	return p.Watch.BusyTurnMaxMin
 }
 
-// AlertsChannel returns the configured out-of-band alarm channel (off|osascript|command:<cmd>), or "off" when policy is
-// nil or the channel is unset, so a caller that could not load policy never fires a notification (item 3).
+// AlertsChannel returns the configured out-of-band alarm channel directives (off|auto|osascript|command:<cmd>, one per
+// line), or "auto" when policy is nil or the channel is unset: an absent config is default-on (firstmate
+// docs/wedge-alarm.md:21; supersedes the item 3 "unset means off" reading).
 func (p *Policy) AlertsChannel() string {
 	if p == nil || strings.TrimSpace(p.Alerts.Channel) == "" {
-		return "off"
+		return "auto"
 	}
 	return strings.TrimSpace(p.Alerts.Channel)
 }
