@@ -124,11 +124,19 @@ func tryLock(path string, beforeSteal func(stalePid int) error) (recovered int, 
 		}
 	}
 	_ = os.Remove(path)
-	if err := lockCreate(path); err != nil {
-		held, _, _ := lockHolder(path)
-		return 0, errLockHeld{held}
+	// A contender may publish in the gap between the remove and our create; every such claim sees our live steal mutex
+	// and backs off at once, so the stealer retries briefly instead of leaving the lock to nobody.
+	for i := 0; ; i++ {
+		err := lockCreate(path)
+		if err == nil {
+			return cur, nil
+		}
+		if !errors.Is(err, os.ErrExist) || i >= 50 {
+			held, _, _ := lockHolder(path)
+			return 0, errLockHeld{held}
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
-	return cur, nil
 }
 
 // releaseLock is fm_lock_release: it removes path only while it still records this process, so a holder whose lock was

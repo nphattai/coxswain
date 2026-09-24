@@ -145,22 +145,34 @@ func allEpics(wsRoot string) []string {
 // --epic narrows to it; otherwise it walks up to the workspace. Leader-filtered so a worker worktree never guards the
 // leader's epics.
 func guardEpics(epicDir string) []string {
+	g, _ := guardSet(epicDir)
+	return g
+}
+
+// guardSet is guardEpics plus the open-story epics a different, still-live leader owns (the foreign-owner exception:
+// docs/turnend-guard.md:37). A recorded owner that cannot be probed or is dead does not qualify.
+func guardSet(epicDir string) (guard []string, foreign []foreignEpic) {
 	var eps []string
 	if epicDir != "" {
 		eps = []string{epicDir}
 	} else if wsRoot, err := findWorkspaceRoot("."); err == nil {
 		eps = allEpics(wsRoot)
 	} else {
-		return nil
+		return nil, nil
 	}
-	eps = filterLeaderEpics(eps)
-	var out []string
 	for _, ep := range eps {
-		if open, err := watch.OpenStories(ep); err == nil && len(open) > 0 {
-			out = append(out, ep)
+		if !supervisionNeeds(ep).needed() {
+			continue
+		}
+		if isLeader, _ := leaderTerminal(ep); isLeader {
+			guard = append(guard, ep)
+		} else if owner := readLeader(ep); owner != "" {
+			if live, canProbe := probeLeaderHandle(ep, owner); canProbe && live {
+				foreign = append(foreign, foreignEpic{ep, owner})
+			}
 		}
 	}
-	return out
+	return guard, foreign
 }
 
 // outsideWorkspace prints one line to stderr and returns exit 0: a hook fired in a terminal that leads nothing must be
@@ -451,8 +463,9 @@ func hookStopRewake(epicDir, harnessName string, runGuard bool) int {
 	// The guard set (open-story epics regardless of watcher liveness) is computed before the single-waiter lock and the
 	// len(epics)==0 return, so a dead-watcher epic - which activeEpics hides - is still guarded (item 1).
 	var guard []string
+	var foreign []foreignEpic
 	if runGuard {
-		guard = guardEpics(epicDir)
+		guard, foreign = guardSet(epicDir)
 	}
 	handle := os.Getenv("ORCA_TERMINAL_HANDLE")
 	payload := readStopPayload(os.Stdin)
@@ -480,6 +493,7 @@ func hookStopRewake(epicDir, harnessName string, runGuard bool) int {
 		stdout:     os.Stdout,
 		sleep:      time.Sleep,
 		session:    nonEmpty(payload.SessionID, nonEmpty(handle, "unknown")),
+		foreign:    foreign,
 		stopActive: payload.StopHookActive,
 	})
 }
@@ -528,7 +542,12 @@ type rewakeCfg struct {
 	session string
 	// stopActive is the Stop payload's loop guard: in the default (codex, pi) mode a true value allows the stop.
 	stopActive bool
+	// foreign is the open-story epics a different, still-live leader terminal owns (guardSet): never guarded here.
+	foreign []foreignEpic
 }
+
+// foreignEpic is an epic whose recorded leader is another live terminal.
+type foreignEpic struct{ epic, owner string }
 
 // reopen ends the idle wait by opening a new turn: codex reads a stdout block decision (exit 0), every other harness
 // reads exit 2 with the message on the text sink. msg is the human-readable instruction shown either way.
@@ -544,7 +563,8 @@ func (cfg rewakeCfg) reopen(msg string) int {
 // runStopRewake is the testable core: first guard every led epic's watcher (item 1), then peek every led epic's wake
 // queue each poll up to maxWait and decide the tick.
 func runStopRewake(cfg rewakeCfg) int {
-	if code, proceed := cfg.guardWatchers(); !proceed {
+	code, proceed, rearmed := cfg.guard()
+	if !proceed {
 		return code
 	}
 	if len(cfg.epics) == 0 {
@@ -558,7 +578,8 @@ func runStopRewake(cfg rewakeCfg) int {
 	for elapsed := time.Duration(0); elapsed < cfg.maxWait; elapsed += poll {
 		wakes := drainAll(cfg.epics)
 		if len(wakes) > 0 {
-			if anyUrgent(wakes) || batch >= cfg.batchMax {
+			// A re-arm re-surfaces the wakes queued while no watcher ran (firstmate's check: rearm-resurface) at once.
+			if anyUrgent(wakes) || batch >= cfg.batchMax || rearmed {
 				msg := "Watcher wake while idle. Run `" + drainHint(cfg.epics) + "`, handle them, then ack-through:\n" + wakesText(wakes)
 				return cfg.reopen(msg)
 			}
@@ -596,7 +617,23 @@ func runStopRewake(cfg rewakeCfg) int {
 // that a loop-guarded retry (stop_hook_active) always allows, so a turn is forced at most once. It returns
 // (exit code, proceed): proceed=true means run the wait loop.
 func (cfg rewakeCfg) guardWatchers() (code int, proceed bool) {
+	code, proceed, _ = cfg.guard()
+	return code, proceed
+}
+
+// guard is guardWatchers that also reports whether this Stop re-armed a watcher (a restart it confirmed), so the wait
+// loop re-surfaces the wakes queued during the downtime at once instead of batching them.
+func (cfg rewakeCfg) guard() (code int, proceed, rearmed bool) {
 	claude := cfg.harness != "codex" && cfg.harness != "pi"
+	if claude {
+		// A live foreign leader owns these epics: this session cannot repair without stealing ownership, so it takes
+		// firstmate's read-only ownership diagnostic and never blocks (docs/turnend-guard.md:37).
+		for _, ep := range cfg.foreign {
+			if !watcherHealthy(ep.epic, time.Now()) && supervisionNeeds(ep.epic).needed() {
+				fmt.Fprintf(cfg.stdout, `{"systemMessage":"COX SUPERVISION IS OWNED BY ANOTHER LIVE SESSION: this read-only session cannot and should not arm or repair the watcher for %s (leader %s). Allowing this turn to end safely; the owning session must restore supervision."}`+"\n", filepath.Base(ep.epic), ep.owner)
+			}
+		}
+	}
 	session := nonEmpty(cfg.session, "unknown")
 	var text strings.Builder
 	var sys bytes.Buffer
@@ -614,6 +651,7 @@ func (cfg rewakeCfg) guardWatchers() (code int, proceed bool) {
 		}
 		if !claude {
 			if cfg.launchWatcher(ep) == nil || watcherHealthy(ep, time.Now()) {
+				rearmed = true
 				continue
 			}
 			if cfg.stopActive {
@@ -626,6 +664,7 @@ func (cfg rewakeCfg) guardWatchers() (code int, proceed bool) {
 		}
 		armCode, healthy := runClaudeAutoarm(ep, cfg.launchWatcher, &text)
 		if healthy {
+			rearmed = true
 			reopen = reopen || armCode == 2
 			continue
 		}
@@ -641,12 +680,12 @@ func (cfg rewakeCfg) guardWatchers() (code int, proceed bool) {
 		_, _ = cfg.stdout.Write(sys.Bytes())
 	}
 	if reopen {
-		return cfg.reopen(text.String()), false
+		return cfg.reopen(text.String()), false, rearmed
 	}
 	if failOpen || loopGuarded {
-		return 0, false
+		return 0, false, rearmed
 	}
-	return 0, true
+	return 0, true, rearmed
 }
 
 // launchWatcher restarts a dead epic watcher the way dispatch's startWatcher does (detached `cox watch --epic <dir>`),
@@ -673,14 +712,25 @@ var watcherExe = os.Executable
 // no .cox/run, "watch needs a live backend" - or never ticks within watcherConfirmWait is an error, so the guard takes
 // the repair/exit-2 path instead of reporting "restarted" and re-arming into the same dead restart (dogfood F-10).
 func launchWatcher(epicDir string) error {
-	if pid := readPid(watchPidPath(epicDir)); pid > 0 && processAlive(pid) {
-		return fmt.Errorf("watcher pid %d is alive but not ticking; run cox watch --epic %s --replace", pid, epicDir)
+	before, _ := os.Stat(beaconPath(epicDir)) // nil when absent: the confirming tick must change this
+	pidPath := watchPidPath(epicDir)
+	if pid := readPid(pidPath); pid > 0 && processAlive(pid) {
+		// A live holder: wedged when its beacon exists and went stale (only --replace may stop it); otherwise a peer
+		// standing up, whose first beacon the arm waits for and attaches to (fm-watch-arm.sh wait_for_healthy_successor).
+		if exists(beaconPath(epicDir)) && pathAge(beaconPath(epicDir)) >= watch.DefaultGrace {
+			return fmt.Errorf("watcher pid %d is alive but not ticking; run cox watch --epic %s --replace", pid, epicDir)
+		}
+		return awaitTick(epicDir, before, nil)
+	} else if pid > 0 {
+		// A dead holder: reclaim its lock here, publishing the downtime once, so the new watcher starts clean.
+		if _, err := tryLock(pidPath, func(stale int) error { return publishWatcherDowntime(epicDir, stale) }); err == nil {
+			releaseLock(pidPath)
+		}
 	}
 	self, err := watcherExe()
 	if err != nil {
 		self = "cox"
 	}
-	started := time.Now()
 	cmd := exec.Command(self, "watch", "--epic", epicDir)
 	cmd.Stdout, cmd.Stderr = nil, nil
 	if err := cmd.Start(); err != nil {
@@ -688,7 +738,13 @@ func launchWatcher(epicDir string) error {
 	}
 	exited := make(chan error, 1)
 	go func() { exited <- cmd.Wait() }()
-	tick := filepath.Join(epicDir, controlDir, "watch", "lasttick")
+	return awaitTick(epicDir, before, exited)
+}
+
+// awaitTick waits up to watcherConfirmWait for the beacon to change from before (its state just before the launch; nil
+// = absent) while watch.pid names no dead process, so a leftover beacon never confirms a restart. exited (nil = none)
+// reports the launched watcher's exit.
+func awaitTick(epicDir string, before os.FileInfo, exited <-chan error) error {
 	deadline := time.After(watcherConfirmWait)
 	for {
 		select {
@@ -697,10 +753,14 @@ func launchWatcher(epicDir string) error {
 		case <-deadline:
 			return fmt.Errorf("restarted watcher did not tick within %s; run cox watch --epic %s --replace", watcherConfirmWait, epicDir)
 		case <-time.After(100 * time.Millisecond):
-			// ponytail: mtime granularity is 1s on some filesystems, so "after the launch" compares whole seconds.
-			if info, err := os.Stat(tick); err == nil && !info.ModTime().Before(started.Truncate(time.Second)) {
-				return nil // confirmed: the new watcher completed a pass after the launch and is still running
+			info, err := os.Stat(beaconPath(epicDir))
+			if err != nil || before != nil && info.ModTime().Equal(before.ModTime()) && info.Size() == before.Size() {
+				continue
 			}
+			if pid := readPid(watchPidPath(epicDir)); pid > 0 && !processAlive(pid) {
+				continue // the pidfile still names the dead predecessor: not confirmed yet
+			}
+			return nil // confirmed: a watcher completed a pass after the launch and is still running
 		}
 	}
 }

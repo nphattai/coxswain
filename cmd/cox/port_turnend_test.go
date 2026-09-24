@@ -122,8 +122,9 @@ func fmGuard(t *testing.T, epic string, launch func(string) error) fmGuardResult
 	t.Helper()
 	var out bytes.Buffer
 	r := fmGuardResult{}
+	guard, foreign := guardSet(epic)
 	cfg := rewakeCfg{
-		epics: []string{epic}, guardEpics: guardEpics(epic), out: &out, stdout: &out, sleep: noSleep,
+		epics: []string{epic}, guardEpics: guard, foreign: foreign, out: &out, stdout: &out, sleep: noSleep,
 		launch: func(ep string) error {
 			r.launched = append(r.launched, ep)
 			if launch == nil {
@@ -2209,8 +2210,12 @@ func fmWatchArm(t *testing.T) {
 		// must show both. (The remote secondmate decision half is firstmate-only.)
 		epic := fmEpic(t, "s1")
 		fmDead(t, epic)
-		seedWake(t, epic, wake.KindStatus)
-		seedWake(t, epic, wake.KindStatus)
+		// Two independent durable wakes (firstmate: check remote-reply-ios, check startup-network): distinct keys.
+		for _, st := range []string{"remote-reply-ios", "startup-network"} {
+			if _, err := wake.Append(epic, wake.Wake{Epic: filepath.Base(epic), Story: st, Kind: wake.KindStatus, Note: "check: " + st}); err != nil {
+				t.Fatal(err)
+			}
+		}
 		var out bytes.Buffer
 		cfg := rewakeCfg{epics: []string{epic}, guardEpics: guardEpics(epic), out: &out, stdout: &out, sleep: noSleep,
 			maxWait: time.Second, batchMax: time.Hour, poll: time.Second, launch: func(string) error { return nil }}
