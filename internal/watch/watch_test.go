@@ -884,6 +884,7 @@ func writeBusyRecord(t *testing.T, epic, story string, at time.Time) {
 	must(t, err)
 	must(t, os.MkdirAll(filepath.Dir(busy.Path(epic, story)), 0o755))
 	must(t, os.WriteFile(busy.Path(epic, story), b, 0o600))
+	must(t, os.WriteFile(busy.GenPath(epic, story), []byte(rec.Gen+"\n"), 0o600)) // the armed-gen sidecar Arm writes
 }
 
 // DESIGN wave-2 item 6d: a working story whose busy record has said busy longer than BusyTurnMax, with no fresh busy
