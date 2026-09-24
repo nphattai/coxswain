@@ -9,8 +9,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -767,5 +769,63 @@ func TestRewakeWaiterAliveNeedsIdentity(t *testing.T) {
 	mustWrite(t, lock, fmt.Sprintf("%d\n%s\n", os.Getpid(), identityOf(os.Getpid())))
 	if !rewakeWaiterAlive(lock, nil) {
 		t.Fatal("this process's own identity-matched fresh lock is a live waiter")
+	}
+}
+
+// A signal to a waiter attached to a live watcher cycle records that cycle once as arm-interrupted with the signal's
+// exit status and exits 128+n (firstmate fm-watch-arm.sh:342 handle_attached_signal).
+func TestStopRewakeSignalRecordsArmInterrupted(t *testing.T) {
+	epic := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(epic, controlDir, "watch"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(watchPidPath(epic), []byte(strconv.Itoa(os.Getpid())), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := watch.RecordIdentity(epic, os.Getpid()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(epic, controlDir, "watch", "lasttick"), []byte(time.Now().UTC().Format(time.RFC3339)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cycles := newWaiterCycles()
+	exited := make(chan struct{})
+	code := 0
+	var out bytes.Buffer
+	runStopRewake(rewakeCfg{
+		epics: []string{epic}, maxWait: time.Second, batchMax: time.Second, poll: time.Second, out: &out, noGuard: true,
+		cycles: cycles,
+		sleep: func(time.Duration) {
+			go waiterSignal(cycles, syscall.SIGTERM, func(c int) { code = c; close(exited) })
+			<-exited
+		},
+	})
+	if code != 143 {
+		t.Fatalf("a TERMed waiter must exit 143, got %d", code)
+	}
+	b, _ := os.ReadFile(cycleLogPath(epic))
+	lines := strings.Split(strings.TrimSpace(string(b)), "\n")
+	if len(lines) != 1 || !regexp.MustCompile(`arm_pid=\d+\twatcher_pid=\d+\torigin=attached\t.*exit_code=143\tsignal=TERM\treason=arm-interrupted\t`).MatchString(lines[0]) {
+		t.Fatalf("want one arm-interrupted record for the attached cycle, got %q", b)
+	}
+}
+
+// A signal after the wait already closed its cycles (it is writing its reopen) records nothing more and does not exit
+// mid-write; a signal before the waiter decided what it is attached to exits unattached once the grace passes.
+func TestWaiterSignalEdges(t *testing.T) {
+	c := newWaiterCycles()
+	c.decided(nil)
+	c.close("", "", "attached-delivered-wake")
+	exited := false
+	waiterSignal(c, syscall.SIGTERM, func(int) { exited = true })
+	if exited {
+		t.Fatal("a signal after the cycles closed cut the waiter's reply short")
+	}
+	defer func(g time.Duration) { waiterSignalGrace = g }(waiterSignalGrace)
+	waiterSignalGrace = 50 * time.Millisecond
+	code := 0
+	waiterSignal(newWaiterCycles(), syscall.SIGHUP, func(c int) { code = c })
+	if code != 129 {
+		t.Fatalf("a signal before attachment must exit 129 once the grace passes, got %d", code)
 	}
 }
