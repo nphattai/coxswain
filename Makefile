@@ -4,7 +4,7 @@ PKG     := github.com/nphattai/coxswain
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -X $(PKG)/internal/version.Version=$(VERSION)
 
-.PHONY: build test install lint release-dry
+.PHONY: build test install lint release-dry test-port vet-port
 
 build:
 	go build -ldflags "$(LDFLAGS)" -o $(BIN) ./cmd/cox
@@ -14,6 +14,13 @@ test:
 
 install:
 	go install -ldflags "$(LDFLAGS)" ./cmd/cox
+
+# test-port runs the firstmate port suites (build tag `port`, epic cox-supervision-port); red cases are the gap list.
+test-port:
+	go test -tags port ./...
+
+vet-port:
+	go vet -tags port ./...
 
 lint:
 	@test -z "$$(gofmt -l .)" || { echo "gofmt needed on:"; gofmt -l .; exit 1; }
