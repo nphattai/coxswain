@@ -112,28 +112,20 @@ func (e notImplementedErr) Error() string { return "not implemented: " + e.what 
 // its cases keep failing with the named gap (DESIGN translation contract rule 3).
 type realBearings struct{}
 
-func (realBearings) Digest(Opts) (Digest, error) {
-	return Digest{}, notImplementedErr{"Digest"}
+func (realBearings) Digest(o Opts) (Digest, error) { return bearings.Compose(o) }
+func (realBearings) Acquire(ws, id string, live func(string) bool) (bool, error) {
+	return bearings.Acquire(ws, id, live)
 }
-func (realBearings) Acquire(string, string, func(string) bool) (bool, error) {
-	return false, notImplementedErr{"Acquire"}
+func (realBearings) DoctorSummary(ws string) (string, error) { return bearings.DoctorSummary(ws) }
+func (realBearings) WakeDrain(epicDir string) ([]wake.Wake, error) {
+	return bearings.WakeDrain(epicDir)
 }
-func (realBearings) DoctorSummary(string) (string, error) {
-	return "", notImplementedErr{"DoctorSummary"}
+func (realBearings) StoryStates(epicDir string) ([]StoryState, error) {
+	return bearings.StoryStates(epicDir)
 }
-func (realBearings) WakeDrain(string) ([]wake.Wake, error) {
-	return nil, notImplementedErr{"WakeDrain"}
-}
-func (realBearings) StoryStates(string) ([]StoryState, error) {
-	return nil, notImplementedErr{"StoryStates"}
-}
-func (realBearings) BacklogOpenRows(string) (int, error) {
-	return 0, notImplementedErr{"BacklogOpenRows"}
-}
-func (realBearings) Notes(string, int) (string, error) {
-	return "", notImplementedErr{"Notes"}
-}
-func (realBearings) Budget(ws string) (BudgetReport, error) { return bearings.Budget(ws) }
+func (realBearings) BacklogOpenRows(ws string) (int, error)      { return bearings.BacklogOpenRows(ws) }
+func (realBearings) Notes(ws string, budget int) (string, error) { return bearings.Notes(ws, budget) }
+func (realBearings) Budget(ws string) (BudgetReport, error)      { return bearings.Budget(ws) }
 func (realBearings) Deferred(string, time.Duration) (string, error) {
 	return "", notImplementedErr{"Deferred"}
 }
