@@ -31,8 +31,8 @@ type QuotaTarget struct {
 	Story   string // the working story id for a worker target; "" for the leader
 }
 
-// QuotaSnapshot is one quota read. quota_low is evaluated over Merged (a manual low fires too); quota_health tracks the
-// automatic source's Known->unknown transition, so it needs the automatic-only readings.
+// QuotaSnapshot is one quota read. quota_low is evaluated over Merged (a manual low fires too). Auto (the automatic-only
+// readings) is kept for callers that report the source; the watcher never wakes on it.
 type QuotaSnapshot struct {
 	Merged     []quota.Reading
 	Auto       []quota.Reading
@@ -45,14 +45,14 @@ type QuotaProbe interface {
 	Read() (QuotaSnapshot, error)
 	Targets() []QuotaTarget
 	LowPercent() int
-	MinRunwaySeconds() int64
 	PollInterval() time.Duration
-	HealthDebounce() time.Duration
 }
 
-// quotaPass reads quota at most once per poll interval (under a cross-process lock), counts the call, and raises
-// quota_low and quota_health wakes for the leader harness and each working story's harness. It returns the wakes
-// appended and whether an urgent one rang the leader doorbell.
+// quotaPass reads quota at most once per poll interval (under a cross-process lock), counts the call, and raises a
+// quota_low wake for each working story's harness whose quota is below low_percent or exhausted now, the only two
+// conditions firstmate's quota watch fires on (bin/fm-procevent-quota.sh:12-15@a8572f6). An unknown or unreadable
+// source never wakes (B-19, B-55b: firstmate keeps polling), and the leader-role target is never woken for (B-25: the
+// leader's own account is observe-only). It returns the wakes appended and whether an urgent one was raised.
 func (w *Watcher) quotaPass() (int, bool, error) {
 	if w.Quota == nil {
 		return 0, false, nil
@@ -77,15 +77,16 @@ func (w *Watcher) quotaPass() (int, bool, error) {
 
 	appended := 0
 	urgent := false
-	healthSeen := map[string]bool{}
 	for _, t := range w.Quota.Targets() {
-		n, u, appErr := w.quotaWakesForTarget(t, snap, !healthSeen[t.Harness])
+		if t.Role == "leader" {
+			continue
+		}
+		n, u, appErr := w.quotaWakesFor(t, snap)
 		if appErr != nil {
 			return appended, urgent, appErr
 		}
 		appended += n
 		urgent = urgent || u
-		healthSeen[t.Harness] = true
 	}
 	return appended, urgent, nil
 }
@@ -99,29 +100,12 @@ func (w *Watcher) quotaPoll() time.Duration {
 	return defaultQuotaPoll
 }
 
-// quotaWakesFor raises the quota wakes for one target: quota_health after two consecutive automatic unknowns (subject
-// to the per-harness debounce) and quota_low once per harness+resetsAt.
+// quotaWakesFor raises quota_low once per harness+resetsAt for one target.
 func (w *Watcher) quotaWakesFor(t QuotaTarget, snap QuotaSnapshot) (int, bool, error) {
-	return w.quotaWakesForTarget(t, snap, true)
-}
-
-func (w *Watcher) quotaWakesForTarget(t QuotaTarget, snap QuotaSnapshot, checkHealth bool) (int, bool, error) {
 	appended := 0
 	urgent := false
-
-	if checkHealth {
-		auto := quota.Pick(snap.Auto, t.Harness, t.Model)
-		fired, err := w.quotaHealth(t, auto)
-		if err != nil {
-			return appended, urgent, err
-		}
-		if fired {
-			appended++
-		}
-	}
-
 	merged := quota.Pick(snap.Merged, t.Harness, t.Model)
-	urg, note, ok := classifyQuotaLow(merged, w.Quota.LowPercent(), w.Quota.MinRunwaySeconds())
+	urg, note, ok := classifyQuotaLow(merged, w.Quota.LowPercent())
 	if ok && w.quotaLowShouldFire(t.Harness, merged.ResetsAt) {
 		if _, err := wake.Append(w.EpicDir, wake.Wake{
 			Epic:  filepath.Base(w.EpicDir),
@@ -142,75 +126,16 @@ func (w *Watcher) quotaWakesForTarget(t QuotaTarget, snap QuotaSnapshot, checkHe
 	return appended, urgent, nil
 }
 
-// quotaHealth raises one routine quota_health wake after two consecutive unknown observations. A first-ever unknown
-// observation starts the same streak as a Known->unknown transition, preserving cold-start detection without waking on
-// a one-poll fault. Known resets the streak, while the persisted last-wake timestamp enforces a per-harness debounce
-// across episodes so Known/unknown flapping cannot repeatedly wake the leader.
-func (w *Watcher) quotaHealth(t QuotaTarget, auto quota.Reading) (bool, error) {
-	if auto.Known {
-		w.clearWatchFile("quotahealthunknown", t.Harness)
-		return false, nil
-	}
-	streak, _ := strconv.Atoi(w.readWatch("quotahealthunknown", t.Harness))
-	streak++
-	w.writeWatch("quotahealthunknown", t.Harness, strconv.Itoa(streak))
-	if streak != 2 || !w.quotaHealthDebouncePassed(t.Harness) {
-		return false, nil
-	}
-	if _, err := wake.Append(w.EpicDir, wake.Wake{
-		Epic:     filepath.Base(w.EpicDir),
-		Story:    quotaStory(t),
-		Kind:     wake.KindQuotaHealth,
-		Note:     fmt.Sprintf("%s quota source unknown: %s", quotaScope(t), auto.Reason),
-		Evidence: map[string]any{"harness": t.Harness, "role": t.Role, "reason": auto.Reason},
-	}); err != nil {
-		return false, err
-	}
-	w.writeWatch("quotahealthlast", t.Harness, strconv.FormatInt(w.now().Unix(), 10))
-	return true, nil
-}
-
-func (w *Watcher) quotaHealthDebouncePassed(harness string) bool {
-	last, ok := w.quotaHealthLast(harness)
-	if !ok {
-		return true
-	}
-	debounce := w.Quota.HealthDebounce()
-	if debounce <= 0 {
-		debounce = time.Hour
-	}
-	return !w.now().Before(last.Add(debounce))
-}
-
-// quotaHealthLast reads the new debounce timestamp, or migrates the mtime of the legacy quotahealthfired marker. The
-// legacy watcher wrote that marker immediately after its wake, so its mtime is the best available rollout-safe wake
-// timestamp and prevents an already-alerted unknown harness from firing again as soon as the binary is upgraded.
-func (w *Watcher) quotaHealthLast(harness string) (time.Time, bool) {
-	if sec, err := strconv.ParseInt(w.readWatch("quotahealthlast", harness), 10, 64); err == nil {
-		return time.Unix(sec, 0), true
-	}
-	legacy := filepath.Join(w.quotaDir(), "quotahealthfired-"+harness)
-	info, err := os.Stat(legacy)
-	if err != nil {
-		return time.Time{}, false
-	}
-	last := info.ModTime()
-	w.writeWatch("quotahealthlast", harness, strconv.FormatInt(last.Unix(), 10))
-	return last, true
-}
-
-// classifyQuotaLow decides whether a reading warrants a quota_low wake and whether it is urgent. Urgent: exhausted_now,
-// or a known percent below low_percent (this is where a manual low fires, since a manual reading is percent-only).
-// Routine: projected_exhaustion with a usable runway under min_runway_hours. Otherwise no wake.
-func classifyQuotaLow(r quota.Reading, lowPercent int, minRunwaySeconds int64) (urgent bool, note string, ok bool) {
+// classifyQuotaLow decides whether a reading warrants a quota_low wake (firstmate condition_status,
+// bin/fm-procevent-quota.sh:116@a8572f6): exhausted_now (even under unknown headroom), or a known percent strictly below
+// low_percent (where a manual low fires, a manual reading being percent-only). Both are urgent. A projected runway, an
+// unknown reading or a healthy one never wakes.
+func classifyQuotaLow(r quota.Reading, lowPercent int) (urgent bool, note string, ok bool) {
 	if r.Runway == quota.RunwayExhaustedNow {
 		return true, "exhausted now", true
 	}
 	if r.Known && r.PercentRemaining < lowPercent {
 		return true, fmt.Sprintf("%d%% remaining, below low_percent %d", r.PercentRemaining, lowPercent), true
-	}
-	if r.Runway == quota.RunwayProjected && r.UsableRunwaySeconds >= 0 && r.UsableRunwaySeconds < minRunwaySeconds {
-		return false, fmt.Sprintf("projected exhaustion in %dh (under min_runway)", r.UsableRunwaySeconds/3600), true
 	}
 	return false, "", false
 }
@@ -335,13 +260,4 @@ func (w *Watcher) writeWatch(sub, key, val string) {
 
 func (w *Watcher) clearWatchFile(sub, key string) {
 	_ = os.Remove(filepath.Join(w.quotaDir(), sub+"-"+key))
-}
-
-func (w *Watcher) markWatchFile(sub, key string) {
-	w.writeWatch(sub, key, "1")
-}
-
-func (w *Watcher) watchFileExists(sub, key string) bool {
-	_, err := os.Stat(filepath.Join(w.quotaDir(), sub+"-"+key))
-	return err == nil
 }
