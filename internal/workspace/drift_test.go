@@ -13,8 +13,8 @@ func TestTemplateWorkerModel(t *testing.T) {
 	if got := TemplateWorkerModel("codex"); got != "gpt-5.6-sol" {
 		t.Errorf("codex template model = %q, want gpt-5.6-sol", got)
 	}
-	if got := TemplateWorkerModel("claude"); got != "claude-opus-4-8" {
-		t.Errorf("claude template model = %q, want claude-opus-4-8", got)
+	if got := TemplateWorkerModel("claude"); got != "claude-opus-5-5" {
+		t.Errorf("claude template model = %q, want claude-opus-5-5", got)
 	}
 	if got := TemplateWorkerModel("pi"); got != "openai-codex/gpt-5.6-sol" {
 		t.Errorf("pi template model = %q, want openai-codex/gpt-5.6-sol", got)

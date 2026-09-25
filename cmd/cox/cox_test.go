@@ -82,7 +82,7 @@ func TestEnvDuration(t *testing.T) {
 }
 
 // resolveWorkerModel resolves the launch --model per harness from the template policy: codex with no story model gets
-// gpt-5.6-sol, claude gets claude-opus-4-8, and a harness with no map entry resolves to "" (LaunchLine omits --model).
+// gpt-5.6-sol, claude gets claude-opus-5-5, and a harness with no map entry resolves to "" (LaunchLine omits --model).
 // The opus alias is claude-only.
 func TestResolveWorkerModelPerHarness(t *testing.T) {
 	pol, err := workspace.LoadPolicyFile("../../templates/policy.json")
@@ -92,8 +92,8 @@ func TestResolveWorkerModelPerHarness(t *testing.T) {
 	if got := resolveWorkerModel(pol, "codex", ""); got != "gpt-5.6-sol" {
 		t.Errorf("codex default = %q, want gpt-5.6-sol", got)
 	}
-	if got := resolveWorkerModel(pol, "claude", ""); got != "claude-opus-4-8" {
-		t.Errorf("claude default = %q, want claude-opus-4-8", got)
+	if got := resolveWorkerModel(pol, "claude", ""); got != "claude-opus-5-5" {
+		t.Errorf("claude default = %q, want claude-opus-5-5", got)
 	}
 	// pi resolves its provider/model default from the template (item 6, B-47); a pinned model still wins.
 	if got := resolveWorkerModel(pol, "pi", ""); got != "openai-codex/gpt-5.6-sol" {
@@ -106,8 +106,8 @@ func TestResolveWorkerModelPerHarness(t *testing.T) {
 		t.Errorf("unmapped harness = %q, want \"\" (no --model)", got)
 	}
 	// The opus alias applies only to claude.
-	if got := resolveWorkerModel(pol, "claude", "opus"); got != "claude-opus-4-8" {
-		t.Errorf("claude opus alias = %q, want claude-opus-4-8", got)
+	if got := resolveWorkerModel(pol, "claude", "opus"); got != "claude-opus-5-5" {
+		t.Errorf("claude opus alias = %q, want claude-opus-5-5", got)
 	}
 	if got := resolveWorkerModel(pol, "codex", "opus"); got != "opus" {
 		t.Errorf("codex must not alias opus = %q, want opus", got)
@@ -284,5 +284,33 @@ func TestLeaderJSONAndLegacyRead(t *testing.T) {
 	}
 	if got := readLeader(epic); got != "term_legacy" {
 		t.Fatalf("readLeader of a legacy plain handle = %q, want term_legacy", got)
+	}
+}
+
+// B-52: `--model opus` follows the policy's claude worker model (captain 2026-09-23 moved claude workers to
+// claude-opus-5-5 in policy while the alias stayed hardcoded to 4.8). A policy whose claude default is not an Opus id
+// cannot redefine "opus", so the alias then falls back to the built-in default; codex never aliases.
+func TestOpusAliasFollowsPolicy(t *testing.T) {
+	pol := &workspace.Policy{}
+	pol.Harness.Worker.Models = map[string]string{"claude": "claude-opus-5-5"}
+	if got := resolveWorkerModel(pol, "claude", "opus"); got != "claude-opus-5-5" {
+		t.Errorf("opus with policy claude-opus-5-5 = %q, want claude-opus-5-5", got)
+	}
+	pol.Harness.Worker.Models["claude"] = "claude-opus-9"
+	if got := resolveWorkerModel(pol, "claude", "opus"); got != "claude-opus-9" {
+		t.Errorf("opus with policy claude-opus-9 = %q, want claude-opus-9", got)
+	}
+	pol.Harness.Worker.Models["claude"] = "claude-sonnet-5"
+	if got := resolveWorkerModel(pol, "claude", "opus"); got != workspace.DefaultWorkerModel {
+		t.Errorf("opus with a non-Opus policy default = %q, want %s", got, workspace.DefaultWorkerModel)
+	}
+	if got := resolveWorkerModel(pol, "codex", "opus"); got != "opus" {
+		t.Errorf("codex opus = %q, want opus untouched", got)
+	}
+	if got := modelAlias("opus"); got != workspace.DefaultWorkerModel {
+		t.Errorf("policy-less alias = %q, want %s", got, workspace.DefaultWorkerModel)
+	}
+	if workspace.DefaultWorkerModel != "claude-opus-5-5" || workspace.TemplateWorkerModel("claude") != "claude-opus-5-5" {
+		t.Errorf("claude worker default = %q / template %q, want claude-opus-5-5 (B-52)", workspace.DefaultWorkerModel, workspace.TemplateWorkerModel("claude"))
 	}
 }

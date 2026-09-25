@@ -17,7 +17,7 @@ not documented here.
 | `host` | render, editable | The host the worker runs on (`workspace.json` `hosts`); blank means `local`. |
 | `agent` | render, editable | The worker harness (`claude` \| `codex` \| `auto`). Resolved from policy at render time. |
 | `harness` | editable | Accepted as a synonym for `agent` by the dispatch reader; set either one. An explicit `--harness` flag overrides it. |
-| `model` | render, editable | The model id (or alias, e.g. `opus` → `claude-opus-4-8`). Blank lets policy pick the harness default. |
+| `model` | render, editable | The model id (or alias: `opus` → the policy's `harness.worker.models.claude`, e.g. `claude-opus-5-5`). Blank lets policy pick the harness default. |
 | `title` | render, editable | One-line story title; also the H1 of the body. |
 | `policy_source` | render | The `cox/policy.json` file and short sha the story's delivery/context/harness values were resolved from. Audit stamp; do not hand-edit. |
 | `delivery` | render | The resolved delivery style (`default` \| `pipo`), copied from policy so the worker's rules are fixed at render time. |
@@ -36,7 +36,7 @@ depends: []
 device: false
 host:
 agent: claude
-model: claude-opus-4-8
+model: claude-opus-5-5
 title: Checkout API - idempotent order creation
 policy_source: cox/policy.json@0ebbf6ece9a4
 delivery: default
