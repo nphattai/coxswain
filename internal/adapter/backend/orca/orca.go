@@ -13,7 +13,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"os/exec"
 	"regexp"
 	"strings"
@@ -99,13 +98,8 @@ func execOrca(args ...string) ([]byte, error) {
 	return out.Bytes(), nil
 }
 
-// execGit never lets git prompt: cox runs non-interactively, so a credential prompt (a fetch over HTTPS) must fail
-// rather than hang a dispatch.
-func execGit(args ...string) ([]byte, error) {
-	cmd := exec.Command("git", args...)
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
-	return cmd.Output()
-}
+// execGit is boundexec.Git: bounded per verb class and never prompting, so a hung fetch cannot hang a dispatch.
+func execGit(args ...string) ([]byte, error) { return boundexec.Git(args...) }
 
 // envelope is the common `orca ... --json` response shape.
 type envelope struct {
