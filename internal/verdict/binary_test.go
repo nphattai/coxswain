@@ -153,3 +153,17 @@ func TestBinaryShipMergeUnknownMergeableExits3(t *testing.T) {
 		t.Error("an unknown merge must not write a ledger row")
 	}
 }
+
+// B-65: `cox audit pr` on a PR whose diff carries a commit sha with a phone-shaped digit run inside it reports no
+// credential hit. On the base the vn-phone rule matched inside the hex and failed a real PR audit.
+func TestBinaryAuditPRHexIsNotAPhone(t *testing.T) {
+	c := newBinCase(t)
+	mustWrite(t, filepath.Join(c.ghDir, "diff"), "diff --git a/x b/x\n+++ b/x\n+pinned at 5061ede"+"09"+"12345678abcdef\n")
+	out, _ := c.cox(t, "audit", "pr", "s1", "--epic", c.epic, "--json")
+	if strings.Contains(out, "vn-phone") || strings.Contains(out, "credentials") {
+		t.Fatalf("a hex sha must not read as a phone number:\n%s", out)
+	}
+	if !strings.Contains(out, `"head": "deadbeef12345678"`) {
+		t.Fatalf("the audit must have read the fake PR:\n%s", out)
+	}
+}
