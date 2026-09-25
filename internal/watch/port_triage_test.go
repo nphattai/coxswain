@@ -2944,7 +2944,6 @@ const (
 	pPMechFold      = "decision fold: open/close decisions by [key=] across a worker's status history"
 	pPMechRecovery  = "recovery triage: a finished (landed) story is not a stale/recovery case"
 	pPMechStaleNote = "stale escalation names the unread steer (the durable instruction the worker never acknowledged)"
-	pPMechReplyRun  = "runaway ladder: a reply already consumed through the question channel is not an unread steer (B-53)"
 	fmProto         = "docs/supervision-protocols/"
 	fmRecovery      = ".agents/skills/stuck-crewmate-recovery/SKILL.md"
 )
@@ -3201,57 +3200,89 @@ func TestPortStuckCrewmateRecovery(t *testing.T) {
 		}
 	})
 	t.Run(s+"live-endpoint-rung-3-interrupt-then-redirect", func(t *testing.T) {
-		// fm: .agents/skills/stuck-crewmate-recovery/SKILL.md:76
-		// cox: inboxLadder runaway (interrupt once per window, then the doorbell)
+		// fm: .agents/skills/stuck-crewmate-recovery/SKILL.md:76@a8572f6
+		// cox: rung 3 is the LEADER's action (`cox control interrupt` then one corrective steer). The watcher only
+		// surfaces; it never interrupts (bin/fm-watch.sh:72-78@a8572f6 "for human inspection only - never an automatic
+		// interrupt"). The earlier translation made inboxLadder interrupt a worker with a steer unread 30m (B-03).
 		r := newPortRig(t)
 		r.liveness(backend.Alive)
 		r.steer("stop looping on the flaky test; skip it and continue")
-		r.advance(DefaultRunawayMin + time.Minute)
-		ws := r.tick()
-		ints := 0
-		for _, c := range r.b.Calls {
-			if c == "Interrupt" {
-				ints++
+		for i := 0; i < 3; i++ {
+			r.advance(31 * time.Minute)
+			for _, w := range r.tick() {
+				if w.Kind == wake.KindRunaway {
+					t.Errorf("the watcher raised a runaway (interrupt) wake: %s", w.Note)
+				}
 			}
 		}
-		if ints != 1 {
-			t.Errorf("want exactly one interrupt of the looping worker, got %d", ints)
-		}
-		runaway := false
-		for _, w := range ws {
-			runaway = runaway || w.Kind == wake.KindRunaway
-		}
-		if !runaway {
-			t.Errorf("the interrupt raised no runaway wake: %v", kinds(ws))
-		}
-		r.advance(time.Minute)
-		r.tick()
-		n := 0
-		for _, c := range r.b.Calls {
-			if c == "Interrupt" {
-				n++
-			}
-		}
-		if n != 1 {
-			t.Errorf("a second interrupt inside the window: %d", n)
+		if n := countCalls(r.b.Calls, "Interrupt"); n != 0 {
+			t.Errorf("the watcher interrupted the worker %d time(s); interrupting is the leader's rung 3", n)
 		}
 
-		// B-53: an answer the worker already consumed through the question channel is not a looping signal; the
-		// ladder must not interrupt a working crewmate over it.
+		// B-53: a consumed reply record is retired, never rung and never a looping signal.
 		r2 := newPortRig(t)
 		r2.liveness(backend.Alive)
 		r2.busySet(busy.Busy)
 		r2.reply("answer to q001: use epic/x")
-		r2.advance(DefaultRunawayMin + time.Minute)
+		r2.advance(31 * time.Minute)
 		r2.tick()
-		for _, c := range r2.b.Calls {
-			if c == "Interrupt" {
-				t.Errorf("a consumed reply record interrupted a working worker (B-53)")
-				notImplemented(t, pPMechReplyRun)
-				break
-			}
+		if n := countCalls(r2.b.Calls, "Interrupt"); n != 0 {
+			t.Errorf("a reply record interrupted a working worker (B-53)")
 		}
 	})
 	// n/a SKILL.md:77-81 rung 4 (relaunch a wedged crewmate with a progress note): owned by cox-supervision-port-busy-wake (fm-control relaunch)
 	// n/a SKILL.md:82 rung 5 (second relaunch fails: write failed, tell the captain): a leader action with no watcher observable
+}
+
+// TestPortTaskInbox translates the watcher legs of tests/fm-task-inbox.test.sh (the steering-inbox re-ring ladder) that
+// B-03 turns on: a busy worker's steer waits, and a spent ring budget escalates exactly once, never by interrupting.
+func TestPortTaskInbox(t *testing.T) {
+	const s = "FM/fm-task-inbox/"
+
+	t.Run(s+"watcher_waits_on_busy_pane", func(t *testing.T) {
+		// fm: tests/fm-task-inbox.test.sh:635@a8572f6
+		// cox: inboxLadder; a busy composer is not rung (fake SendRang false = the backend refused to knock)
+		r := newPortRig(t)
+		r.liveness(backend.Alive)
+		r.busySet(busy.Busy)
+		r.b.SendRang = false // the busy composer is never knocked (backend ringReady)
+		r.steer("please continue")
+		for i := 0; i < 4; i++ {
+			r.advance(10 * time.Minute) // past the old 30m runaway window by the end
+			for _, w := range r.tick() {
+				if w.Story == portStory {
+					t.Errorf("a busy wait queued a wake: %s %s", w.Kind, w.Note)
+				}
+			}
+		}
+		if n := countCalls(r.b.Calls, "Interrupt"); n != 0 {
+			t.Errorf("a busy pane was interrupted %d time(s); it should just wait", n)
+		}
+	})
+
+	t.Run(s+"watcher_escalates_once_after_budget", func(t *testing.T) {
+		// fm: tests/fm-task-inbox.test.sh:726@a8572f6
+		// cox: inboxLadder escalation (a stuck wake naming the record; firstmate's reason is "stale: ... unread firstmate
+		// instruction"), marked escalated so later polls stay quiet
+		r := newPortRig(t)
+		r.liveness(backend.Alive)
+		r.b.SendRang = true
+		r.w.InboxRingMax = 1
+		r.steer("please continue")
+		escalations := 0
+		for i := 0; i < 5; i++ {
+			r.advance(DefaultInboxGrace + time.Second)
+			for _, w := range r.tick() {
+				if w.Story == portStory && w.Kind == wake.KindStuck && strings.Contains(w.Note, "001.msg") {
+					escalations++
+				}
+			}
+		}
+		if escalations != 1 {
+			t.Errorf("a spent ring budget escalated %d time(s), want exactly once", escalations)
+		}
+		if n := countCalls(r.b.Calls, "Interrupt"); n != 0 {
+			t.Errorf("the escalation interrupted the worker %d time(s)", n)
+		}
+	})
 }
