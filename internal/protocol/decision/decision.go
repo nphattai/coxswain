@@ -289,17 +289,34 @@ func Fold(lines []string, kind Kind, v Verbs) []Decision {
 	return open
 }
 
+// keylessPhase is the internal key of a line that states no key (fm-classify-lib.sh _FM_CLASSIFY_KEYLESS_PHASE@a8572f6):
+// outside the slug charset so it cannot collide with a stated slug, and published as "default" only on output. A line
+// with no stated key is a different phase from an explicit [key=default] line (c6e816f).
+const keylessPhase = "\x1edefault"
+
+// phaseKey is _fm_decision_key with the keyless stand-in: a stated key (either position) as Key reads it, else
+// keylessPhase. ok=false for a malformed key.
+func phaseKey(line string) (string, bool) {
+	u := Unstamped(line)
+	if _, ok := keyAtNoteHead(u); !keyBeforeColon(u) && !ok {
+		return keylessPhase, true
+	}
+	return Key(line)
+}
+
 // OpenActivities folds a status history into the keyed activity phases still open, most-recently-opened last
-// (fm-classify-lib.sh:1869 status_open_activities): a working or paused line opens (or replaces) its key's phase, and a
-// done, failed, needs-decision, blocked, resolve or captain-held line under the same key closes it. A line with a
-// malformed key is ignored; an unkeyed line is the default key.
+// (fm-classify-lib.sh:1869 status_open_activities@a8572f6): a working or paused line opens (or replaces) its key's
+// phase, and a done, failed, needs-decision, blocked, resolve or captain-held line under the same key closes it. A line
+// that states no key is its own keyless phase, published as "default": a stated [key=default] retraction (the shared
+// decision bucket a keyless decision's answer uses) does not cancel a keyless wait, while a keyless retraction does. A
+// line with a malformed key is ignored.
 func OpenActivities(lines []string, v Verbs) []Decision {
 	var open []Decision
 	for i, line := range lines {
 		if trimSpace(line) == "" {
 			continue
 		}
-		key, ok := Key(line)
+		key, ok := phaseKey(line)
 		if !ok {
 			continue
 		}
@@ -310,7 +327,54 @@ func OpenActivities(lines []string, v Verbs) []Decision {
 			open = drop(open, key)
 		}
 	}
+	for i := range open {
+		if open[i].Key == keylessPhase {
+			open[i].Key = DefaultKey
+		}
+	}
 	return open
+}
+
+// DeclaredWait returns the status line that holds a crew in a declared wait, or "" when it is in none
+// (fm-classify-lib.sh status_declared_wait_line@a8572f6). Supervisors decide the wait from this line, never from the raw
+// latest event: a resolved line is also how the leader answers a decision, and one that lands after a pause for a
+// different phase key - including the stated default key a keyless decision shares - does not end the pause. Only a
+// resolved line for the pause's own phase key retracts it, as does any other later event. A captain-held line counts
+// only while it is the latest event. override is the captain-relevance regex for legacy events ("" => default).
+// ponytail: reads the whole history (firstmate bounds it to a tail window first, widening only when the window is all
+// resolved lines); a story's status history is small, so the window would only add a second code path.
+func DeclaredWait(lines []string, v Verbs, override string) string {
+	last := Latest(lines, override)
+	if IsPaused(last) || IsCaptainHeld(last) {
+		return last
+	}
+	if last == "" || Verb(last) != v.resolve() {
+		return ""
+	}
+	resolved := map[string]bool{}
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := lines[i]
+		if trimSpace(line) == "" || !IsEvent(line, override) {
+			continue
+		}
+		verb := Verb(line)
+		if verb != v.resolve() && verb != PausedVerb {
+			return ""
+		}
+		k, ok := phaseKey(line)
+		if !ok {
+			k = "" // a malformed key folds as the empty key, as firstmate's `key=` fallback does
+		}
+		if verb == v.resolve() {
+			resolved[k] = true
+			continue
+		}
+		if resolved[k] {
+			return ""
+		}
+		return line
+	}
+	return ""
 }
 
 // Open reports whether key has a record in an open set.

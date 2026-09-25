@@ -30,10 +30,9 @@ import (
 )
 
 // Defaults for the watcher windows. StaleMin is firstmate's FM_STALE_ESCALATE_SECS (240s, the wedge threshold); the
-// inbox ladder keeps v1 watch.sh's RUNAWAY_MIN 30m, INBOX_GRACE 90s and INBOX_RING_MAX 3.
+// inbox ladder keeps v1 watch.sh's INBOX_GRACE 90s and INBOX_RING_MAX 3 (its RUNAWAY_MIN interrupt is gone, B-03).
 const (
 	DefaultStaleMin     = 240 * time.Second
-	DefaultRunawayMin   = 30 * time.Minute
 	DefaultInboxGrace   = 90 * time.Second
 	DefaultInboxRingMax = 3
 	// DefaultIdleNoDoneWait was the steer-gated idle pass's quiet window; turn-end triage (triage.go) now surfaces a
@@ -74,7 +73,6 @@ type Watcher struct {
 	Backend        backend.Backend
 	Sessions       map[string]backend.Session
 	StaleMin       time.Duration
-	RunawayMin     time.Duration
 	InboxGrace     time.Duration
 	InboxRingMax   int
 	BlockedWait    time.Duration // how long a worker may be blocked on a local prompt before a stuck wake; 0 => default
@@ -126,7 +124,6 @@ func (w *Watcher) now() time.Time {
 }
 
 func (w *Watcher) staleMin() time.Duration    { return orDur(w.StaleMin, DefaultStaleMin) }
-func (w *Watcher) runawayMin() time.Duration  { return orDur(w.RunawayMin, DefaultRunawayMin) }
 func (w *Watcher) busyTurnMax() time.Duration { return orDur(w.BusyTurnMax, DefaultBusyTurnMax) }
 func (w *Watcher) inboxGrace() time.Duration  { return orDur(w.InboxGrace, DefaultInboxGrace) }
 func (w *Watcher) ringMax() int {
@@ -249,9 +246,11 @@ func openStorySet(epicDir string) (map[string]bool, error) {
 // backlog whose max gen is unchanged is re-nudged at most once per NudgeWindow (B-33): the last-nudged gen and time live
 // in watch/nudged. A backlog that GREW (a higher max gen) always nudges. The handle is read fresh each tick so a
 // re-bound .cox/leader is honoured; a failed doorbell is counted and logged (item 3), a delivered one resets the count.
+// A push leader (claude, pi) is never typed into (B-73): its hook rewake is the wake, and the turn-boundary guard plus
+// the wedge alarm are its liveness signal.
 func (w *Watcher) nudgeLeader() {
 	handle := w.leaderHandle()
-	if handle == "" {
+	if handle == "" || leaderIsPush(w.EpicDir) {
 		return
 	}
 	wakes, err := wake.Drain(w.EpicDir, true)
@@ -595,8 +594,10 @@ func (w *Watcher) reportUnreadable(cause error) (int, bool, error) {
 	return 1, false, nil
 }
 
-// inboxLadder rings unhandled steers older than InboxGrace and escalates to a stuck wake after InboxRingMax rings; a
-// steer unread past RunawayMin on a live (busy) worker is interrupted once per window and raises a runaway wake.
+// inboxLadder rings unhandled steers older than InboxGrace and escalates to a stuck wake after InboxRingMax rings. A
+// busy worker's steer just waits: the watcher never interrupts a worker (B-03). Firstmate's escalations are "for human
+// inspection only - never an automatic interrupt" (bin/fm-watch.sh:72-78@a8572f6); interrupting a looping worker is
+// the leader's rung 3 (`cox control interrupt`, stuck-crewmate-recovery/SKILL.md:76).
 func (w *Watcher) inboxLadder() (int, bool, error) {
 	base := filepath.Join(w.EpicDir, "inbox")
 	entries, err := os.ReadDir(base)
@@ -686,31 +687,6 @@ func (w *Watcher) inboxLadder() (int, bool, error) {
 				}
 			default:
 				fmt.Fprintf(os.Stderr, "watch: %s/%s not rung (no session or busy composer); ladder not bumped\n", story, key)
-			}
-			// Runaway: unread past RunawayMin on a live worker -> interrupt once per window.
-			// A reply answers the worker's own question (read through the question channel), so it is never a sign of
-			// a runaway turn (B-53).
-			if rec.Urgency != inbox.FYI && rec.Kind != inbox.KindReply && age > w.runawayMin() {
-				lastInt, _ := inbox.LastInterrupt(dir)
-				if lastInt == 0 || now.Sub(time.Unix(lastInt, 0)) > w.runawayMin() {
-					if sess, ok := w.Sessions[story]; ok {
-						if live, err := w.Backend.Probe(sess); err == nil && live == backend.Alive {
-							_ = w.Backend.Interrupt(sess)
-							_, _ = w.Backend.Send(sess, inbox.Doorbell(dir))
-							if err := inbox.MarkInterrupt(dir, now.Unix()); err != nil {
-								return appended, urgent, err
-							}
-							if _, err := wake.Append(w.EpicDir, wake.Wake{
-								Epic: filepath.Base(w.EpicDir), Story: story, Kind: wake.KindRunaway,
-								Note: fmt.Sprintf("%s busy %dm with %s unread - interrupted", story, int(age.Minutes()), key),
-							}); err != nil {
-								return appended, urgent, err
-							}
-							appended++
-							urgent = true
-						}
-					}
-				}
 			}
 		}
 	}

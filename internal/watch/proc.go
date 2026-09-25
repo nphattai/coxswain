@@ -75,7 +75,7 @@ func ProcIdentity(pid int) (string, error) {
 		}
 		return fmt.Sprintf("%s=%s cmdline-hex=%x", key, start, cmdline), nil
 	}
-	out, err := psRun(append(os.Environ(), "LC_ALL=C"), "-p", strconv.Itoa(pid), "-o", "lstart=", "-o", "command=")
+	out, err := psRun(append(os.Environ(), "LC_ALL=C", "COLUMNS=10000"), "-p", strconv.Itoa(pid), "-o", "lstart=", "-o", "command=")
 	if err != nil {
 		return "", fmt.Errorf("pid %d: %w", pid, err)
 	}

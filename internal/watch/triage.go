@@ -131,9 +131,36 @@ func (w *Watcher) statusLine(story string) (string, time.Time) {
 	return v, info.ModTime()
 }
 
-// recordStatus appends a line to the story's status log (only the last line is kept) and marks worker activity.
+// recordStatus records a status line: the latest line (watch/status, whose mtime is the declaration time) and the
+// append-only history (watch/statuslog) the declared-wait read folds, since a later answer for another key must not
+// hide a standing wait (c6e816f). The history is best-effort: a failed append only loses that line from the fold.
 func (w *Watcher) recordStatus(story, line string) {
-	w.swrite("status", story, strings.TrimSpace(line))
+	line = strings.TrimSpace(line)
+	w.swrite("status", story, line)
+	if !w.controlTreePresent() {
+		return
+	}
+	p := w.spath("statuslog", story)
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		return
+	}
+	if f, err := os.OpenFile(p, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644); err == nil {
+		fmt.Fprintln(f, line)
+		f.Close()
+	}
+}
+
+// declaredWaitLine is status_declared_wait_line over the story's status history: the paused / captain-held line that
+// holds the worker in a declared wait, or "" when it is in none. Every "is this a declared wait" read goes through it;
+// captain relevance and the declaration signature keep reading the latest line (statusLine).
+func (w *Watcher) declaredWaitLine(story string) string {
+	b, err := os.ReadFile(w.spath("statuslog", story))
+	if err != nil {
+		// No history (a watcher state written before the log existed): the latest line is the whole history.
+		last, _ := w.statusLine(story)
+		return decision.DeclaredWait([]string{last}, decision.Verbs{}, w.captainOverride())
+	}
+	return decision.DeclaredWait(strings.Split(string(b), "\n"), decision.Verbs{}, w.captainOverride())
 }
 
 // statusSig is fm_wake_signal_sig over the status file: the line and when it was written. Any new status event starts
@@ -415,7 +442,13 @@ func (w *Watcher) signalTriage(open map[string]bool) (int, error) {
 				}
 				appended++
 			}
-			note := s + " turn ended with no report since it began and is not provably working (no busy turn, no running CI) - it may be done, waiting on a decision, or wedged"
+			// Name the CI evidence as read: "no running CI" only when the forge answered; an unreadable forge (or none
+			// wired) is unknown, never a claim that nothing runs.
+			ciNote := "no running CI"
+			if _, known := w.ciRunning(s); !known {
+				ciNote = "CI state unknown"
+			}
+			note := s + " turn ended with no report since it began and is not provably working (no busy turn, " + ciNote + ") - it may be done, waiting on a decision, or wedged"
 			var ev map[string]any
 			if len(sg.lines) > 0 {
 				note = s + " is not provably working after its status: " + sg.lines[len(sg.lines)-1]
@@ -551,7 +584,8 @@ func (w *Watcher) recordQuiet(story string) {
 
 func (w *Watcher) staleStory(story string) error {
 	last, _ := w.statusLine(story)
-	if !statusDeclaredWait(last) && w.sexists("paused", story) {
+	wait := w.declaredWaitLine(story) // the declared-wait read; captain relevance stays on the latest line
+	if !statusDeclaredWait(wait) && w.sexists("paused", story) {
 		w.clearPauseTracking(story)
 	}
 	sig := w.activitySig(story)
@@ -574,7 +608,7 @@ func (w *Watcher) staleStory(story string) error {
 			w.srm(story, "since", "esc")
 			w.clearWriteTracking(story)
 		}
-		if statusDeclaredWait(last) && !busyNow {
+		if statusDeclaredWait(wait) && !busyNow {
 			switch w.pauseStateClass(story) {
 			case "paused":
 				return w.handlePausedStale(story, sig)
@@ -601,7 +635,7 @@ func (w *Watcher) staleStory(story string) error {
 			w.srm(story, "since", "esc")
 			w.clearWriteTracking(story)
 		}
-		if !pausedBound && w.sexists("paused", story) && (quiet >= DefaultStaleQuiet || !statusDeclaredWait(last)) {
+		if !pausedBound && w.sexists("paused", story) && (quiet >= DefaultStaleQuiet || !statusDeclaredWait(wait)) {
 			w.clearPauseTracking(story)
 		}
 		return nil
@@ -649,7 +683,7 @@ func (w *Watcher) staleStory(story string) error {
 			return w.surfaceNonterminalStale(story, sig)
 		}
 	}
-	if w.sexists("paused", story) || statusDeclaredWait(last) {
+	if w.sexists("paused", story) || statusDeclaredWait(wait) {
 		switch w.pauseStateClass(story) {
 		case "paused":
 			return w.handlePausedStale(story, sig)
@@ -685,7 +719,7 @@ func (w *Watcher) busyTurnOverAge(story string) bool {
 // recheck cadence (true); anything else is handed to the wedge timer (false). A first crossing also leaves the leader a
 // routine note that the turn is long (a nudge, never an interrupt).
 func (w *Watcher) busyTurnBoundCheck(story, sig string) (bool, error) {
-	last, _ := w.statusLine(story)
+	last := w.declaredWaitLine(story)
 	if statusDeclaredWait(last) {
 		return true, w.handlePausedStale(story, sig)
 	}
@@ -765,7 +799,8 @@ type waitRecord struct {
 // declared clearing time already passed explains nothing. (Firstmate's parked-gate evidence is a home opt-in over
 // no-mistakes gate findings; cox has no gate-finding observable, so it is the unarmed default: off.)
 func (w *Watcher) wedgeWaitEvidence(story string) (waitRecord, bool) {
-	last, at := w.statusLine(story)
+	_, at := w.statusLine(story)
+	last := w.declaredWaitLine(story)
 	if statusCaptainHeld(last) {
 		return waitRecord{"captain-held", "awaiting the captain - verified hold transfer", "captain",
 			"answer the held decision or release the hold", at}, true
@@ -871,7 +906,8 @@ func (w *Watcher) handlePausedStale(story, sig string) error {
 	w.swrite("paused", story, "")
 	w.srm(story, "since", "esc")
 	w.clearWriteTracking(story)
-	last, at := w.statusLine(story)
+	_, at := w.statusLine(story)
+	last := w.declaredWaitLine(story)
 	now := w.now()
 	if at.IsZero() {
 		at = now
@@ -904,7 +940,7 @@ func (w *Watcher) handlePausedStale(story, sig string) error {
 // confidently gone; a live or ambiguously read agent reads none (surfaces on first sight, then the cadence), and an
 // active run behind a declaration reads working.
 func (w *Watcher) pauseStateClass(story string) string {
-	last, _ := w.statusLine(story)
+	last := w.declaredWaitLine(story)
 	if !statusDeclaredWait(last) {
 		w.srm(story, "paused-rechecked")
 		return w.crewClass(story)
@@ -981,7 +1017,7 @@ func (w *Watcher) staleWaitRecord(story string) {
 // (it may be done, waiting on a decision, or wedged), bounded to once per PauseResurface for a declared wait or an open
 // captain call. The idle timer then starts, so the same quiet interval escalates on the wedge schedule.
 func (w *Watcher) surfaceNonterminalStale(story, sig string) error {
-	last, _ := w.statusLine(story)
+	last := w.declaredWaitLine(story)
 	declared, bounded, fire := false, false, true
 	w.waitDecl = ""
 	switch {

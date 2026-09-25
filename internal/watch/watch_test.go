@@ -1019,3 +1019,85 @@ func TestReportCursorStartsAtTheQueueTip(t *testing.T) {
 		t.Fatalf("an old report was replayed as a fresh signal: %+v", got)
 	}
 }
+
+// fm: tests/fm-claude-stop-autoarm.test.sh:465@a8572f6 (test_attached_cycle_end_starts_handling_successor, 31c47af):
+// after an actionable close the fleet must stay watched while the leader handles the wake. Firstmate's arm cycle ends
+// on delivery, so its Stop hook starts a successor that outlives the exit-2 rewake; cox's watcher is the persistent
+// loop (Run returns only on eviction or stop), so the translation is that the watcher keeps ticking after an urgent
+// wake is delivered and acked.
+// n/a tests/fm-claude-stop-autoarm.test.sh:498 (an unconfirmed successor adds a banner line): cox launches no
+// successor, so there is none to fail to confirm.
+func TestWatcherOutlivesADeliveredWake(t *testing.T) {
+	t.Run("FM/fm-claude-stop-autoarm/attached_cycle_end_starts_handling_successor", func(t *testing.T) {
+		epic := t.TempDir()
+		must(t, os.MkdirAll(filepath.Join(epic, state.ControlDir), 0o755))
+		b := fake.New()
+		mb := b.Mail().(*fake.Mailbox)
+		mb.Delivery = "d1"
+		mb.Queue = []backend.Message{{ID: "r1", From: "dispatch:c", Type: "worker_done", Subject: "up", Payload: `{"dispatchId":"c","outcome":"succeeded"}`}}
+		w := &Watcher{EpicDir: epic, Backend: b}
+		stop := make(chan struct{})
+		done := make(chan struct{})
+		go func() { w.Run(stop, 10*time.Millisecond); close(done) }()
+		defer func() { close(stop); <-done }()
+
+		waitGen := func(want int) int {
+			t.Helper()
+			for end := time.Now().Add(5 * time.Second); time.Now().Before(end); time.Sleep(10 * time.Millisecond) {
+				if ws, _ := wake.Load(epic); len(ws) >= want {
+					return ws[len(ws)-1].Gen
+				}
+			}
+			t.Fatalf("the watcher never queued wake #%d", want)
+			return 0
+		}
+		gen := waitGen(1)
+		must(t, wake.AckThrough(epic, gen)) // the leader's turn drains and acks the delivered wake
+		// The watcher keeps covering the handling turn: its beacon, removed after the ack, is written again by later
+		// ticks, and Run has not returned.
+		beacon := filepath.Join(epic, state.ControlDir, "watch", "lasttick")
+		waitBeacon := func(why string) {
+			t.Helper()
+			for end := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+				if _, err := os.Stat(beacon); err == nil {
+					return
+				}
+				if time.Now().After(end) {
+					t.Fatal(why)
+				}
+			}
+		}
+		waitBeacon("the delivering tick wrote no beacon")
+		must(t, os.Remove(beacon))
+		waitBeacon("the watcher stopped ticking after the delivered wake; the handling turn is unwatched")
+		select {
+		case <-done:
+			t.Fatal("the watcher returned after the delivered wake")
+		default:
+		}
+	})
+}
+
+// leader inbox 004 (found during cox-refresh-watch): the turn-end idle note claimed "no running CI" while the story PR's
+// checks were pending, because the watcher had no forge to read (cmd/cox wires none). The note names the CI evidence
+// as read: unknown when the forge cannot answer, "no running CI" only when it answered with every check completed.
+func TestIdleNoDoneNoteNamesCIEvidenceAsRead(t *testing.T) {
+	for _, tc := range []struct {
+		ci, want, not string
+	}{{"", "CI state unknown", "no running CI"}, {"unknown", "CI state unknown", "no running CI"}, {"passed", "no running CI", "CI state unknown"}} {
+		r := newPortRig(t)
+		if tc.ci != "" {
+			r.ci(tc.ci)
+		}
+		r.busySet(busy.Idle) // the worker's turn ended with no report
+		var note string
+		for _, w := range r.tick() {
+			if w.Kind == wake.KindIdleNoDone {
+				note = w.Note
+			}
+		}
+		if !strings.Contains(note, tc.want) || strings.Contains(note, tc.not) {
+			t.Errorf("forge %q: idle note %q, want it to say %q", tc.ci, note, tc.want)
+		}
+	}
+}
