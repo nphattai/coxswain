@@ -59,3 +59,21 @@ func TestParseWatchProcs(t *testing.T) {
 		t.Errorf("proc 1 = %+v (--epic= form not parsed?)", got[1])
 	}
 }
+
+// B-71b: a watcher started with a relative --epic cannot be resolved from doctor's own cwd (ps does not say the
+// watcher's cwd), so it is unverifiable, never an orphan - whether or not the path happens to exist from here.
+func TestOrphanWatchersSkipsARelativeEpic(t *testing.T) {
+	root := t.TempDir()
+	cwd := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(cwd, "epics", "here"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(cwd)
+	procs := []WatchProc{
+		{Pid: 100, Epic: "epics/demo"}, // missing from doctor's cwd
+		{Pid: 200, Epic: "epics/here"}, // exists from doctor's cwd, outside every root
+	}
+	if issues := orphanWatchers([]string{root}, procs); len(issues) != 0 {
+		t.Fatalf("a relative --epic was reported as an orphan: %v", issues)
+	}
+}

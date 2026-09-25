@@ -1,111 +1,66 @@
 package bearings
 
 import (
+	"context"
 	"errors"
 	"os/exec"
 	"sync"
-	"syscall"
 	"time"
+
+	"github.com/nphattai/coxswain/internal/boundexec"
 )
 
-const (
-	// DefaultTimeout bounds the whole digest (FM_SESSION_START_TIMEOUT default, bin/fm-session-start.sh:278).
-	DefaultTimeout = 120 * time.Second
-	// killGrace is the pause between TERM and KILL to a timed-out process group (bin/fm-timeout-lib.sh:64).
-	killGrace = 200 * time.Millisecond
-	// timeoutExit is the exit status of a run the bound stopped, as timeout(1) reports it.
-	timeoutExit = 124
-)
-
-// groupKill sends TERM to a process group, waits killGrace, then KILLs whatever resisted.
-func groupKill(pgid int) {
-	_ = syscall.Kill(-pgid, syscall.SIGTERM)
-	time.Sleep(killGrace)
-	_ = syscall.Kill(-pgid, syscall.SIGKILL)
-}
-
-// exitCode maps a finished command to its shell exit status (128+signal for a signalled child).
-func exitCode(err error) (int, error) {
-	if err == nil {
-		return 0, nil
-	}
-	var ee *exec.ExitError
-	if errors.As(err, &ee) {
-		if ws, ok := ee.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
-			return 128 + int(ws.Signal()), nil
-		}
-		return ee.ExitCode(), nil
-	}
-	return 0, err
-}
+// DefaultTimeout bounds the whole digest (FM_SESSION_START_TIMEOUT default, bin/fm-session-start.sh:278).
+const DefaultTimeout = 120 * time.Second
 
 // RunBounded runs argv in its own process group under a hard deadline: on expiry the whole group gets TERM, then KILL
-// after a short grace, and the result is exit 124; a natural exit status passes through (fm_run_timed).
+// after a short grace, and the result is exit 124; a natural exit status passes through (fm_run_timed). It is the
+// shared boundexec.Run with no captured output.
 func RunBounded(timeout time.Duration, argv ...string) (int, error) {
 	if len(argv) == 0 {
 		return 0, errors.New("bearings: RunBounded needs a command")
 	}
-	cmd := exec.Command(argv[0], argv[1:]...)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	if err := cmd.Start(); err != nil {
-		return 0, err
-	}
-	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
-	select {
-	case err := <-done:
-		return exitCode(err)
-	case <-time.After(timeout):
-		groupKill(cmd.Process.Pid)
-		<-done
-		return timeoutExit, nil
-	}
+	return boundexec.Run(context.Background(), timeout, exec.Command(argv[0], argv[1:]...))
 }
 
-// stageProcs tracks the process groups a running digest's stages started, so the runtime bound can reap them.
+// stageProcs runs a digest's stage subprocesses, so the runtime bound can reap them: reap ends every live one (group
+// TERM, then KILL) and waits for them before it returns, and no stage starts after it.
 type stageProcs struct {
-	mu    sync.Mutex
-	pgids map[int]bool
-	dead  bool
+	mu     sync.Mutex
+	ctx    context.Context
+	cancel context.CancelFunc
+	wg     sync.WaitGroup
 }
 
-// run starts argv in its own group and waits; after the bound fired it starts nothing.
-func (s *stageProcs) run(argv []string) {
+// init makes the reap context on first use. Caller holds mu.
+func (s *stageProcs) init() {
+	if s.ctx == nil {
+		s.ctx, s.cancel = context.WithCancel(context.Background())
+	}
+}
+
+// run runs argv bounded by bound and waits; after the reap it starts nothing.
+func (s *stageProcs) run(argv []string, bound time.Duration) {
 	if len(argv) == 0 {
 		return
 	}
-	cmd := exec.Command(argv[0], argv[1:]...)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	s.mu.Lock()
-	if s.dead {
+	s.init()
+	if s.ctx.Err() != nil {
 		s.mu.Unlock()
 		return
 	}
-	if err := cmd.Start(); err != nil {
-		s.mu.Unlock()
-		return
-	}
-	if s.pgids == nil {
-		s.pgids = map[int]bool{}
-	}
-	s.pgids[cmd.Process.Pid] = true
+	s.wg.Add(1)
 	s.mu.Unlock()
-	_ = cmd.Wait()
-	s.mu.Lock()
-	delete(s.pgids, cmd.Process.Pid)
-	s.mu.Unlock()
+	defer s.wg.Done()
+	_, _ = boundexec.Run(s.ctx, bound, exec.Command(argv[0], argv[1:]...))
 }
 
-// reap kills every live stage group and refuses new ones.
+// reap kills every live stage group, refuses new ones, and returns once they are gone.
 func (s *stageProcs) reap() {
 	s.mu.Lock()
-	s.dead = true
-	var ids []int
-	for id := range s.pgids {
-		ids = append(ids, id)
-	}
+	s.init()
+	s.cancel()
 	s.mu.Unlock()
-	for _, id := range ids {
-		groupKill(id)
-	}
+	s.wg.Wait()
 }

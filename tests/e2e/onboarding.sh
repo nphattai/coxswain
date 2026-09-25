@@ -36,6 +36,9 @@ no()   { echo "FAIL: $1"; fail=$((fail+1)); }
 
 cleanup() {
   pkill -f "cox watch --epic $WS" 2>/dev/null || true
+  pkill -f "$BIN/cox watch" 2>/dev/null || true
+  # A signalled watcher still writes its control dir while it exits; removing $TMP under it leaves a partial tree.
+  for _ in $(seq 1 50); do pgrep -f "cox watch --epic $WS|$BIN/cox watch" >/dev/null || break; sleep 0.1; done
   rm -rf "$TMP"
 }
 trap cleanup EXIT
@@ -92,8 +95,19 @@ chmod +x "$BIN/orca"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$BIN/claude"
 chmod +x "$BIN/claude"
 
-# The candidate cox, the fake orca and the fake claude are the only cox/orca/harness tools on PATH; /usr/bin:/bin provide
-# git and coreutils. No dev-machine dir (where a real claude/codex/orca/cox might live) is included.
+# --- fake ps: the real process table narrowed to this run (B-70) ---------------------------------------------------
+# cox doctor's orphan check reads every `cox watch` on the machine through ps; a developer's own live watchers belong
+# to other workspaces and would fail every doctor step here. Keep only the rows naming this run's temp root, so the
+# run's own watchers (all started through $BIN/cox or with --epic under $TMP) are still checked.
+printf '#!/usr/bin/env bash\nPATH=/usr/bin:/bin ps "$@" | grep -F -- "%s"\nexit 0\n' "$TMP" > "$BIN/ps"
+chmod +x "$BIN/ps"
+
+# --- a kit checkout under ~/Work: a dev clone of coxswain holds a kit, not a workspace (B-45) ------------------------
+KIT="$HOME/Work/repo/coxswain"
+mkdir -p "$KIT/bin" && : > "$KIT/bin/lib.sh"
+
+# The candidate cox, the fake orca, the fake claude and the narrowed ps are the only cox/orca/harness/ps tools on PATH;
+# /usr/bin:/bin provide git and coreutils. No dev-machine dir (where a real claude/codex/orca/cox might live) is included.
 ln -sf "$COX" "$BIN/cox"
 export PATH="$BIN:/usr/bin:/bin"
 
@@ -142,6 +156,23 @@ grep -q "workspace $WS" <<<"$OUT" && ok "workspace listed" || no "workspace not 
 grep -q "epic hello" <<<"$OUT" && ok "epic listed" || no "epic not listed"
 grep -q "watcher" <<<"$OUT" && ok "watcher listed" || no "watcher not listed"
 grep -q "hooks:" <<<"$OUT" && ok "hooks listed" || no "hooks not listed"
+grep -qF "$KIT" <<<"$OUT" && no "a kit checkout without epics listed as an installation (B-45)" || ok "kit checkout not listed as an installation (B-45)"
+
+step "5b. a watcher started with a relative --epic is not an orphan (B-71b)"
+# Doctor cannot resolve a relative --epic (ps does not report the watcher's cwd), so it must never call it an orphan.
+( cd "$WS" && exec "$BIN/cox" watch --replace --epic proj/epics/hello >/dev/null 2>&1 ) &
+REL_WATCHER=$!
+for _ in $(seq 1 50); do grep -q "cox watch --replace --epic proj/epics/hello" <<<"$("$BIN/ps" -axww -o args=)" && break; sleep 0.1; done
+grep -q "cox watch --replace --epic proj/epics/hello" <<<"$("$BIN/ps" -axww -o args=)" && ok "relative-epic watcher running" || no "relative-epic watcher did not start"
+# --replace stops the dispatched watcher first; doctor must run once the new one holds the pidfile ($! is the watcher
+# itself: the subshell execs into it), or it sees an active epic with no live watcher.
+for _ in $(seq 1 100); do [ "$(cat "$EPIC/.cox/watch.pid" 2>/dev/null)" = "$REL_WATCHER" ] && break; sleep 0.1; done
+[ "$(cat "$EPIC/.cox/watch.pid" 2>/dev/null)" = "$REL_WATCHER" ] && ok "relative-epic watcher holds the pidfile" || no "relative-epic watcher never took over the pidfile"
+OUT="$("$COX" doctor --root "$WS" --epic "$EPIC" 2>&1)"; code=$?
+[ $code -eq 0 ] || echo "$OUT"
+grep -q "orphan watcher" <<<"$OUT" && no "relative-epic watcher reported as an orphan" || ok "relative-epic watcher not an orphan"
+[ $code -eq 0 ] && ok "doctor exit 0 with a relative-epic watcher" || no "doctor exit $code with a relative-epic watcher (want 0)"
+kill "$REL_WATCHER" 2>/dev/null; wait "$REL_WATCHER" 2>/dev/null
 
 step "5c. cox ship merge --check reads the forge and reports unknown, never merging (item 8)"
 # No gh on PATH here, so the forge read fails: --check must print the verdict and exit 3 (unknown, retrieval failed),

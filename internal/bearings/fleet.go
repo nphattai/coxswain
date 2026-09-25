@@ -215,6 +215,10 @@ func printFleet(p *printer, o Opts, epics []string) {
 			for _, q := range st.OpenQuestions {
 				p.line("open question " + q)
 			}
+			items = append(items, classifyStory(slug, st)...)
+			if landed(st) {
+				continue // firstmate lists in-flight work only: a landed story keeps its state line, not its tail (B-64)
+			}
 			switch {
 			case o.Endpoint == nil:
 				p.line("endpoint: unknown (no terminal probe)")
@@ -232,7 +236,6 @@ func printFleet(p *printer, o Opts, epics []string) {
 			} else {
 				p.line("status tail: (no status recorded yet)")
 			}
-			items = append(items, classifyStory(slug, st)...)
 		}
 		items = append(items, prReadyItems(ep, slug, sts)...)
 
@@ -272,6 +275,15 @@ func printFleet(p *printer, o Opts, epics []string) {
 			p.line(empty[sec])
 		}
 	}
+}
+
+// landed reports whether a story's work has ended (completed, failed, canceled): the Recently Landed states.
+func landed(st StoryState) bool {
+	switch state.State(st.State) {
+	case state.Completed, state.Failed, state.Canceled:
+		return true
+	}
+	return false
 }
 
 // classifyStory places a story in the bearings sections (bearings SKILL.md "Chat-response contract"): an open question

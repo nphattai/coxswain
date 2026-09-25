@@ -24,6 +24,7 @@ import (
 
 	"github.com/nphattai/coxswain/internal/arena/synth"
 	"github.com/nphattai/coxswain/internal/artifact"
+	"github.com/nphattai/coxswain/internal/boundexec"
 	"github.com/nphattai/coxswain/internal/protocol/inbox"
 	"github.com/nphattai/coxswain/internal/wake"
 )
@@ -45,7 +46,7 @@ const (
 
 // pollBuffer is added to the caller's --max so the process context outlives lavish's own --timeout-ms (cold start plus
 // server spin-up), letting lavish return its own timeout status instead of being killed.
-const pollBuffer = 30 * time.Second
+var pollBuffer = 30 * time.Second
 
 // NPXOptIn is the explicit policy opt-in to run lavish-axi via npx when no binary is installed (policy review.npx): an
 // exact version and integrity value, same rule as the quota adapter. null means npx is never used.
@@ -175,14 +176,20 @@ func runPoll(cfg Config, epicDir, file string, max time.Duration, agentReply str
 		args = append(args, "--agent-reply", agentReply)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), max+pollBuffer)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, bin, args...)
+	cmd := exec.Command(bin, args...)
 	cmd.Env = cleanEnv()
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = stderr
-	runErr := cmd.Run()
+	bound := max + pollBuffer
+	code, runErr := boundexec.Run(context.Background(), bound, cmd)
+	switch {
+	case runErr != nil:
+	case code == boundexec.ExitTimeout:
+		runErr = fmt.Errorf("timed out after %s", bound)
+	case code != 0:
+		runErr = fmt.Errorf("exit status %d", code)
+	}
 
 	if afterDeliver != nil {
 		afterDeliver()

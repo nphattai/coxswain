@@ -98,6 +98,9 @@ func TestScanResolvesKitViaSymlinkAndDedups(t *testing.T) {
 	if err := os.Symlink(filepath.Join(kit, "bin"), filepath.Join(mount, "bin")); err != nil {
 		t.Fatal(err)
 	}
+	// each owns an epic, so both are installations (B-45) and only the de-duplication can fold them
+	touch(t, filepath.Join(kit, "proj", "epics", "k", ".run"))
+	touch(t, filepath.Join(mount, "proj", "epics", "m", ".run"))
 
 	insts := Scan([]string{root})
 	if len(insts) != 1 {
@@ -122,5 +125,20 @@ func TestIssuesRunBesideCox(t *testing.T) {
 	issues := Issues(insts)
 	if len(issues) != 1 {
 		t.Fatalf("want 1 issue for .run beside .cox, got %v", issues)
+	}
+}
+
+// B-45: a kit checkout that owns no epic (a dev clone of coxswain or crewkit) is not a workspace installation, so Scan
+// never lists it; the same kit with an epic is still listed.
+func TestScanSkipsAnEpiclessKitCheckout(t *testing.T) {
+	root := t.TempDir()
+	touch(t, filepath.Join(root, "repo", "coxswain", "bin", "lib.sh")) // dev checkout: a kit, no epics
+	touch(t, filepath.Join(root, "repo", "crewkit", "bin", "lib.sh"))
+	touch(t, filepath.Join(root, "live", "bin", "lib.sh"))
+	touch(t, filepath.Join(root, "live", "proj", "epics", "e1", ".cox", "events.jsonl"))
+
+	insts := Scan([]string{root})
+	if len(insts) != 1 || insts[0].Path != filepath.Join(root, "live") {
+		t.Fatalf("Scan = %+v, want only the install that owns an epic", insts)
 	}
 }

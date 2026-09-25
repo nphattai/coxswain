@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -93,6 +94,8 @@ type Bearings interface {
 	Notes(ws string, budgetTokens int) (string, error)
 	Budget(ws string) (BudgetReport, error)
 	Deferred(ws string, wait time.Duration) (string, error)
+	// RunDeferred is the detached deferred worker (cox bearings deferred) with its budget.
+	RunDeferred(o Opts, wait time.Duration) (string, error)
 	RunBounded(timeout time.Duration, argv ...string) (int, error)
 	// Classify reads one memory-file entry line under its file's default tier.
 	Classify(section, line string, now time.Time, passHorizon bool) (Entry, error)
@@ -125,6 +128,9 @@ func (realBearings) Notes(ws string, budget int) (string, error) { return bearin
 func (realBearings) Budget(ws string) (BudgetReport, error)      { return bearings.Budget(ws) }
 func (realBearings) Deferred(ws string, wait time.Duration) (string, error) {
 	return bearings.Deferred(ws, wait)
+}
+func (realBearings) RunDeferred(o Opts, wait time.Duration) (string, error) {
+	return bearings.RunDeferred(o, wait)
 }
 func (realBearings) RunBounded(timeout time.Duration, argv ...string) (int, error) {
 	return bearings.RunBounded(timeout, argv...)
@@ -1056,6 +1062,128 @@ func day(s string) time.Time {
 	return d
 }
 
+// --- fm-startup-network --------------------------------------------------------------------------------------------
+
+// holdQueueLock takes the epic's wake-queue lock the way another cox process would, with pid recorded in it as the
+// holder, and returns its release. The worker under test must give up on it inside its own budget.
+func holdQueueLock(t *testing.T, epic string, pid int) func() {
+	t.Helper()
+	f, err := os.OpenFile(filepath.Join(epic, wake.ControlDir, "wake.lock"), os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Truncate(0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteAt([]byte(fmt.Sprintf("pid=%d\n", pid)), 0); err != nil {
+		t.Fatal(err)
+	}
+	var once sync.Once
+	release := func() {
+		once.Do(func() {
+			_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+			f.Close()
+		})
+	}
+	t.Cleanup(release)
+	return release
+}
+
+// runDeferredWithin runs the deferred worker with its budget and fails when it outlives limit.
+func runDeferredWithin(t *testing.T, o Opts, budget, limit time.Duration) string {
+	t.Helper()
+	type res struct {
+		rep string
+		err error
+	}
+	ch := make(chan res, 1)
+	go func() { rep, err := impl.RunDeferred(o, budget); ch <- res{rep, err} }()
+	select {
+	case r := <-ch:
+		return got(r.rep, r.err)(t, mechDeferred)
+	case <-time.After(limit):
+		t.Fatalf("the deferred worker was still alive %s into a %s budget", limit, budget)
+	}
+	return ""
+}
+
+func TestPortStartupNetwork(t *testing.T) {
+	const s = "FM/fm-startup-network/"
+
+	t.Run(s+"a_held_publish_lock_cannot_keep_the_worker_alive_past_its_budget", func(t *testing.T) {
+		// fm: tests/fm-startup-network.test.sh:800@a8572f6
+		// Cox mapping: the publish lock is the epic's wake-queue lock (publishing IS the wake append), so the result
+		// that could not be published surfaces through the next digest's FORGE CHECKS, not through the held queue.
+		const holderPid = 424242
+		rerun := "cox bearings deferred --root "
+
+		// Before the publish: the lock is held before the worker starts; its forge probe fails at once.
+		live := func(string) bool { return true }
+		w := newWorld(t)
+		got(impl.Acquire(w.ws, "leader-self", live))(t, mechLease) // the worker publishes only for the lease holder
+		release := holdQueueLock(t, w.epic, holderPid)
+		o := w.opts()
+		o.Forge = func() error { return errors.New("gh auth: token expired") }
+		began := time.Now()
+		runDeferredWithin(t, o, 2*time.Second, 15*time.Second)
+		if took := time.Since(began); took > 6*time.Second {
+			t.Errorf("the worker took %s to give up on a 2s budget", took)
+		}
+		release()
+		time.Sleep(500 * time.Millisecond) // an abandoned append would land now that the lock is free
+		if ws, _ := wake.Load(w.epic); len(ws) != 0 {
+			t.Errorf("a worker that gave up on the lock still published %d wake(s) after its failed record", len(ws))
+		}
+		fs := section(digest(t, mechDeferred, w.opts()).Text, "FORGE CHECKS")
+		contains(t, fs, "FAILED - the last deferred worker could not publish its results inside its budget", "a worker that gave up on the lock did not record a failed stage")
+		contains(t, fs, fmt.Sprintf("still held by pid %d", holderPid), "the failed record did not name the process holding the lock")
+		contains(t, fs, rerun+w.ws, "the failed record did not say how to rerun the stage")
+		contains(t, fs, "NEEDS_GH_AUTH", "the failed record dropped the result it could not publish")
+
+		// At the publish: the sweep runs freely, then finds the lock held when it comes to publish. What the sweep
+		// produced must survive, and a rerun once the lock is free publishes it and clears the record.
+		w = newWorld(t)
+		got(impl.Acquire(w.ws, "leader-self", live))(t, mechLease)
+		w.story("slow")
+		w.transition("slow", state.Submitted, state.Working)
+		o = w.opts()
+		var hold func()
+		o.StateRead = func(_, _ string) (string, error) {
+			hold = holdQueueLock(t, w.epic, holderPid)
+			return "state: PROBE_RAN", nil
+		}
+		began = time.Now()
+		runDeferredWithin(t, o, 2*time.Second, 15*time.Second)
+		if took := time.Since(began); took > 6*time.Second {
+			t.Errorf("the worker was alive %s after its sweep met a held lock (2s budget)", took)
+		}
+		hold()
+		time.Sleep(500 * time.Millisecond)
+		if ws, _ := wake.Load(w.epic); len(ws) != 0 {
+			t.Errorf("a worker that gave up on the lock still published %d wake(s) after its failed record", len(ws))
+		}
+		fs = section(digest(t, mechDeferred, w.opts()).Text, "FORGE CHECKS")
+		contains(t, fs, "PROBE_RAN", "the sweep output was discarded when publication found the lock held")
+		contains(t, fs, fmt.Sprintf("still held by pid %d", holderPid), "the unpublished result did not name the process holding the lock")
+		contains(t, fs, rerun+w.ws, "the unpublished result did not say how to rerun the stage")
+
+		o.StateRead = func(_, _ string) (string, error) { return "state: PROBE_RAN", nil }
+		runDeferredWithin(t, o, 5*time.Second, 15*time.Second)
+		notContains(t, section(digest(t, mechDeferred, w.opts()).Text, "FORGE CHECKS"), "FAILED - the last deferred worker", "a rerun that published everything left the failed record")
+		found := false
+		ws, _ := wake.Load(w.epic)
+		for _, x := range ws {
+			found = found || (x.Story == "slow" && strings.Contains(x.Note, "PROBE_RAN"))
+		}
+		if !found {
+			t.Error("the rerun did not publish the sweep result")
+		}
+	})
+}
+
 // --- fm-stow-cascade -----------------------------------------------------------------------------------------------
 
 func TestPortStowCascade(t *testing.T) {
@@ -1559,9 +1687,13 @@ func TestPortBearingsSkill(t *testing.T) {
 		// fm: .agents/skills/bearings/SKILL.md:156
 		w := newWorld(t)
 		w.story("landed")
+		w.status("landed", "working: LANDED-TAIL-MARKER")
 		w.transition("landed", state.Working, state.Completed)
 		for i := 0; i < 2; i++ { // a repeat still renders the baseline, never a delta
-			contains(t, section(digest(t, mechFour, w.opts()).Text, "Recently Landed"), "landed", "a completion was dropped")
+			d := digest(t, mechFour, w.opts())
+			contains(t, section(d.Text, "Recently Landed"), "landed", "a completion was dropped")
+			// B-64: firstmate lists in-flight work only; a landed story keeps its state line, never its status tail.
+			notContains(t, d.Text, "LANDED-TAIL-MARKER", "a completed story still printed its status tail")
 		}
 	})
 
