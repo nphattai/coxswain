@@ -59,7 +59,7 @@ func Run(roots []string) Report {
 	return Report{Installations: insts, Issues: Issues(insts)}
 }
 
-// Scan finds every installation under the roots (candidate dirs one, two, and three levels deep, since a workspace
+// Scan finds every installation that owns at least one epic under the roots (candidate dirs one, two, and three levels deep, since a workspace
 // clone such as ~/orca/workspaces/<ws>/<mount>/crewkit sits three deep) and gathers each one's epics. A v1 mount often
 // symlinks bin/ into a shared crewkit checkout, so several mount points share one kit; results are de-duplicated by the
 // kit's real path (the shallower mount, seen first, wins) and sorted by mount path. The version is read from the kit,
@@ -73,6 +73,12 @@ func Scan(roots []string) []Installation {
 			if typ == "" {
 				continue
 			}
+			// An install that owns no epic is a kit or dev checkout, not a workspace (B-45). Checked before the kit
+			// de-duplication so a bare kit never shadows a mount of it that does own epics.
+			epics := epicsUnder(dir)
+			if len(epics) == 0 {
+				continue
+			}
 			kit := kitDir(dir, typ)
 			if seenKit[kit] {
 				continue
@@ -83,7 +89,7 @@ func Scan(roots []string) []Installation {
 				KitPath: kit,
 				Type:    typ,
 				Version: version(kit, typ),
-				Epics:   epicsUnder(dir),
+				Epics:   epics,
 			})
 		}
 	}

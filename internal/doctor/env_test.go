@@ -126,7 +126,8 @@ func TestInspectWorkspaceClosedEpic(t *testing.T) {
 }
 
 // Present passes for a binary on PATH and fails (with a fix) otherwise; Reachable passes on exit 0 and is unknown on a
-// non-zero probe.
+// non-zero probe. The 60s bound only has to outlast the first exec of a freshly written script, which macOS can stretch
+// to seconds under a concurrent full-suite load (B-63); both probes return as soon as the script exits.
 func TestPresentAndReachable(t *testing.T) {
 	dir := t.TempDir()
 	writeExec(t, dir, "orcafake")
@@ -137,14 +138,14 @@ func TestPresentAndReachable(t *testing.T) {
 	if c := Present("nope", "install it"); c.Status != StatusFail || c.Fix == "" {
 		t.Errorf("missing = %v, want fail with fix", c)
 	}
-	if c := Reachable("orcafake", nil, 5*time.Second); c.Status != StatusPass {
+	if c := Reachable("orcafake", nil, 60*time.Second); c.Status != StatusPass {
 		t.Errorf("reachable exit0 = %v, want pass", c)
 	}
 	writeExec(t, dir, "orcabad")
 	if err := os.WriteFile(filepath.Join(dir, "orcabad"), []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if c := Reachable("orcabad", nil, 5*time.Second); c.Status != StatusUnknown {
+	if c := Reachable("orcabad", nil, 60*time.Second); c.Status != StatusUnknown {
 		t.Errorf("unreachable = %v, want unknown", c)
 	}
 }

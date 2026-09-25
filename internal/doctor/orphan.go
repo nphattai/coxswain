@@ -78,7 +78,9 @@ func OrphanWatchers(roots []string) []string {
 func orphanWatchers(roots []string, procs []WatchProc) []string {
 	var issues []string
 	for _, p := range procs {
-		if p.Epic == "" {
+		// A relative --epic resolves against the watcher's own cwd, which ps does not report: unverifiable from here,
+		// so never an orphan (B-71b; cox watch absolutizes its --epic at parse time, B-71a).
+		if p.Epic == "" || !filepath.IsAbs(p.Epic) {
 			continue
 		}
 		reason := ""
