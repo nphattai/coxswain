@@ -14,7 +14,7 @@ import (
 )
 
 // The watcher-down recovery episode, ported from firstmate bin/fm-wake-lib.sh fm_recovery_marker_* and
-// docs/watcher-continuity.md "Recovery episode acknowledgement" (pinned 1e0e773). One episode is one generation of
+// docs/watcher-continuity.md "Recovery episode acknowledgement" (pinned a8572f6). One episode is one generation of
 // <epic>/.cox/watcher-down, a one-line token <pending|announced|acked>:<handling|downtime>:<generation>:
 //
 //   - a watcher close and a stale-lock reclaim publish downtime BEFORE the lock is cleared, reusing a pending or

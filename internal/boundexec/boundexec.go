@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	// Grace is the pause between TERM and KILL to a timed-out process group (bin/fm-timeout-lib.sh:64).
+	// Grace is the pause between TERM and KILL to a timed-out process group (bin/fm-timeout-lib.sh:91).
 	Grace = 200 * time.Millisecond
 	// ExitTimeout is the status of a run the bound stopped, as timeout(1) reports it.
 	ExitTimeout = 124

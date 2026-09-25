@@ -1,7 +1,7 @@
 # Control verbs
 
 `cox control <story> interrupt|park|relaunch` and `cox story park|resume` run through `internal/protocol/control`,
-ported from firstmate's `bin/fm-control.sh` @1e0e773 (exit is park: Stop closes the terminal, ADR 0012).
+ported from firstmate's `bin/fm-control.sh` @a8572f6 (exit is park: Stop closes the terminal, ADR 0012).
 
 ## Invariants
 

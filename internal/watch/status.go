@@ -10,7 +10,7 @@ import (
 
 // Status-line grammar the watcher needs to triage a quiet worker, ported from firstmate bin/fm-classify-lib.sh
 // (status_line_verb, status_is_captain_relevant, status_is_paused, status_is_captain_held, status_paused_until; pinned
-// 1e0e773). A worker's status line is a status mail's subject (or a report's note); its verb is the word before the
+// a8572f6). A worker's status line is a status mail's subject (or a report's note); its verb is the word before the
 // first colon with any [tag] stripped. Captain relevance and the decision fold ([key=] open/close) are read through
 // internal/protocol/decision, the one classifier the watcher and the drain share.
 

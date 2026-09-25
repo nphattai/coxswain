@@ -68,5 +68,5 @@ type Receipt struct {
 	ResetSafe     bool
 }
 
-// Estimate is the stable local startup-memory estimate, ceil(UTF-8 bytes / 3) (firstmate docs/configuration.md:268).
+// Estimate is the stable local startup-memory estimate, ceil(UTF-8 bytes / 3) (firstmate docs/configuration.md:287).
 func Estimate(bytes int) int { return (bytes + 2) / 3 }

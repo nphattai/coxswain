@@ -1,6 +1,6 @@
 // Package supervision is the supervision-need registry, ported from firstmate bin/fm-supervision-lib.sh
 // fm_supervision_status, bin/fm-check-register.sh, bin/fm-check-unregister.sh and bin/fm-check-lib.sh (pinned
-// 1e0e773). Beyond its open stories, an epic needs a live watcher while it has a registered process-event source
+// a8572f6). Beyond its open stories, an epic needs a live watcher while it has a registered process-event source
 // (<control>/procevent/<id>.source) or a registered custom check: a <control>/<id>.check.sh bound to its bytes by a
 // <control>/<id>.check-trust record that Register writes. Presence of the binding is the whole need test - a check
 // whose bytes drifted still needs the watcher, so the watcher's sweep can report the rejection instead of going quiet.

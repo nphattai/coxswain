@@ -149,7 +149,7 @@ func TestPortTimeoutLib(t *testing.T) {
 		}
 	})
 
-	// n/a the_bound_replaces_the_calling_shell fm:tests/fm-timeout-lib.test.sh:92 - shell exec semantics; the Go caller
+	// n/a the_bound_replaces_the_calling_shell fm:tests/fm-timeout-lib.test.sh:92@a8572f6 - shell exec semantics; the Go caller
 	// is never replaced, it waits on its child, which the forwarding case below covers.
 
 	t.Run(s+"a_descendant_holding_the_output_cannot_outlast_the_bound", func(t *testing.T) {
@@ -216,7 +216,7 @@ while :; do sleep 0.1; done`,
 		}
 	})
 
-	// n/a perl_is_preferred_over_timeout fm:tests/fm-timeout-lib.test.sh:165 - mechanism choice between perl and GNU
+	// n/a perl_is_preferred_over_timeout fm:tests/fm-timeout-lib.test.sh:165@a8572f6 - mechanism choice between perl and GNU
 	// timeout; Go bounds the process group itself and needs neither.
 
 	t.Run(s+"refuses_rather_than_running_unbounded", func(t *testing.T) {
@@ -247,7 +247,7 @@ while :; do sleep 0.1; done`,
 		}
 	})
 
-	// n/a gnu_timeout_kills_a_term_ignoring_command_after_the_grace fm:tests/fm-timeout-lib.test.sh:210 - GNU timeout
+	// n/a gnu_timeout_kills_a_term_ignoring_command_after_the_grace fm:tests/fm-timeout-lib.test.sh:210@a8572f6 - GNU timeout
 	// fallback mechanism; kill_ends_a_term_ignoring_command_after_the_grace covers the behaviour.
 
 	t.Run(s+"timed_out_names_exactly_the_bound_statuses", func(t *testing.T) {

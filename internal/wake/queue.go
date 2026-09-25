@@ -308,7 +308,7 @@ type AckResult struct {
 }
 
 // Notice is the stderr line for an acknowledgement that consumed nothing while a wake is still waiting
-// (fm-wake-drain.sh:748): it names the exact command for the current wake instead of failing or staying silent.
+// (fm-wake-drain.sh:753): it names the exact command for the current wake instead of failing or staying silent.
 func (r AckResult) Notice(epicDir string) string {
 	if r.Consumed > 0 || r.Current == 0 {
 		return ""

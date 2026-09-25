@@ -404,7 +404,7 @@ func must(t *testing.T, err error) {
 
 // F8(c): a working story that went idle (composer empty, last message stale) with an unanswered steer and no
 // worker_done since raises exactly one urgent idle_no_done wake, once per steer.
-// Turn-end triage (supersedes the steer-gated idle pass, firstmate fm-watch-triage.test.sh:774): a working story whose
+// Turn-end triage (supersedes the steer-gated idle pass, firstmate fm-watch-triage.test.sh:775): a working story whose
 // harness record turned idle with no report since the turn began raises one urgent idle_no_done - no steer needed -
 // once per turn end; a report in the same turn covers it; a still-busy worker is absorbed.
 func TestTurnEndWithoutReportSurfaces(t *testing.T) {

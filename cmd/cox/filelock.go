@@ -11,7 +11,7 @@ import (
 )
 
 // File locks ported from firstmate bin/fm-wake-lib.sh fm_lock_try_acquire / fm_lock_try_create / fm_lock_release
-// (pinned 1e0e773). Firstmate publishes a lock as a symlink to a private owner directory; cox's locks are plain files
+// (pinned a8572f6). Firstmate publishes a lock as a symlink to a private owner directory; cox's locks are plain files
 // (other packages read .cox/watch.pid as a file), so the atomic publication is a hard link of a private owner file:
 // link(2) either creates the lock with its full content or fails because the lock exists, so there is never an empty
 // window a contender could mistake for a free lock. A lock file holds the owner pid on line 1, an optional role on

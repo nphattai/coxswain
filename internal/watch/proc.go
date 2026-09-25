@@ -17,11 +17,11 @@ import (
 )
 
 // Watcher process identity, liveness and signals, ported from firstmate bin/fm-wake-lib.sh fm_pid_identity,
-// fm_poll_derived_grace and bin/fm-watch.sh watcher_stop_signals (pinned 1e0e773). cmd/cox (story w2-hooks) wires them
+// fm_poll_derived_grace and bin/fm-watch.sh watcher_stop_signals (pinned a8572f6). cmd/cox (story w2-hooks) wires them
 // into the pidfile claim, the turn-end guard and the watch command.
 
 // ExitSignals are the signals that stop a watcher through its exit cleanup (pidfile release). Firstmate keeps HUP and
-// TERM on the fatal path that runs the EXIT trap and traps INT (docs/watcher-continuity.md:117), so all three stop it.
+// TERM on the fatal path that runs the EXIT trap and traps INT (docs/watcher-continuity.md:121), so all three stop it.
 var ExitSignals = []os.Signal{syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM}
 
 // DefaultGrace is the default beacon freshness window: max(300s, poll+60s) (fm_poll_derived_grace). A watcher touches
@@ -188,7 +188,7 @@ func mkdirControl(dir string) error {
 
 // writeAtomic publishes data at path through a temp file in the same directory and a rename, so a symlink planted at
 // path is replaced rather than followed and a reader never sees a torn write (firstmate
-// fm-watch-arm.test.sh:860). The directory is created when missing, never the .cox control tree (mkdirControl).
+// fm-watch-arm.test.sh:886). The directory is created when missing, never the .cox control tree (mkdirControl).
 func writeAtomic(path string, data []byte) error {
 	dir := filepath.Dir(path)
 	if err := mkdirControl(dir); err != nil {

@@ -475,7 +475,7 @@ func hookStopRewake(epicDir, harnessName string, runGuard bool) int {
 	if runGuard {
 		guard, foreign = guardSet(epicDir)
 	}
-	// HUP, INT and TERM end the waiter through its ledger record (fm-watch-arm.sh:342 handle_attached_signal), in every
+	// HUP, INT and TERM end the waiter through its ledger record (fm-watch-arm.sh:349 handle_attached_signal), in every
 	// phase: caught before stdin is read and before the single-waiter lock is written, so a published lock always has
 	// its handler live.
 	sig := make(chan os.Signal, 1)
@@ -673,7 +673,7 @@ func (c *waiterCycles) close(code, signal, reason string) bool {
 	return true
 }
 
-// waiterSignal is handle_attached_signal (fm-watch-arm.sh:342): record every attached cycle as arm-interrupted with the
+// waiterSignal is handle_attached_signal (fm-watch-arm.sh:349): record every attached cycle as arm-interrupted with the
 // signal's status and exit 128+n. A waiter whose wait already closed its cycles is delivering its reopen; it is left to
 // finish rather than cut mid-write.
 func waiterSignal(c *waiterCycles, s os.Signal, exit func(int)) {

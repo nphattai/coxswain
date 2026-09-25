@@ -95,7 +95,7 @@ func ResolveHarness(name string) (harness.Harness, error) {
 	return nil, fmt.Errorf("harness %q has no verified control mechanics; refusing to guess at one", name)
 }
 
-// begin opens a lifecycle action on story (fm-control.sh:305-330): it takes the story's lifecycle lock FIRST, before any
+// begin opens a lifecycle action on story (fm-control.sh:311-336): it takes the story's lifecycle lock FIRST, before any
 // mutable state is read, then resolves the story - it must be recorded (dispatched: it has events), the session must be
 // bound to it (a session record naming another story is refused), and the Controller must carry a harness with verified
 // control mechanics. The returned release drops the lock; the caller holds it to its last write.
