@@ -62,7 +62,7 @@ func storyDispatch(args []string) int {
 	fs.SetOutput(os.Stderr)
 	epicDir := fs.String("epic", "", "epic directory")
 	harnessFlag := fs.String("harness", "", "harness ("+harnessOptions()+"); default from the story frontmatter")
-	model := fs.String("model", "", "model id or alias (opus -> claude-opus-4-8)")
+	model := fs.String("model", "", "model id or alias (opus -> the policy claude worker model)")
 	forceModel := fs.Bool("force-model", false, "allow a model whose vendor does not match the harness")
 	forceQuota := fs.Bool("force-quota", false, "dispatch even when the chosen harness reads exhausted_now")
 	allowUnsandboxed := fs.Bool("allow-unsandboxed", false, "authorize dispatch of an unsandboxed harness (no host-filesystem confinement; not a sandbox)")
@@ -117,7 +117,7 @@ func storyDispatch(args []string) int {
 		}
 	}
 	// The model resolves per harness: explicit/routed/frontmatter, else the policy default for this harness, else
-	// claude-opus-4-8 for claude only. A harness with no default resolves to "" and LaunchArgs omits --model.
+	// claude-opus-5-5 for claude only. A harness with no default resolves to "" and LaunchArgs omits --model.
 	modelID := resolveWorkerModel(pol, harnessName, explicitModel)
 	// Pi-specific pre-spawn validation (DESIGN section 2): require provider/model syntax and a supported thinking level
 	// before spawn. effort is threaded from policy once Pi launch config lands; empty means Pi's default thinking.

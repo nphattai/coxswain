@@ -95,7 +95,7 @@ type Merge struct {
 }
 
 // HarnessRole is the option set and default for one role (leader | worker). Models maps a harness name to the default
-// model id a worker of that harness runs under when a dispatch does not pin one (claude -> claude-opus-4-8, codex ->
+// model id a worker of that harness runs under when a dispatch does not pin one (claude -> claude-opus-5-5, codex ->
 // gpt-5.6-sol): a claude-family default typed at a codex worker made codex reject the launch (M10c). Model is the
 // legacy single default, read only as claude's default so a pre-map policy keeps working. Both are optional and only
 // read for the worker role, via Policy.WorkerModel.
@@ -449,10 +449,11 @@ func (p *Policy) QuotaHealthDebounceMinutes() int {
 	return DefaultQuotaHealthDebounce
 }
 
-// DefaultWorkerModel is the captain ruling for a dispatched claude worker with no pinned model: Opus 4.8. It is the
+// DefaultWorkerModel is the captain ruling for a dispatched claude worker with no pinned model: Opus 5.5 (captain
+// 2026-09-23, B-52; was Opus 4.8 from the 2026-09-03 ruling). It is the
 // final fallback under WorkerModel for the claude harness so a claude launch line always carries a --model, even with
 // no policy loaded (ADR 0012 / M10b). Other harnesses have no such ruling: an unmapped harness resolves to no model.
-const DefaultWorkerModel = "claude-opus-4-8"
+const DefaultWorkerModel = "claude-opus-5-5"
 
 // WorkerModel resolves the model a worker of harness `h` runs under and whether one was found: an explicit dispatch
 // model wins, else the per-harness policy default (harness.worker.models[h]), else the legacy harness.worker.model as
