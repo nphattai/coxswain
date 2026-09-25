@@ -165,17 +165,34 @@ func recoveryArmCheck(epicDir string, stalePid int) (recover bool, err error) {
 	return recover, err
 }
 
-// recoveryBeginHandling is _fm_recovery_marker_begin_handling: the drain moves a downtime episode to handling and
-// returns its generation ("" when there is no episode to acknowledge).
-func recoveryBeginHandling(epicDir string) (string, error) {
+// recoveryBeginHandling is _fm_recovery_marker_begin_handling as fm-wake-drain.sh:768-829 drives it: the drain moves a
+// downtime episode to handling and returns its generation ("" when there is no episode to acknowledge). An acked
+// episode is retired and never presented again: with no queued row there is nothing to acknowledge, and queued rows
+// open a fresh generation (fm_recovery_marker_publish downtime, then begin handling), so the drain never reprints the
+// generation an earlier ack-through already retired (leader-findings 19).
+func recoveryBeginHandling(epicDir string, queued bool) (string, error) {
 	var gen string
 	err := withRecoveryLock(epicDir, func() error {
 		cur, ok := readRecovery(epicDir)
 		if !ok {
 			return nil
 		}
+		if cur.status == "acked" {
+			if !queued {
+				return nil
+			}
+			t := recoveryToken{status: "pending", kind: "handling"}
+			if err := writeRecovery(epicDir, t); err != nil {
+				return err
+			}
+			if cur, ok = readRecovery(epicDir); !ok {
+				return fmt.Errorf("recovery marker unreadable after a fresh generation")
+			}
+			gen = cur.generation
+			return nil
+		}
 		gen = cur.generation
-		if cur.status == "acked" || cur.kind == "handling" {
+		if cur.kind == "handling" {
 			return nil
 		}
 		return writeRecovery(epicDir, recoveryToken{status: cur.status, kind: "handling", generation: cur.generation})
@@ -203,10 +220,6 @@ func recoveryAck(epicDir, gen string) error {
 // printRecoveryAck prints the drain's generation-bound acknowledgement after the presented wakes (WAKE_ACK_REQUIRED
 // with --recovery-generation) when a recovery episode is open, beginning its handling.
 func printRecoveryAck(epicDir string, errw *os.File) {
-	gen, err := recoveryBeginHandling(epicDir)
-	if err != nil || gen == "" {
-		return
-	}
 	through := 0
 	if w, err := wake.Drain(epicDir, true); err == nil {
 		for _, k := range w {
@@ -214,6 +227,10 @@ func printRecoveryAck(epicDir string, errw *os.File) {
 				through = k.Gen
 			}
 		}
+	}
+	gen, err := recoveryBeginHandling(epicDir, through > 0)
+	if err != nil || gen == "" {
+		return
 	}
 	fmt.Fprintf(errw, "WAKE_ACK_REQUIRED: after handling completes run cox wake ack-through %s --epic %s --recovery-generation %s\n",
 		strconv.Itoa(through), epicDir, gen)

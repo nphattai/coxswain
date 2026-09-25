@@ -218,7 +218,7 @@ Coxswain ships these leader skills. `cox workspace init` writes them into `.agen
 | `cox-ship`      | Open the `[PROD]` PR per repo, its body carrying the before/after go-live preparation.                        |
 | `cox-visualize` | Turn a design, plan, or arena synthesis into a visual review page and collect the captain's feedback.        |
 
-The Claude plugin (`claude plugin install`) is an optional way to get the skills, but do not install it in a workspace that already has `.claude/settings.json` hooks from `cox workspace init`, or every hook fires twice. See [Install](docs/getting-started/install.md).
+The Claude plugin (`claude plugin install`) is an optional way to get the skills; it ships no hooks (`cox workspace init` owns them). A plugin from an older release still ships them, so update or disable it, or every leader hook fires twice. See [Install](docs/getting-started/install.md).
 
 ## Documentation
 

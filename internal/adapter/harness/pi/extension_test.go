@@ -104,3 +104,40 @@ func TestExtensionHashStable(t *testing.T) {
 		t.Fatalf("ExtensionHash must be stable and non-empty, got %q", h)
 	}
 }
+
+// ExtensionCurrent is true only for exactly what InstallExtension would write: a fresh root, a tampered file and a
+// different epic binding all read not current (B-55a).
+func TestExtensionCurrent(t *testing.T) {
+	root := t.TempDir()
+	if ExtensionCurrent(root, "") {
+		t.Fatal("an empty root reads current")
+	}
+	if _, err := InstallExtension(root, "/e1"); err != nil {
+		t.Fatal(err)
+	}
+	if !ExtensionCurrent(root, "/e1") {
+		t.Fatal("a fresh install does not read current")
+	}
+	if ExtensionCurrent(root, "/e2") || ExtensionCurrent(root, "") {
+		t.Error("a different binding (another epic, or unbound) reads current")
+	}
+	// An unbound install over a bound one drops the marker, and then reads current unbound.
+	if _, err := InstallExtension(root, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(root, ExtensionRelDir, extensionEpic)); !os.IsNotExist(err) {
+		t.Errorf("an unbound install kept the old epic marker (err %v)", err)
+	}
+	if !ExtensionCurrent(root, "") {
+		t.Error("an unbound install does not read current unbound")
+	}
+	if _, err := InstallExtension(root, "/e1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ExtensionRelDir, ExtensionEntry), []byte("// tampered\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if ExtensionCurrent(root, "/e1") {
+		t.Error("a tampered install reads current")
+	}
+}

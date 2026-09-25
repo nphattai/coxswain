@@ -20,13 +20,12 @@ archives:
   - id: cox
     formats: [tar.gz]
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
-    # Ship the runtime assets alongside the binary so a marketplace-installed cox has its hooks, templates, skills, and
+    # Ship the runtime assets alongside the binary so a marketplace-installed cox has its templates, skills, and
     # the harness-agnostic AGENTS.md next to it (the plugin still carries them; this is for a binary-only install).
     files:
       - src: LICENSE
       - src: README.md
       - src: AGENTS.md
-      - src: hooks/**/*
       - src: templates/**/*
       - src: skills/**/*
 

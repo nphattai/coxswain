@@ -95,7 +95,7 @@ func TestWorkspaceHooksClaudeCreatesWhenAbsentAndIsIdempotent(t *testing.T) {
 	if strings.Contains(got, "COX_EPIC") {
 		t.Errorf("claude hooks must carry no epic binding:\n%s", got)
 	}
-	// The group shapes come from hooks/hooks.json: Stop keeps its long async timeout, SessionStart its matcher.
+	// The group shapes come from hooks/leader.json: Stop keeps its long async timeout, SessionStart its matcher.
 	if !strings.Contains(got, "3600") || !strings.Contains(got, "compact|resume") {
 		t.Errorf("group shapes not carried from hooks.json:\n%s", got)
 	}

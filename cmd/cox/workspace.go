@@ -112,11 +112,16 @@ func cmdWorkspaceInit(args []string) int {
 		// <ws>/.pi/extensions/ WITHOUT an epic marker, so the unbound leader supervises every active epic of the
 		// workspace (DESIGN item 3). The .pi/extensions/ gitignore line is added by Scaffold's gitignoreRules.
 		if h == "pi" {
+			current := pi.ExtensionCurrent(wsRoot, "")
 			entry, err := pi.InstallExtension(wsRoot, "")
 			if err != nil {
 				return fail("%v", err)
 			}
-			fmt.Printf("hooks: installed cox pi extension at %s (hash %s, unbound leader; load with -e)\n", entry, pi.ExtensionHash()[:12])
+			if current {
+				fmt.Printf("hooks: %s already current (pi leader, unbound)\n", entry)
+			} else {
+				fmt.Printf("hooks: installed cox pi extension at %s (hash %s, unbound leader; pi auto-discovers it)\n", entry, pi.ExtensionHash()[:12])
+			}
 			continue
 		}
 		path, changed, err := writeLeaderHooks(wsRoot, h)
@@ -136,7 +141,7 @@ func cmdWorkspaceInit(args []string) int {
 }
 
 // cmdWorkspaceHooks (re)writes the leader hooks for one harness into the workspace, creating the settings file when
-// absent and merging the four hook groups (from hooks/hooks.json, the single shape source) as `cox hook <name>`
+// absent and merging the four hook groups (from hooks/leader.json, the single shape source) as `cox hook <name>`
 // commands, keeping any existing user entries. Idempotent: a second run changes nothing.
 func cmdWorkspaceHooks(args []string) int {
 	fs := flag.NewFlagSet("workspace hooks", flag.ContinueOnError)
@@ -180,12 +185,25 @@ func installPiHooks(root, epicDir string, dryRun bool) int {
 			filepath.Join(root, pi.ExtensionRelDir), pi.ExtensionHash()[:12], epicDir)
 		return 0
 	}
+	current := pi.ExtensionCurrent(root, epicDir)
 	entry, err := pi.InstallExtension(root, epicDir)
 	if err != nil {
 		return fail("%v", err)
 	}
-	fmt.Printf("hooks: installed cox pi extension at %s (hash %s, epic %s; load with -e)\n", entry, pi.ExtensionHash()[:12], epicDir)
+	if current {
+		fmt.Printf("hooks: %s already current (pi leader, %s)\n", entry, piBinding(epicDir))
+	} else {
+		fmt.Printf("hooks: installed cox pi extension at %s (hash %s, %s; pi auto-discovers it)\n", entry, pi.ExtensionHash()[:12], piBinding(epicDir))
+	}
 	return 0
+}
+
+// piBinding names what a Pi extension install is bound to: one epic, or every active epic (unbound).
+func piBinding(epicDir string) string {
+	if epicDir == "" {
+		return "unbound leader"
+	}
+	return "epic " + epicDir
 }
 
 // cmdWorkspaceAddRepo appends a repo to cox/workspace.json (production defaults to the checkout's origin/HEAD, else
@@ -266,12 +284,12 @@ func expandTilde(p string) string {
 	return filepath.Join(home, p[2:])
 }
 
-// hookScriptRe extracts the hook name from a hooks/hooks.json command (".../hooks/<name>.sh").
-var hookScriptRe = regexp.MustCompile(`hooks/([a-z0-9-]+)\.sh`)
+// hookScriptRe extracts the hook name from a hooks/leader.json command ("cox hook <name>").
+var hookScriptRe = regexp.MustCompile(`^cox hook ([a-z0-9-]+)$`)
 
 // writeLeaderHooks writes the leader hook groups for one harness into its workspace settings file, creating it when
 // absent and merging with any non-cox entries. It returns the file path (empty when the harness has no hook target),
-// whether it changed the file, and any error. The group shapes come from hooks/hooks.json; only the command is
+// whether it changed the file, and any error. The group shapes come from hooks/leader.json; only the command is
 // harness-specific (`cox hook <name>` for claude, plus `--harness codex` for codex, whose async key is `async` not
 // `asyncRewake`). Idempotent: sorted-key JSON makes a re-run byte-identical.
 func writeLeaderHooks(root, harnessName string) (string, bool, error) {
@@ -325,7 +343,7 @@ func writeLeaderHooks(root, harnessName string) (string, bool, error) {
 	return path, true, nil
 }
 
-// coxHookGroups derives the per-event cox hook groups for a harness from hooks/hooks.json: each group's shape (matcher,
+// coxHookGroups derives the per-event cox hook groups for a harness from hooks/leader.json: each group's shape (matcher,
 // timeout, async) is kept, only the command is rewritten to `cox hook <name>` (plus `--harness codex` for codex, whose
 // async key is `async`, not claude's `asyncRewake`). Returns event -> []group.
 func coxHookGroups(harnessName string) (map[string][]any, error) {
@@ -333,14 +351,14 @@ func coxHookGroups(harnessName string) (map[string][]any, error) {
 		Hooks map[string][]json.RawMessage `json:"hooks"`
 	}
 	if err := json.Unmarshal(hooks.JSON, &manifest); err != nil {
-		return nil, fmt.Errorf("parse embedded hooks.json: %w", err)
+		return nil, fmt.Errorf("parse embedded hooks/leader.json: %w", err)
 	}
 	out := map[string][]any{}
 	for event, rawGroups := range manifest.Hooks {
 		for _, rg := range rawGroups {
 			var group map[string]any
 			if err := json.Unmarshal(rg, &group); err != nil {
-				return nil, fmt.Errorf("parse hooks.json %s group: %w", event, err)
+				return nil, fmt.Errorf("parse hooks/leader.json %s group: %w", event, err)
 			}
 			hookList, _ := group["hooks"].([]any)
 			for _, h := range hookList {

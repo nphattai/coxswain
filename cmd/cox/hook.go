@@ -511,11 +511,12 @@ func hookStopRewake(epicDir, harnessName string, runGuard bool) int {
 	return runStopRewake(rewakeCfg{
 		cycles:     cycles,
 		epics:      epics,
+		resolve:    stopRewakeResolver(epicDir, handle, harnessName),
 		guardEpics: guard,
 		harness:    harnessName,
 		maxWait:    envSeconds("REWAKE_MAX_WAIT", 3300),
 		batchMax:   envSeconds("WAKE_BATCH", 300),
-		poll:       15 * time.Second,
+		poll:       envSeconds("REWAKE_POLL", 15),
 		out:        os.Stderr,
 		stdout:     os.Stdout,
 		sleep:      time.Sleep,
@@ -524,6 +525,21 @@ func hookStopRewake(epicDir, harnessName string, runGuard bool) int {
 		noGuard:    !runGuard,
 		stopActive: payload.StopHookActive,
 	})
+}
+
+// stopRewakeResolver re-reads the led epic set on each poll (B-54), so a waiter that started with no active epic still
+// picks up one opened while it idles. It is on only where one waiter per terminal is guaranteed (a terminal handle keys
+// the single-waiter lock) and the harness runs Stop asynchronously: without the lock every idle turn would add another
+// hour-long process, and codex's Stop may block the session (docs/evidence/compatibility/codex-cli-0.154.md). Elsewhere
+// it is nil, and a waiter with no active epic returns at once, as before.
+func stopRewakeResolver(epicDir, handle, harnessName string) func() []string {
+	if handle == "" || harnessName == "codex" {
+		return nil
+	}
+	return func() []string {
+		e, _ := leaderEpics(epicDir)
+		return filterLeaderEpics(e)
+	}
 }
 
 // sessionStartSource is the SessionStart envelope's source (startup, resume, compact, clear), "startup" when absent.
@@ -565,7 +581,10 @@ func readStopPayload(in io.Reader) stopPayload {
 // rewakeCfg is the stop-rewake loop's inputs, injected so the loop is unit-tested without real waiting (sleep is a
 // no-op in tests; maxWait/batchMax/poll are durations, not env reads). epics is every active epic the leader waits on.
 type rewakeCfg struct {
-	epics      []string
+	epics []string
+	// resolve re-reads the led epic set on every poll tick, so an epic opened (its watcher started) while the waiter
+	// idles is waited on without a new leader turn (B-54). nil => epics is fixed (tests).
+	resolve    func() []string
 	guardEpics []string // epics with open stories to run the turn-boundary watcher guard over, regardless of watcher liveness (item 1)
 	harness    string   // "codex" reopens via a stdout block decision; anything else (claude) reopens via exit 2
 	maxWait    time.Duration
@@ -697,7 +716,7 @@ func runStopRewake(cfg rewakeCfg) int {
 	if !proceed {
 		return code
 	}
-	if len(cfg.epics) == 0 {
+	if len(cfg.epics) == 0 && cfg.resolve == nil {
 		return 0 // nothing active to wait on
 	}
 	poll := cfg.poll
@@ -713,6 +732,9 @@ func runStopRewake(cfg rewakeCfg) int {
 	cycles.decided(attached)
 	batch := time.Duration(0)
 	for elapsed := time.Duration(0); elapsed < cfg.maxWait; elapsed += poll {
+		if cfg.resolve != nil && elapsed > 0 {
+			cfg.epics = cfg.resolve()
+		}
 		if !cfg.noGuard {
 			var down []string
 			for _, ep := range cfg.epics {
@@ -1027,7 +1049,12 @@ func hookPreCompact(epicDir, story, worktree string) int {
 	var body string
 	switch b, err := os.ReadFile(path); {
 	case err == nil:
+		// Stamp the current attempt too: a resume bumps it, and session-start refuses a checkpoint whose attempt is not
+		// the current one (F07), so a refresh that kept the old attempt made the checkpoint uninjectable (B-56).
 		body = refreshFacts(string(b), facts.Markdown(), now)
+		if _, _, lerr := state.Load(epicDir); lerr == nil { // an unreadable ledger reads as attempt 1: keep the recorded one
+			body = setFrontmatter(body, "attempt", strconv.Itoa(currentAttempt(epicDir, story)))
+		}
 	case errors.Is(err, os.ErrNotExist):
 		// No handoff yet: seed a minimal checkpoint so the facts have a home.
 		fm := fmt.Sprintf("---\nschema: %s\nstory: %s\nattempt: %d\nhead: %s\nbase: %s\nwritten_at: %s\nreason: precompact-auto\n---\n",
@@ -1057,9 +1084,14 @@ func refreshFacts(content, factsMD, writtenAt string) string {
 	return strings.TrimRight(content, "\n") + "\n\n" + factsMD
 }
 
-// setWrittenAt replaces the written_at value inside the leading frontmatter block. A checkpoint with no written_at line
-// is returned unchanged (the seed always writes one).
+// setWrittenAt replaces the written_at value inside the leading frontmatter block.
 func setWrittenAt(content, writtenAt string) string {
+	return setFrontmatter(content, "written_at", writtenAt)
+}
+
+// setFrontmatter replaces key's value inside the leading frontmatter block. A checkpoint with no such line is returned
+// unchanged (the seed always writes written_at and attempt).
+func setFrontmatter(content, key, value string) string {
 	lines := strings.Split(content, "\n")
 	inFM := false
 	for i, l := range lines {
@@ -1071,8 +1103,8 @@ func setWrittenAt(content, writtenAt string) string {
 			inFM = true
 			continue
 		}
-		if inFM && strings.HasPrefix(t, "written_at:") {
-			lines[i] = "written_at: " + writtenAt
+		if inFM && strings.HasPrefix(t, key+":") {
+			lines[i] = key + ": " + value
 			break
 		}
 	}

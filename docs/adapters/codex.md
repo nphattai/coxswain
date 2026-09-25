@@ -40,7 +40,7 @@ This table is checked against `internal/adapter/harness/codex.Harness.Card()` by
   `internal/adapter/backend/launch.go`. These permissions are captain-owned policy.
 - Project hooks are installed only in the project layer. Coxswain does not modify the user's Codex configuration or
   trust decision. `cox workspace init` (or `cox workspace hooks --harness codex`) writes the workspace `.codex/hooks.json`
-  with the four leader hooks from `hooks/hooks.json`; each hook resolves the workspace from the cwd and acts on every
+  with the four leader hooks from `hooks/leader.json`; each hook resolves the workspace from the cwd and acts on every
   epic with a live watcher, so leader hooks belong to the workspace, not an epic.
 - The `Stop` hook runs firstmate's default-mode turn-end guard: with supervision needed and no healthy watcher it
   restarts the watcher, else blocks once (`{"decision":"block"}`); the retry Codex sends with `stop_hook_active: true`
