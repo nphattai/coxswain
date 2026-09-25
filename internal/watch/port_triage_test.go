@@ -44,6 +44,8 @@ type portRig struct {
 	mb    *fake.Mailbox
 	clock time.Time
 	w     *Watcher
+	// churns counts pane renders, so every churn is a distinct screen.
+	churns int
 }
 
 const portStory = "s1"
@@ -217,6 +219,12 @@ func (r *portRig) reply(text string) string {
 	p, err := inbox.WriteReply(r.epic, portStory, text)
 	portMust(r.t, err)
 	return p
+}
+
+// pane renders rows on the worker's screen (fm FM_FAKE_TMUX_CAPTURE): a new text is a new pane hash.
+func (r *portRig) pane(rows ...string) {
+	r.churns++
+	r.b.ScreenRows = rows
 }
 
 // heartbeat queues a heartbeat mail (phase optional), the liveness ping stalePass ages.
@@ -1017,8 +1025,9 @@ func TestPortTriageA2(t *testing.T) {
 		}
 	})
 
-	// n/a test_turn_ended_trailing_newline_prior_hash_surfaced (fm-watch-triage.test.sh:1035): byte-exact parsing of a
-	// tmux pane-hash file (a trailing newline); cox has no pane hashing.
+	// n/a test_turn_ended_trailing_newline_prior_hash_surfaced (fm-watch-triage.test.sh:1036@a8572f6): the opt-in
+	// turn-end pane-churn deferral reading a newline-terminated prior hash; cox hashes the pane for staleness only and
+	// never absorbs a turn-end on pane churn (leader ruling q003).
 
 	// n/a test_secondmate_turn_ended_churning_pane_surfaced (fm-watch-triage.test.sh:1065): secondmate endpoints and pane
 	// churn; cox has no secondmates.
@@ -1765,9 +1774,8 @@ func TestPortTriageB(t *testing.T) {
 	})
 
 	t.Run(s+"live_declared_wait_churn_honors_the_resurface_throttle", func(t *testing.T) {
-		// fm: tests/fm-watch-triage.test.sh:2582
-		// cox: mechCadence (stalePass)
-		// Pane churn (a ticking clock on an idle pane) has no cox signal; the rounds are plain polls.
+		// fm: tests/fm-watch-triage.test.sh:2584@a8572f6
+		// cox: mechCadence (stalePass); the churn rounds render a new pane each ("parked, elapsed Ns").
 		for _, c := range []struct{ name, line, replacement string }{
 			{"paused-pipeline-churn", "paused: waiting on the validation run to finish", "paused: waiting on the replacement validation run"},
 			{"captain-held-churn", "captain-held [key=route]: awaiting the captain on the routing call", "captain-held [key=release]: awaiting the captain on the release call"},
@@ -1778,10 +1786,22 @@ func TestPortTriageB(t *testing.T) {
 			if !urgentFor(pBRound(r, DefaultStaleQuiet), portStory) {
 				t.Errorf("[%s] first sight of a parked live worker did not surface", c.name)
 			}
-			pBAbsorbRounds(t, r, 3, c.name+" churn inside the resurface window")
+			for round := 2; round <= 4; round++ {
+				// Each round sees the new hash, counts it stable and classifies it (fm: 4 poll cycles).
+				r.pane(fmt.Sprintf("parked, elapsed %ds", round))
+				r.tick()
+				if a := pBAlarms(pBRound(r, DefaultStaleQuiet)); a != 0 {
+					t.Errorf("[%s] pane churn re-alarmed a parked worker %d time(s) inside the re-surface window (round %d)", c.name, a, round)
+				}
+				if _, err := os.Stat(r.w.spath("paused-resurfaced", portStory)); err != nil {
+					t.Errorf("[%s] pane churn cleared the re-surface throttle (round %d)", c.name, round)
+				}
+			}
 			pBSay(r, c.replacement)
 			r.tick() // fm writes the replacement pre-seen: its own signal round is not under test
-			if a := pBAlarms(pBRound(r, pBPoll)); a != 1 {
+			r.pane("replacement wait, elapsed 1s")
+			r.tick()
+			if a := pBAlarms(pBRound(r, DefaultStaleQuiet)); a != 1 {
 				t.Errorf("[%s] the replacement declared wait produced %d first alarms instead of one", c.name, a)
 			}
 			pBAbsorbRounds(t, r, 1, c.name+" replacement inside its own window")
@@ -2022,10 +2042,11 @@ func pCHold(r *portRig, open bool) {
 		Actor: state.Leader, From: from, To: to, ExternalConfirmed: true}))
 }
 
-// pCChurn is one pane-churn sighting: the idle pane renders something new (a heartbeat), then sits quiet for d.
+// pCChurn is one pane-churn sighting (fm hold_watch_churn): the idle pane renders new rows (a new pane hash), then
+// sits quiet for d.
 func pCChurn(r *portRig, d time.Duration) []wake.Wake {
 	r.t.Helper()
-	r.heartbeat(fmt.Sprintf("churn-%d", len(r.mb.Queue)))
+	r.pane(fmt.Sprintf("idle, tick %d", r.churns))
 	r.tick()
 	r.advance(d)
 	return r.tick()
@@ -2115,7 +2136,7 @@ func TestPortTriageC(t *testing.T) {
 	})
 
 	t.Run(s+"second_death_after_a_same_window_relaunch_reports_in_full", func(t *testing.T) {
-		// fm: tests/fm-watch-triage.test.sh:3525
+		// fm: tests/fm-watch-triage.test.sh:3561@a8572f6
 		// cox: wedgeDeadRecord (no busy record: the incarnation is the activity signature)
 		r := pCWedgeRig(t)
 		r.ci("failed")
@@ -2128,7 +2149,7 @@ func TestPortTriageC(t *testing.T) {
 		// Relaunch: the pane churns under an active run; the round ends before its fresh window elapses.
 		r.ci("running")
 		r.liveness(backend.Alive)
-		r.heartbeat("hb2")
+		r.pane("relaunched")
 		r.tick()
 		r.advance(time.Minute)
 		ws := r.tick()
@@ -2181,9 +2202,10 @@ func TestPortTriageC(t *testing.T) {
 	})
 
 	t.Run(s+"open_captain_call_bounds_stale_churn", func(t *testing.T) {
-		// fm: tests/fm-watch-triage.test.sh:3773
+		// fm: tests/fm-watch-triage.test.sh:3809@a8572f6
 		// cox: captainCallBound (fm backlog hold = the story held on input: state input_required; its transition is the
-		// call identity). The agent exited (fm pane zsh); pane churn is a worker heartbeat; FM_PAUSE_RESURFACE_SECS=999.
+		// call identity). The agent exited (fm pane zsh); pane churn is new screen rows (a new pane hash);
+		// FM_PAUSE_RESURFACE_SECS=999.
 		for _, line := range []string{donePR, "working: still tidying the branch"} {
 			r := pCHoldRig(t, line, true)
 			ws := pCChurn(r, DefaultStaleQuiet)
@@ -2202,19 +2224,13 @@ func TestPortTriageC(t *testing.T) {
 	})
 
 	t.Run(s+"stale_churn_without_a_captain_call_still_alarms", func(t *testing.T) {
-		// fm: tests/fm-watch-triage.test.sh:3819
-		// cox: stale escalation
-		// Unheld: a stopped worker keeps alarming once per new sighting (firstmate: a new pane hash; cox: a new stale
-		// window).
+		// fm: tests/fm-watch-triage.test.sh:3855@a8572f6
+		// cox: staleStory (unheld: a stopped worker keeps alarming once per new pane hash, fm hold_watch_surface
+		// "idle, elapsed Ns")
 		for _, line := range []string{donePR, "blocked: cannot reach the release host", "working: still tidying the branch"} {
-			r := newPortRig(t)
-			r.busySet(busy.Idle)
-			r.mail("m1", "status", line)
+			r := pCHoldRig(t, line, false)
 			for round := 1; round <= 2; round++ {
-				if round > 1 {
-					r.advance(r.w.staleMin() + time.Minute)
-				}
-				ws := r.tick()
+				ws := pCChurn(r, DefaultStaleQuiet)
 				wantSurfaced(t, ws, "unheld stale window alarms on round "+string(rune('0'+round))+": "+line)
 				if n := pCUrgentCount(ws); n > 1 {
 					t.Errorf("round %d produced %d urgent wakes instead of one: %s", round, n, line)
@@ -2246,7 +2262,7 @@ func TestPortTriageC(t *testing.T) {
 	})
 
 	t.Run(s+"reheld_captain_call_starts_its_own_resurface_window", func(t *testing.T) {
-		// fm: tests/fm-watch-triage.test.sh:3893
+		// fm: tests/fm-watch-triage.test.sh:3929@a8572f6
 		// cox: captainCallBound (a release and a re-hold with no status append is a new call identity)
 		r := pCHoldRig(t, donePR, true)
 		wantSurfaced(t, pCChurn(r, DefaultStaleQuiet), "first sight of the first captain call")
@@ -2396,8 +2412,8 @@ func TestPortTriageC(t *testing.T) {
 	})
 
 	t.Run(s+"wedge_escalation_resets_when_pane_becomes_active", func(t *testing.T) {
-		// fm: tests/fm-watch-triage.test.sh:4262
-		// cox: staleStory (a changed activity signature resets the escalation bookkeeping)
+		// fm: tests/fm-watch-triage.test.sh:4298@a8572f6
+		// cox: staleStory (a changed pane hash resets the escalation bookkeeping)
 		r := pCWedgeRig(t)
 		r.liveness(backend.Alive)
 		r.ci("running")
@@ -2406,7 +2422,7 @@ func TestPortTriageC(t *testing.T) {
 		r.firstSight()
 		r.pCSilentPast()
 		pBWantNote(t, r.tick(), "escalation 1", "a prior wedge round")
-		r.heartbeat("hb2") // the worker is active again
+		r.pane("new output, crew active again") // fm: the pane content changes
 		wantAbsorbed(t, r.tick(), "fresh activity is absorbed")
 		if _, err := os.Stat(filepath.Join(r.w.watchDir(), "esc", portStory)); err == nil {
 			t.Errorf("a changed pane did not reset the wedge-escalation counter")

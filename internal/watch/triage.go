@@ -1,6 +1,7 @@
 package watch
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -23,8 +24,8 @@ import (
 // reported only through an interactive menu is never swallowed (B-50).
 //
 // Name map (firstmate -> cox): a status-file line is a worker status mail or report; a .turn-ended marker is the busy
-// record turning idle; the pane hash is the story's activity signature (busy record gen:seq plus the last worker
-// message or report); a queued `stale` row is a stale wake; `wake` (enqueue and exit) is an urgent wake for the story,
+// record turning idle; the pane hash is the story's activity signature (busy record gen:seq, the last worker message or
+// report, and a hash of the rendered screen tail); a queued `stale` row is a stale wake; `wake` (enqueue and exit) is an urgent wake for the story,
 // after which the per-story stale loop skips that story for the rest of the tick.
 
 const (
@@ -527,16 +528,49 @@ func unreadSteer(epic, story string) string {
 
 // --- the per-story stale loop (fm "Layer 1 backbone: pane staleness") ---
 
-// activitySig is the pane-hash analog: it changes whenever the worker renders something the watcher can read - a
-// harness busy event or a worker heartbeat. A dispatch (re-)arm renders nothing, so a successor armed onto an identical
-// dead display keeps the signature (its incarnation is told apart by the busy gen, wedgeDeadRecord).
+// activitySig is the pane hash (fm-watch.sh hash_pane): it changes whenever the worker renders something - a harness
+// busy event, a worker heartbeat, or new rows on its screen (a worker waiting on background agents keeps rendering, so
+// it is never stale). A dispatch (re-)arm renders nothing, so a successor armed onto an identical dead display keeps the
+// signature (its incarnation is told apart by the busy gen, wedgeDeadRecord). The screen is a staleness signal only,
+// never a busy/idle source (fm-busy-lib.sh header): busyNow reads the harness busy record alone.
 func (w *Watcher) activitySig(story string) string {
 	sig := "-"
 	if rec, ok := busy.ReadRecord(w.EpicDir, story); ok && rec.Source != "dispatch" {
 		sig = fmt.Sprintf("%s:%d", rec.Gen, rec.Seq)
 	}
 	act, _ := w.sread("act", story)
-	return sig + "|" + act
+	sig += "|" + act
+	if p := w.paneHash(story); p != "" {
+		sig += "|p:" + p
+	}
+	return sig
+}
+
+// paneTailRows bounds the hashed screen to its last rows (fm-watch.sh captures tail40 for hash_pane).
+const paneTailRows = 40
+
+// paneHash hashes the story's rendered screen tail read through Backend.Screen. An unreadable screen keeps the last good
+// hash (fm skips the window for that poll), so a transient read error neither restarts the quiet clock nor fakes a
+// change, and a backend that never reads a screen keeps a constant component. An empty screen renders nothing: "".
+func (w *Watcher) paneHash(story string) string {
+	sess, ok := w.Sessions[story]
+	if !ok {
+		return ""
+	}
+	rows, err := w.Backend.Screen(sess)
+	if err != nil {
+		prev, _ := w.sread("pane", story)
+		return prev
+	}
+	rows = rows[max(0, len(rows)-paneTailRows):]
+	h := ""
+	if len(rows) > 0 {
+		h = fmt.Sprintf("%x", sha256.Sum256([]byte(strings.Join(rows, "\n"))))[:16]
+	}
+	if prev, _ := w.sread("pane", story); prev != h {
+		w.swrite("pane", story, h)
+	}
+	return h
 }
 
 // clockPath is the story's quiet clock: watch/hb/<dispatch>, whose mtime is when its activity signature last changed.
