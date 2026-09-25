@@ -54,7 +54,7 @@ func (s *session) stage(name string) {
 		s.current = name
 	}
 	s.mu.Unlock()
-	s.procs.run(s.o.StageCmd[name])
+	s.procs.run(s.o.StageCmd[name], s.o.Timeout)
 }
 
 func (s *session) isReadOnly() bool {
