@@ -18,6 +18,7 @@ import (
 	"strings"
 
 	"github.com/nphattai/coxswain/internal/adapter/backend"
+	"github.com/nphattai/coxswain/internal/boundexec"
 )
 
 // SessionKind marks a herdr Session. ID is the pane id; Handle is the herdr session name.
@@ -40,7 +41,7 @@ func New(session string) *Client {
 }
 
 func execHerdr(args ...string) ([]byte, error) { return exec.Command("herdr", args...).Output() }
-func execGit(args ...string) ([]byte, error)   { return exec.Command("git", args...).Output() }
+func execGit(args ...string) ([]byte, error)   { return boundexec.Git(args...) } // bounded per verb class
 
 // herdr runs a herdr subcommand with the session bound as the leading global option (herdr --session <s> <subcommand>),
 // the shape firstmate uses. herdr emits JSON on stdout by default.
