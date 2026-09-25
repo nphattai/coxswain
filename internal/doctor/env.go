@@ -20,6 +20,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/nphattai/coxswain/internal/boundexec"
 	"github.com/nphattai/coxswain/internal/state"
 	"github.com/nphattai/coxswain/internal/workspace"
 )
@@ -182,12 +183,19 @@ func Reachable(name string, args []string, timeout time.Duration) Check {
 	if _, err := exec.LookPath(name); err != nil {
 		return Check{Name: label, Status: StatusUnknown, Detail: name + " not on PATH", Fix: "install " + name}
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-	if err := exec.CommandContext(ctx, name, args...).Run(); err != nil {
-		return Check{Name: label, Status: StatusUnknown, Detail: err.Error(), Fix: "check that " + name + " is configured and reachable"}
+	code, err := boundexec.Run(context.Background(), timeout, exec.Command(name, args...))
+	detail := ""
+	switch {
+	case err != nil:
+		detail = err.Error()
+	case code == boundexec.ExitTimeout:
+		detail = "timed out after " + timeout.String()
+	case code != 0:
+		detail = fmt.Sprintf("exit status %d", code)
+	default:
+		return Check{Name: label, Status: StatusPass}
 	}
-	return Check{Name: label, Status: StatusPass}
+	return Check{Name: label, Status: StatusUnknown, Detail: detail, Fix: "check that " + name + " is configured and reachable"}
 }
 
 // HarnessBinaries checks the policy's harness options: the default leader and default worker binaries are required (a

@@ -3,7 +3,6 @@ package doctor
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -24,11 +23,11 @@ var ListWatchProcs = func() []WatchProc {
 	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
 		return nil
 	}
-	out, err := exec.Command("ps", "-axww", "-o", "pid=,args=").Output()
-	if err != nil {
+	out, ok := probe("ps", "-axww", "-o", "pid=,args=")
+	if !ok {
 		return nil
 	}
-	return parseWatchProcs(string(out))
+	return parseWatchProcs(out)
 }
 
 // watchEpicRe pulls the pid and the --epic argument out of a `cox watch ... --epic <dir>` command line. The command must

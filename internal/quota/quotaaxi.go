@@ -10,6 +10,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/nphattai/coxswain/internal/boundexec"
 )
 
 // quotaAxiSchema is the only quota-axi JSON schemaVersion this adapter parses. Any other version is drift and yields
@@ -85,15 +87,21 @@ func (q *QuotaAxi) invoke(ctx context.Context) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	tctx, cancel := context.WithTimeout(ctx, q.timeout())
-	defer cancel()
-	cmd := exec.CommandContext(tctx, bin, args...)
+	cmd := exec.Command(bin, args...)
 	cmd.Env = cleanEnv()
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = io.Discard
-	if err := cmd.Run(); err != nil {
+	code, err := boundexec.Run(ctx, q.timeout(), cmd)
+	switch {
+	case err != nil:
 		return nil, fmt.Errorf("quota-axi run failed: %v", err)
+	case code == boundexec.ExitTimeout && ctx.Err() != nil:
+		return nil, fmt.Errorf("quota-axi run cancelled: %v", ctx.Err())
+	case code == boundexec.ExitTimeout:
+		return nil, fmt.Errorf("quota-axi run timed out after %s", q.timeout())
+	case code != 0:
+		return nil, fmt.Errorf("quota-axi run failed: exit status %d", code)
 	}
 	return stdout.Bytes(), nil
 }

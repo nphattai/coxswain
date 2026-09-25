@@ -6,12 +6,20 @@
 package doctor
 
 import (
+	"bytes"
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
+
+	"github.com/nphattai/coxswain/internal/boundexec"
 )
+
+// probeTimeout bounds each external probe doctor runs itself (cox version, git rev-parse, ps).
+var probeTimeout = 10 * time.Second
 
 // Epic is one epic's control directory under an installation.
 type Epic struct {
@@ -186,17 +194,28 @@ func Issues(insts []Installation) []string {
 }
 
 func version(kit, typ string) string {
+	argv := []string{"git", "-C", kit, "rev-parse", "--short", "HEAD"}
 	if typ == "v2" {
-		if out, err := exec.Command("cox", "version").Output(); err == nil {
-			return strings.TrimSpace(string(out))
-		}
+		argv = []string{"cox", "version"}
+	}
+	out, ok := probe(argv...)
+	if !ok {
 		return "unknown"
 	}
-	out, err := exec.Command("git", "-C", kit, "rev-parse", "--short", "HEAD").Output()
-	if err != nil {
-		return "unknown"
+	return strings.TrimSpace(out)
+}
+
+// probe runs one of doctor's own external probes under probeTimeout and returns its stdout; ok is false on any launch
+// failure, non-zero exit, or timeout.
+func probe(argv ...string) (string, bool) {
+	var out bytes.Buffer
+	cmd := exec.Command(argv[0], argv[1:]...)
+	cmd.Stdout = &out
+	code, err := boundexec.Run(context.Background(), probeTimeout, cmd)
+	if err != nil || code != 0 {
+		return "", false
 	}
-	return strings.TrimSpace(string(out))
+	return out.String(), true
 }
 
 func exists(p string) bool {
