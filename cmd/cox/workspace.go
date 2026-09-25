@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/nphattai/coxswain/hooks"
@@ -137,6 +138,24 @@ func cmdWorkspaceInit(args []string) int {
 			fmt.Printf("hooks: %s already current (%s leader)\n", path, h)
 		}
 	}
+	// Each --repo is named explicitly, so it is registered with Orca exactly as `cox workspace add-repo` does, last so a
+	// failure leaves nothing else undone. Only a repo the registry actually holds is registered: Scaffold seeds
+	// workspace.json from --repo only when it is new, and Orca has no `repo remove` (B-35). A --from-repos-md migration
+	// does not register.
+	if *fromReposMD == "" && len(repos) > 0 {
+		ws, err := workspace.Load(wsRoot)
+		if err != nil {
+			return fail("%v", err)
+		}
+		for _, r := range repos {
+			if !slices.ContainsFunc(ws.Repos, func(x workspace.Repo) bool { return x.Path == r.Path }) {
+				continue
+			}
+			if err := registerRepoWithOrca(r); err != nil {
+				return fail("repo %s: %v", r.Alias, err)
+			}
+		}
+	}
 	return 0
 }
 
@@ -231,15 +250,25 @@ func cmdWorkspaceAddRepo(args []string) int {
 		return fail("%v", err)
 	}
 	fmt.Printf("added repo %s (%s, production %s)\n", r.Alias, r.Ref(), r.Production)
-	// Adding a repo is the captain's intent to work in it, so register a checkout Orca does not know (B-34b): an epic
-	// worktree for it would otherwise fail late with repo_not_found. An unknown answer (no orca) changes nothing.
-	if r.Path != "" && orcaRepoStatus(r.Path) == orcaRepoUnregistered {
-		if err := orcaRepoAdd(r.Path); err != nil {
-			return fail("added repo %s to the workspace, but registering it with Orca failed: %v; run: %s", r.Alias, err, orcaRepoFix(r.Path))
-		}
-		fmt.Printf("registered %s with orca\n", r.Path)
+	if err := registerRepoWithOrca(r); err != nil {
+		return fail("added repo %s to the workspace, but %v", r.Alias, err)
 	}
 	return 0
+}
+
+// registerRepoWithOrca registers a named checkout Orca does not know and prints one line when it did (B-34b). Naming a
+// repo (add-repo, init --repo) is the captain's intent to work in it: an epic worktree for an unregistered checkout would
+// otherwise fail late with repo_not_found. A repo addressed by a backend name, or an unknown answer (no orca), changes
+// nothing. The error names the fix.
+func registerRepoWithOrca(r workspace.Repo) error {
+	if r.Path == "" || orcaRepoStatus(r.Path) != orcaRepoUnregistered {
+		return nil
+	}
+	if err := orcaRepoAdd(r.Path); err != nil {
+		return fmt.Errorf("registering %s with Orca failed: %v; run: %s", r.Path, err, orcaRepoFix(r.Path))
+	}
+	fmt.Printf("registered %s with orca\n", r.Path)
+	return nil
 }
 
 // parseRepoFlag parses alias=ref[:production]. ref is an absolute checkout path (leading /) or a backend repo name; when

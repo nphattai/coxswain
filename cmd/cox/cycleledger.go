@@ -18,7 +18,7 @@ import (
 // watcher gone mid-wait). A new watcher links itself as the successor of the last unlinked record. Diagnostic evidence,
 // never a supervision dependency: every write is bounded and best-effort.
 
-// cycleLogCap is a positive integer knob with its default (fm-watch-arm.sh:84-88: empty, non-numeric or 0 => default).
+// cycleLogCap is a positive integer knob with its default (fm-watch-arm.sh:91-95: empty, non-numeric or 0 => default).
 func cycleLogCap(name string, def int) int {
 	v := os.Getenv(name)
 	if strings.Trim(v, "0123456789") != "" {

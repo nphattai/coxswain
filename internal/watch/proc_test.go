@@ -31,7 +31,7 @@ func fakeProc(t *testing.T, root string, pid int, start string) {
 	}
 }
 
-// fm: tests/fm-watcher-lock.test.sh:1071 (R12)
+// fm: tests/fm-watcher-lock.test.sh:1100@a8572f6 (R12)
 func TestProcIdentityProcIgnoresWallClockAndDetectsReuse(t *testing.T) {
 	root := t.TempDir()
 	old := procRoot
@@ -63,7 +63,7 @@ func TestProcIdentityProcIgnoresWallClockAndDetectsReuse(t *testing.T) {
 	}
 }
 
-// fm: tests/fm-watcher-lock.test.sh:1005 (R12): the ps fallback pins LC_ALL=C whatever the caller's locale.
+// fm: tests/fm-watcher-lock.test.sh:1005@a8572f6 (R12): the ps fallback pins LC_ALL=C whatever the caller's locale.
 func TestProcIdentityPsFallbackIsLocaleInvariant(t *testing.T) {
 	oldRoot, oldRun := procRoot, psRun
 	procRoot = filepath.Join(t.TempDir(), "no-proc")
@@ -153,7 +153,7 @@ func TestHealthy(t *testing.T) {
 	}
 }
 
-// fm: docs/watcher-continuity.md:117 (R19) and fm_poll_derived_grace.
+// fm: docs/watcher-continuity.md:121@a8572f6 (R19) and fm_poll_derived_grace.
 func TestExitSignalsAndGrace(t *testing.T) {
 	want := map[os.Signal]bool{syscall.SIGHUP: true, syscall.SIGINT: true, syscall.SIGTERM: true}
 	if len(ExitSignals) != len(want) {
@@ -169,7 +169,7 @@ func TestExitSignalsAndGrace(t *testing.T) {
 	}
 }
 
-// fm: tests/fm-watcher-lock.test.sh:560 (R17): a pidfile naming another process evicts; our own or none does not.
+// fm: tests/fm-watcher-lock.test.sh:560@a8572f6 (R17): a pidfile naming another process evicts; our own or none does not.
 func TestEvictOnPidfileTakeover(t *testing.T) {
 	epic := t.TempDir()
 	_ = os.MkdirAll(filepath.Join(epic, state.ControlDir), 0o755)

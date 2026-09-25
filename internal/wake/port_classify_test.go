@@ -1,5 +1,5 @@
 // Port tests (wave 1, cox-supervision-port-triage): firstmate's classifier suites fm-classify-corr-token and
-// fm-classify-decision-key translated case by case against cox's wake.Classify. Firstmate pinned at 1e0e773
+// fm-classify-decision-key translated case by case against cox's wake.Classify. Firstmate pinned at a8572f6
 // (references/firstmate, read only). Every case is t.Run("FM/<suite>/<case>") with a `// fm: path:line` citation and a
 // `// cox:` mechanism tag. Wave 2 (cox-supervision-port-w2-wake) replaced each notImplemented gap with the firstmate
 // case's own assertions against internal/protocol/decision (the fold, closing verb, relevance and time grammar) and
@@ -114,7 +114,7 @@ func TestPortClassifyCorrToken(t *testing.T) {
 	const s = "FM/fm-classify-corr-token/"
 
 	t.Run(s+"tokened_opener_opens_and_tokened_closer_closes", func(t *testing.T) {
-		// fm: tests/fm-classify-corr-token.test.sh:48
+		// fm: tests/fm-classify-corr-token.test.sh:48@a8572f6
 		// cox: decision fold
 		wantUrgent(t, "needs-decision corr="+corr1+" [key=texte-du-mur]: propose the wall text")
 		wantRoutine(t, "resolved corr="+corr1+" [key=texte-du-mur]: captain chose the third wording")
@@ -132,7 +132,7 @@ func TestPortClassifyCorrToken(t *testing.T) {
 	})
 
 	t.Run(s+"token_is_read_through_in_every_position_it_is_written_in", func(t *testing.T) {
-		// fm: tests/fm-classify-corr-token.test.sh:90
+		// fm: tests/fm-classify-corr-token.test.sh:90@a8572f6
 		// cox: decision fold
 		for _, l := range []string{
 			"needs-decision corr=" + corr1 + " [key=before]: token ahead of the key",
@@ -176,7 +176,7 @@ func TestPortClassifyCorrToken(t *testing.T) {
 	})
 
 	t.Run(s+"untokened_pair_is_unchanged", func(t *testing.T) {
-		// fm: tests/fm-classify-corr-token.test.sh:127
+		// fm: tests/fm-classify-corr-token.test.sh:127@a8572f6
 		// cox: decision fold
 		wantUrgent(t, "needs-decision [key=api-shape]: pick REST or RPC")
 		wantUrgent(t, "blocked: no key at all")
@@ -194,7 +194,7 @@ func TestPortClassifyCorrToken(t *testing.T) {
 	})
 
 	t.Run(s+"prose_and_malformed_tokens_never_become_transitions", func(t *testing.T) {
-		// fm: tests/fm-classify-corr-token.test.sh:151
+		// fm: tests/fm-classify-corr-token.test.sh:151@a8572f6
 		// cox: decision fold
 		impostors := []string{
 			"resolved the corr= issue yesterday [key=victim]",
@@ -228,7 +228,7 @@ func TestPortClassifyCorrToken(t *testing.T) {
 	})
 
 	t.Run(s+"token_first_word_never_impersonates_a_transition", func(t *testing.T) {
-		// fm: tests/fm-classify-corr-token.test.sh:221
+		// fm: tests/fm-classify-corr-token.test.sh:221@a8572f6
 		// cox: wake.Classify + decision fold
 		wantNotOpener(t, "corr="+corr1+" needs-decision [key=token-first-needs]: prose")
 		wantNotOpener(t, "corr="+corr1+" blocked [key=token-first-blocked]: prose")
@@ -248,7 +248,7 @@ func TestPortClassifyCorrToken(t *testing.T) {
 	})
 
 	t.Run(s+"captain_relevance_and_pause_are_unchanged_without_a_token", func(t *testing.T) {
-		// fm: tests/fm-classify-corr-token.test.sh:263
+		// fm: tests/fm-classify-corr-token.test.sh:263@a8572f6
 		// cox: wake.Classify + declared wait
 		wantUrgent(t, "done: shipped")
 		wantUrgent(t, "needs-decision [key=q1]: pick one")
@@ -279,7 +279,7 @@ func TestPortClassifyCorrToken(t *testing.T) {
 	})
 
 	t.Run(s+"consumer_verdicts_read_through_the_token", func(t *testing.T) {
-		// fm: tests/fm-classify-corr-token.test.sh:291
+		// fm: tests/fm-classify-corr-token.test.sh:291@a8572f6
 		// cox: wake.Classify + declared wait
 		wantUrgent(t, "done corr="+corr1+": shipped")
 		wantUrgent(t, "needs-decision corr="+corr1+" [key=q]: pick one")
@@ -306,7 +306,7 @@ func TestPortClassifyCorrToken(t *testing.T) {
 	})
 
 	t.Run(s+"daemon_and_crew_state_case_arms_read_through_the_token", func(t *testing.T) {
-		// fm: tests/fm-classify-corr-token.test.sh:328
+		// fm: tests/fm-classify-corr-token.test.sh:328@a8572f6
 		// cox: wake.Classify
 		for _, v := range []string{"working", "resolved", "captain-held"} {
 			wantRoutine(t, v+" corr="+corr1+" [key=k]: note")
@@ -324,7 +324,7 @@ func TestPortClassifyCorrToken(t *testing.T) {
 	// questions by qNNN through `cox reply`, with no status-line keys.
 
 	t.Run(s+"incremental_and_whole_file_folds_agree_over_correlated_lines", func(t *testing.T) {
-		// fm: tests/fm-classify-corr-token.test.sh:402
+		// fm: tests/fm-classify-corr-token.test.sh:402@a8572f6
 		// cox: decision fold
 		for i := 0; i < 6; i++ {
 			wantUrgent(t, fmt.Sprintf("needs-decision corr=%s [key=k%d]: decision %d", corr1, i, i))
@@ -350,7 +350,7 @@ func TestPortClassifyCorrToken(t *testing.T) {
 	})
 
 	t.Run(s+"a_cursor_written_before_this_change_is_rebuilt", func(t *testing.T) {
-		// fm: tests/fm-classify-corr-token.test.sh:455
+		// fm: tests/fm-classify-corr-token.test.sh:455@a8572f6
 		// cox: decision fold
 		wantUrgent(t, "needs-decision corr="+corr1+" [key=owed]: a decision the captain is owed")
 		// cox keeps no fold cursor to go stale: every drain refolds the whole history, so the decision surfaces.
@@ -362,7 +362,7 @@ func TestPortClassifyCorrToken(t *testing.T) {
 	// own token writers (fm-pending-reply-lib, fm-secondmate-report.sh); cox has no correlation-token writer.
 
 	t.Run(s+"optional_event_time", func(t *testing.T) {
-		// fm: tests/fm-classify-corr-token.test.sh:545
+		// fm: tests/fm-classify-corr-token.test.sh:545@a8572f6
 		// cox: status-line grammar
 		plain := "needs-decision corr=" + corr1 + " [key=timed]: choose: A or B"
 		stamped := "needs-decision corr=" + corr1 + " [key=timed] [at=1700000000]: choose: A or B"
@@ -412,7 +412,7 @@ func TestPortClassifyCorrToken(t *testing.T) {
 	})
 
 	t.Run(s+"captain_override_ignores_event_time", func(t *testing.T) {
-		// fm: tests/fm-classify-corr-token.test.sh:639
+		// fm: tests/fm-classify-corr-token.test.sh:639@a8572f6
 		// cox: captain-relevance override
 		for _, v := range []string{"done", "needs-decision", "blocked", "failed"} {
 			for _, l := range []string{v + ": audit complete", v + " [at=1700000000]: audit complete", v + "[at=1700000000]: audit complete"} {
@@ -468,7 +468,7 @@ func TestPortClassifyCorrToken(t *testing.T) {
 	})
 
 	t.Run(s+"malformed_event_time_is_ordinary_bytes", func(t *testing.T) {
-		// fm: tests/fm-classify-corr-token.test.sh:687
+		// fm: tests/fm-classify-corr-token.test.sh:687@a8572f6
 		// cox: wake.Classify + decision fold
 		tags := []string{"[at=]", "[at=bad]", "[at=17:00]", "[at=bad] [at=17:00]", "[at=2026-09-20T14:03:00Z]",
 			"[at=10:30]", "[at=$(date +%s)]", "[at=<epoch>]", "[at=1] [at=2]", "[at=01700000000]", "[at=99999999999999999999]"}
@@ -503,7 +503,7 @@ func TestPortClassifyCorrToken(t *testing.T) {
 	})
 
 	t.Run(s+"malformed_event_time_never_moves_the_decision_fold", func(t *testing.T) {
-		// fm: tests/fm-classify-corr-token.test.sh:736
+		// fm: tests/fm-classify-corr-token.test.sh:736@a8572f6
 		// cox: decision fold
 		for _, tag := range []string{"[at=17:00]", "[at=10:30]", "[at=2026-09-20T14:03:00Z]", "[at=<epoch>]", "[at=bad]"} {
 			if statusKind("done "+tag+" finished the audit") == KindWorkerDone {
@@ -526,7 +526,7 @@ func TestPortClassifyDecisionKey(t *testing.T) {
 	const s = "FM/fm-classify-decision-key/"
 
 	t.Run(s+"stated_key_is_honored_in_both_positions", func(t *testing.T) {
-		// fm: tests/fm-classify-decision-key.test.sh:51
+		// fm: tests/fm-classify-decision-key.test.sh:51@a8572f6
 		// cox: decision fold
 		wantUrgent(t, "needs-decision [key=api-shape]: pick REST or RPC")
 		wantUrgent(t, "needs-decision: [key=api-shape] pick REST or RPC")
@@ -536,7 +536,7 @@ func TestPortClassifyDecisionKey(t *testing.T) {
 	})
 
 	t.Run(s+"bare_keyless_line_still_folds_to_default", func(t *testing.T) {
-		// fm: tests/fm-classify-decision-key.test.sh:70
+		// fm: tests/fm-classify-decision-key.test.sh:70@a8572f6
 		// cox: decision fold
 		wantUrgent(t, "needs-decision: which color")
 		wantRoutine(t, "resolved: went with blue")
@@ -546,7 +546,7 @@ func TestPortClassifyDecisionKey(t *testing.T) {
 	})
 
 	t.Run(s+"resolution_closes_across_positions", func(t *testing.T) {
-		// fm: tests/fm-classify-decision-key.test.sh:84
+		// fm: tests/fm-classify-decision-key.test.sh:84@a8572f6
 		// cox: decision fold
 		wantUrgent(t, "needs-decision: [key=seam-max-bound] pick the bound")
 		wantRoutine(t, "resolved [key=seam-max-bound]: answered: use 4")
@@ -559,7 +559,7 @@ func TestPortClassifyDecisionKey(t *testing.T) {
 	})
 
 	t.Run(s+"blocked_is_position_tolerant_like_needs_decision", func(t *testing.T) {
-		// fm: tests/fm-classify-decision-key.test.sh:100
+		// fm: tests/fm-classify-decision-key.test.sh:100@a8572f6
 		// cox: decision fold
 		wantUrgent(t, "blocked [key=creds]: waiting on the deploy token")
 		wantUrgent(t, "blocked: [key=creds] waiting on the deploy token")
@@ -569,7 +569,7 @@ func TestPortClassifyDecisionKey(t *testing.T) {
 	})
 
 	t.Run(s+"two_colon_form_decisions_stay_distinct", func(t *testing.T) {
-		// fm: tests/fm-classify-decision-key.test.sh:111
+		// fm: tests/fm-classify-decision-key.test.sh:111@a8572f6
 		// cox: decision fold
 		wantUrgent(t, "needs-decision: [key=alpha] first question")
 		wantUrgent(t, "needs-decision: [key=beta] second question")
@@ -580,7 +580,7 @@ func TestPortClassifyDecisionKey(t *testing.T) {
 	})
 
 	t.Run(s+"mid_note_prose_mention_is_not_a_stated_key", func(t *testing.T) {
-		// fm: tests/fm-classify-decision-key.test.sh:128
+		// fm: tests/fm-classify-decision-key.test.sh:128@a8572f6
 		// cox: decision fold
 		wantUrgent(t, "needs-decision: pick a [key=red] or [key=blue] theme")
 		wantUrgent(t, "needs-decision [key=red]: which shade")
@@ -592,14 +592,14 @@ func TestPortClassifyDecisionKey(t *testing.T) {
 	})
 
 	t.Run(s+"malformed_stated_key_never_collapses_to_default", func(t *testing.T) {
-		// fm: tests/fm-classify-decision-key.test.sh:146
+		// fm: tests/fm-classify-decision-key.test.sh:146@a8572f6
 		// cox: decision fold
 		wantFold(t, []string{"needs-decision [key=bad key]: before-colon malformed"}, decision.KindUnknown, "", "malformed before-colon key")
 		wantFold(t, []string{"needs-decision: [key=bad key] colon-first malformed"}, decision.KindUnknown, "", "malformed colon-first key")
 	})
 
 	t.Run(s+"status_line_verb_strips_every_bracket_tag_before_colon", func(t *testing.T) {
-		// fm: tests/fm-classify-decision-key.test.sh:166
+		// fm: tests/fm-classify-decision-key.test.sh:166@a8572f6
 		// cox: wake.Classify
 		wantKind(t, "needs-decision [corr=d448ea86afa4bf67] [key=loan-installment-cadence-amount]: fill in the terms", KindInputRequired)
 		wantKind(t, "needs-decision [key=loan-installment-cadence-amount] [corr=d448ea86afa4bf67]: fill in the terms", KindInputRequired)
@@ -609,7 +609,7 @@ func TestPortClassifyDecisionKey(t *testing.T) {
 	})
 
 	t.Run(s+"corr_and_key_tags_open_and_close_under_the_stated_key", func(t *testing.T) {
-		// fm: tests/fm-classify-decision-key.test.sh:187
+		// fm: tests/fm-classify-decision-key.test.sh:187@a8572f6
 		// cox: decision fold
 		wantUrgent(t, "needs-decision [corr=d448ea86afa4bf67] [key=loan-installment-cadence-amount]: pick the cadence")
 		wantRoutine(t, "resolved [corr=d448ea86afa4bf67] [key=loan-installment-cadence-amount]: answered: monthly")
@@ -620,7 +620,7 @@ func TestPortClassifyDecisionKey(t *testing.T) {
 	})
 
 	t.Run(s+"corr_only_tag_opens_as_default_like_a_bare_line", func(t *testing.T) {
-		// fm: tests/fm-classify-decision-key.test.sh:201
+		// fm: tests/fm-classify-decision-key.test.sh:201@a8572f6
 		// cox: decision fold
 		if a, b := statusKind("needs-decision: which vendor"), statusKind("needs-decision [corr=d448ea86afa4bf67]: which vendor"); a != b {
 			t.Errorf("a corr-only tag classified differently than the bare line: %s vs %s", b, a)
@@ -634,7 +634,7 @@ func TestPortClassifyDecisionKey(t *testing.T) {
 	})
 
 	t.Run(s+"key_only_before_colon_still_opens_no_regression", func(t *testing.T) {
-		// fm: tests/fm-classify-decision-key.test.sh:215
+		// fm: tests/fm-classify-decision-key.test.sh:215@a8572f6
 		// cox: decision fold
 		wantUrgent(t, "needs-decision [key=loan-installment-cadence-amount]: pick the cadence")
 		wantFold(t, []string{"needs-decision [key=loan-installment-cadence-amount]: pick the cadence"}, decision.KindUnknown,
@@ -642,7 +642,7 @@ func TestPortClassifyDecisionKey(t *testing.T) {
 	})
 
 	t.Run(s+"blocked_and_resolved_are_tag_order_independent", func(t *testing.T) {
-		// fm: tests/fm-classify-decision-key.test.sh:225
+		// fm: tests/fm-classify-decision-key.test.sh:225@a8572f6
 		// cox: decision fold
 		wantUrgent(t, "blocked [corr=aaaa1111bbbb2222] [key=creds]: waiting on the deploy token")
 		wantUrgent(t, "blocked [key=creds] [corr=aaaa1111bbbb2222]: waiting on the deploy token")
@@ -655,7 +655,7 @@ func TestPortClassifyDecisionKey(t *testing.T) {
 	})
 
 	t.Run(s+"incremental_agrees_with_full_fold_across_appends", func(t *testing.T) {
-		// fm: tests/fm-classify-decision-key.test.sh:242
+		// fm: tests/fm-classify-decision-key.test.sh:242@a8572f6
 		// cox: decision fold
 		wantUrgent(t, "needs-decision: [key=seam-max-bound] pick the bound")
 		wantRoutine(t, "working: routine progress note")
@@ -669,7 +669,7 @@ func TestPortClassifyDecisionKey(t *testing.T) {
 	})
 
 	t.Run(s+"closing_verb_separates_resolution_from_durable_transfer", func(t *testing.T) {
-		// fm: tests/fm-classify-decision-key.test.sh:285
+		// fm: tests/fm-classify-decision-key.test.sh:285@a8572f6
 		// cox: per-key closing verb
 		lines := []string{"working: started", "needs-decision [key=route]: north or south", "resolved [key=route]: answered: north",
 			"needs-decision [key=access]: open or restricted", "captain-held [key=access]: tracked by sample-access-call",
@@ -685,7 +685,7 @@ func TestPortClassifyDecisionKey(t *testing.T) {
 	})
 
 	t.Run(s+"closing_verb_tracks_the_last_transition_in_both_positions", func(t *testing.T) {
-		// fm: tests/fm-classify-decision-key.test.sh:314
+		// fm: tests/fm-classify-decision-key.test.sh:314@a8572f6
 		// cox: per-key closing verb
 		lines := []string{"needs-decision: [key=route] colon-first open", "resolved: [key=route] colon-first close"}
 		steps := []struct{ add, want string }{
@@ -705,7 +705,7 @@ func TestPortClassifyDecisionKey(t *testing.T) {
 	})
 
 	t.Run(s+"closing_verb_honors_overridden_transition_verbs", func(t *testing.T) {
-		// fm: tests/fm-classify-decision-key.test.sh:345
+		// fm: tests/fm-classify-decision-key.test.sh:345@a8572f6
 		// cox: per-key closing verb
 		lines := []string{"blocked [key=route]: waiting"}
 		for i := 0; i < 200; i++ {
@@ -725,7 +725,7 @@ func TestPortClassifyDecisionKey(t *testing.T) {
 	})
 
 	t.Run(s+"closing_verb_filters_unrelated_history_without_subshell_growth", func(t *testing.T) {
-		// fm: tests/fm-classify-decision-key.test.sh:365
+		// fm: tests/fm-classify-decision-key.test.sh:365@a8572f6
 		// cox: per-key closing verb (the bash subshell-growth bound has no Go analog; the retained-resolution half does)
 		wantRoutine(t, "working: mentions [key=route] in prose")
 		for _, want := range []string{"route", "default"} {
@@ -751,7 +751,7 @@ func TestPortClassifyDecisionKey(t *testing.T) {
 	})
 
 	t.Run(s+"closing_verb_filter_preserves_terminal_chronology", func(t *testing.T) {
-		// fm: tests/fm-classify-decision-key.test.sh:398
+		// fm: tests/fm-classify-decision-key.test.sh:398@a8572f6
 		// cox: per-key closing verb
 		wantKind(t, "done: report saved", KindWorkerDone)
 		for _, kind := range []decision.Kind{decision.KindShip, decision.KindScout, decision.KindSecondmate} {
@@ -785,7 +785,7 @@ func TestPortClassifyDecisionKey(t *testing.T) {
 	})
 
 	t.Run(s+"bare_prose_cannot_impersonate_a_terminal_declaration", func(t *testing.T) {
-		// fm: tests/fm-classify-decision-key.test.sh:429
+		// fm: tests/fm-classify-decision-key.test.sh:429@a8572f6
 		// cox: wake.Classify + decision fold
 		for _, word := range []string{"done", "failed"} {
 			m := backend.Message{Type: "status", Subject: "paused: waiting on the vendor", Body: "Steps remaining:\n " + word}
@@ -811,7 +811,7 @@ func TestPortClassifyDecisionKey(t *testing.T) {
 	})
 
 	t.Run(s+"bare_prose_cannot_open_or_close_a_decision", func(t *testing.T) {
-		// fm: tests/fm-classify-decision-key.test.sh:455
+		// fm: tests/fm-classify-decision-key.test.sh:455@a8572f6
 		// cox: wake.Classify + decision fold
 		for _, word := range []string{"blocked", "needs-decision", "resolved"} {
 			m := backend.Message{Type: "status", Subject: "working: investigating the deploy", Body: "Options considered:\n " + word}

@@ -1,7 +1,7 @@
 // Port tests (wave 1, cox-supervision-port-busy-wake): firstmate's control-plane suites fm-control, fm-control-relaunch
 // and fm-control-herdr-smoke translated case by case against cox's control channel (control.Controller Interrupt/Park/
 // Relaunch/Reconcile, the `cox control` and `cox story resume` verbs) and the harness-owned busy record. Firstmate
-// pinned at 1e0e773 (references/firstmate, read only). Every case is t.Run("FM/<suite>/<case>") with a
+// pinned at a8572f6 (references/firstmate, read only). Every case is t.Run("FM/<suite>/<case>") with a
 // `// fm: tests/<file>:<line>` citation. A failure names its cox mechanism as red[<mechanism>] or
 // notImplemented[<mechanism>]; red is the deliverable (DESIGN translation contract).
 //
@@ -231,9 +231,9 @@ func (c ws) launchLine(t *testing.T) string {
 }
 
 func TestPortControl(t *testing.T) {
-	// n/a exit_types_each_harness_verified_command fm:tests/fm-control.test.sh:271 - cox stops a worker by closing its terminal (ADR 0012), never by typing a per-harness exit command
+	// n/a exit_types_each_harness_verified_command fm:tests/fm-control.test.sh:271@a8572f6 - cox stops a worker by closing its terminal (ADR 0012), never by typing a per-harness exit command
 
-	// fm: tests/fm-control.test.sh:291 (every cox card gets its own verified delivery: the backend keystroke where the
+	// fm: tests/fm-control.test.sh:291@a8572f6 (every cox card gets its own verified delivery: the backend keystroke where the
 	// card says it aborts the turn, the inbox interrupt record where it does not)
 	t.Run("FM/fm-control/interrupt_sends_each_harness_verified_key", func(t *testing.T) {
 		for _, h := range registry.Names() {
@@ -254,10 +254,10 @@ func TestPortControl(t *testing.T) {
 		}
 	})
 
-	// n/a devin_interrupt_invalidates_busy fm:tests/fm-control.test.sh:327 - devin has no cox harness card
-	// n/a devin_idle_interrupt_sends_one_press fm:tests/fm-control.test.sh:346 - devin has no cox harness card
-	// n/a devin_exit_after_turn_ended_types_quit_once fm:tests/fm-control.test.sh:363 - devin has no cox harness card
-	// n/a devin_interrupt_dismisses_revert_picker fm:tests/fm-control.test.sh:377 - devin has no cox harness card, and cox sends no second key to dismiss a surface (a harness dialog is answered by a human, never closed blind); the refusal half is the case below
+	// n/a devin_interrupt_invalidates_busy fm:tests/fm-control.test.sh:327@a8572f6 - devin has no cox harness card
+	// n/a devin_idle_interrupt_sends_one_press fm:tests/fm-control.test.sh:346@a8572f6 - devin has no cox harness card
+	// n/a devin_exit_after_turn_ended_types_quit_once fm:tests/fm-control.test.sh:363@a8572f6 - devin has no cox harness card
+	// n/a devin_interrupt_dismisses_revert_picker fm:tests/fm-control.test.sh:377@a8572f6 - devin has no cox harness card, and cox sends no second key to dismiss a surface (a harness dialog is answered by a human, never closed blind); the refusal half is the case below
 
 	// fm: tests/fm-control.test.sh:390@a8572f6 (B-01: firstmate's surface an interrupt left open - Devin's revert picker -
 	// is cox's local harness dialog, composer "blocked". The interrupt fails instead of reporting ok, the open dialog and
@@ -286,7 +286,7 @@ func TestPortControl(t *testing.T) {
 		}
 	})
 
-	// fm: tests/fm-control.test.sh:410 (cox records canonical harness names; the translated half is "never guess")
+	// fm: tests/fm-control.test.sh:410@a8572f6 (cox records canonical harness names; the translated half is "never guess")
 	t.Run("FM/fm-control/harness_family_resolution", func(t *testing.T) {
 		for _, h := range []string{"claude", "codex", "pi"} {
 			if _, ok := registry.Adapter(h); !ok {
@@ -300,10 +300,10 @@ func TestPortControl(t *testing.T) {
 		}
 	})
 
-	// n/a prefixed_recorded_harness_reaches_each_control_verb fm:tests/fm-control.test.sh:437 - grok has no cox card and cox records canonical harness names, never a launch-command basename
-	// n/a opencode_interrupts_twice_and_others_once fm:tests/fm-control.test.sh:461 - opencode has no cox harness card
+	// n/a prefixed_recorded_harness_reaches_each_control_verb fm:tests/fm-control.test.sh:437@a8572f6 - grok has no cox card and cox records canonical harness names, never a launch-command basename
+	// n/a opencode_interrupts_twice_and_others_once fm:tests/fm-control.test.sh:461@a8572f6 - opencode has no cox harness card
 
-	// fm: tests/fm-control.test.sh:480 (`cox control` resolves an unknown harness to registry.Default() instead of refusing)
+	// fm: tests/fm-control.test.sh:480@a8572f6 (`cox control` resolves an unknown harness to registry.Default() instead of refusing)
 	t.Run("FM/fm-control/unverified_harness_is_refused", func(t *testing.T) {
 		c := workspaceCase(t, "harness: someagent\n")
 		out, code := c.cox(t, "control", story, "interrupt", "--epic", c.epic)
@@ -312,10 +312,10 @@ func TestPortControl(t *testing.T) {
 		}
 	})
 
-	// n/a backend_key_capability_matrix fm:tests/fm-control.test.sh:494 - tmux/herdr/zellij/cmux send-key surfaces; cox backends deliver interrupts through their own verb
-	// n/a harness_kind_capability fm:tests/fm-control.test.sh:518 - per task-kind capability (secondmate), firstmate-only
+	// n/a backend_key_capability_matrix fm:tests/fm-control.test.sh:494@a8572f6 - tmux/herdr/zellij/cmux send-key surfaces; cox backends deliver interrupts through their own verb
+	// n/a harness_kind_capability fm:tests/fm-control.test.sh:518@a8572f6 - per task-kind capability (secondmate), firstmate-only
 
-	// fm: tests/fm-control.test.sh:537 (a harness whose turn the backend keystroke cannot abort gets no keystroke at all)
+	// fm: tests/fm-control.test.sh:537@a8572f6 (a harness whose turn the backend keystroke cannot abort gets no keystroke at all)
 	t.Run("FM/fm-control/orca_refuses_an_escape_harness_interrupt", func(t *testing.T) {
 		epic := epicWith(t, "pi")
 		b := fake.New()
@@ -325,7 +325,7 @@ func TestPortControl(t *testing.T) {
 		}
 	})
 
-	// fm: tests/fm-control.test.sh:554 (a stop the backend cannot prove refuses both stop verbs)
+	// fm: tests/fm-control.test.sh:554@a8572f6 (a stop the backend cannot prove refuses both stop verbs)
 	t.Run("FM/fm-control/unverified_state_backends_refuse_stop_verbs", func(t *testing.T) {
 		epic := epicWith(t, "claude")
 		b := fake.New()
@@ -344,11 +344,11 @@ func TestPortControl(t *testing.T) {
 		}
 	})
 
-	// n/a state_verified_backends_are_exactly_tmux_and_herdr fm:tests/fm-control.test.sh:585 - firstmate's backend list; cox gates on Probe per backend
-	// n/a window_label_is_refused_with_the_exact_id fm:tests/fm-control.test.sh:598 - tmux window labels; cox control takes only a story id
-	// n/a explicit_endpoint_is_refused fm:tests/fm-control.test.sh:610 - cox control has no endpoint argument
+	// n/a state_verified_backends_are_exactly_tmux_and_herdr fm:tests/fm-control.test.sh:585@a8572f6 - firstmate's backend list; cox gates on Probe per backend
+	// n/a window_label_is_refused_with_the_exact_id fm:tests/fm-control.test.sh:598@a8572f6 - tmux window labels; cox control takes only a story id
+	// n/a explicit_endpoint_is_refused fm:tests/fm-control.test.sh:610@a8572f6 - cox control has no endpoint argument
 
-	// fm: tests/fm-control.test.sh:622
+	// fm: tests/fm-control.test.sh:622@a8572f6
 	t.Run("FM/fm-control/unknown_task_is_refused", func(t *testing.T) {
 		epic := t.TempDir()
 		b := fake.New()
@@ -357,7 +357,7 @@ func TestPortControl(t *testing.T) {
 		}
 	})
 
-	// fm: tests/fm-control.test.sh:632
+	// fm: tests/fm-control.test.sh:632@a8572f6
 	t.Run("FM/fm-control/record_bound_to_another_task_is_refused", func(t *testing.T) {
 		epic := epicWith(t, "claude")
 		b := fake.New()
@@ -367,9 +367,9 @@ func TestPortControl(t *testing.T) {
 		}
 	})
 
-	// n/a remote_secondmate_is_refused_by_placement fm:tests/fm-control.test.sh:653 - remote secondmates, firstmate-only
+	// n/a remote_secondmate_is_refused_by_placement fm:tests/fm-control.test.sh:653@a8572f6 - remote secondmates, firstmate-only
 
-	// fm: tests/fm-control.test.sh:692
+	// fm: tests/fm-control.test.sh:692@a8572f6
 	t.Run("FM/fm-control/interrupt_and_exit_lock_before_task_state_resolution", func(t *testing.T) {
 		for _, verb := range []string{"interrupt", "park"} {
 			epic := epicWith(t, "claude")
@@ -395,7 +395,7 @@ func TestPortControl(t *testing.T) {
 		}
 	})
 
-	// fm: tests/fm-control.test.sh:724
+	// fm: tests/fm-control.test.sh:724@a8572f6
 	t.Run("FM/fm-control/verb_allowlist_is_closed", func(t *testing.T) {
 		c := workspaceCase(t, "harness: claude\n")
 		for _, verb := range []string{"send", "keys", "clear", "exit"} {
@@ -408,7 +408,7 @@ func TestPortControl(t *testing.T) {
 		}
 	})
 
-	// fm: tests/fm-control.test.sh:744
+	// fm: tests/fm-control.test.sh:744@a8572f6
 	t.Run("FM/fm-control/resume_is_refused_with_its_reason", func(t *testing.T) {
 		c := workspaceCase(t, "harness: claude\n")
 		out, code := c.cox(t, "control", story, "resume", "--epic", c.epic)
@@ -417,7 +417,7 @@ func TestPortControl(t *testing.T) {
 		}
 	})
 
-	// fm: tests/fm-control.test.sh:756
+	// fm: tests/fm-control.test.sh:756@a8572f6
 	t.Run("FM/fm-control/relaunch_only_flags_are_rejected_on_other_verbs", func(t *testing.T) {
 		c := workspaceCase(t, "harness: claude\n")
 		// A refusal happens before any effect: the interrupt must never reach the terminal.
@@ -426,7 +426,7 @@ func TestPortControl(t *testing.T) {
 		}
 	})
 
-	// fm: tests/fm-control.test.sh:769
+	// fm: tests/fm-control.test.sh:769@a8572f6
 	t.Run("FM/fm-control/already_stopped_exit_is_idempotent", func(t *testing.T) {
 		epic := epicWith(t, "claude")
 		b := alive(true)
@@ -439,7 +439,7 @@ func TestPortControl(t *testing.T) {
 		}
 	})
 
-	// fm: tests/fm-control.test.sh:781
+	// fm: tests/fm-control.test.sh:781@a8572f6
 	t.Run("FM/fm-control/missing_tmux_endpoint_refuses_rather_than_claiming_a_stop", func(t *testing.T) {
 		epic := epicWith(t, "claude")
 		b := fake.New()
@@ -451,7 +451,7 @@ func TestPortControl(t *testing.T) {
 		}
 	})
 
-	// fm: tests/fm-control.test.sh:800
+	// fm: tests/fm-control.test.sh:800@a8572f6
 	t.Run("FM/fm-control/interrupt_refuses_when_no_agent_runs", func(t *testing.T) {
 		epic := epicWith(t, "claude")
 		b := fake.New()
@@ -461,7 +461,7 @@ func TestPortControl(t *testing.T) {
 		}
 	})
 
-	// fm: tests/fm-control.test.sh:812
+	// fm: tests/fm-control.test.sh:812@a8572f6
 	t.Run("FM/fm-control/ambiguous_endpoint_refuses", func(t *testing.T) {
 		epic := epicWith(t, "claude")
 		b := fake.New()
@@ -473,9 +473,9 @@ func TestPortControl(t *testing.T) {
 		}
 	})
 
-	// n/a busy_agent_is_interrupted_before_the_exit_command fm:tests/fm-control.test.sh:824 - cox park closes the terminal; there is no typed exit command for a busy composer to swallow
+	// n/a busy_agent_is_interrupted_before_the_exit_command fm:tests/fm-control.test.sh:824@a8572f6 - cox park closes the terminal; there is no typed exit command for a busy composer to swallow
 
-	// fm: tests/fm-control.test.sh:841
+	// fm: tests/fm-control.test.sh:841@a8572f6
 	t.Run("FM/fm-control/idle_agent_is_not_interrupted", func(t *testing.T) {
 		epic := epicWith(t, "claude")
 		b := alive(true)
@@ -486,7 +486,7 @@ func TestPortControl(t *testing.T) {
 		}
 	})
 
-	// fm: tests/fm-control.test.sh:856
+	// fm: tests/fm-control.test.sh:856@a8572f6
 	t.Run("FM/fm-control/interrupt_without_acknowledgement_preserves_busy_state", func(t *testing.T) {
 		epic := epicWith(t, "claude")
 		gen, err := busy.Arm(epic, story, "claude", registry.Card("claude").BusySources)
@@ -501,9 +501,9 @@ func TestPortControl(t *testing.T) {
 		}
 	})
 
-	// n/a muse_interrupt_confirms_adapter_acknowledgement fm:tests/fm-control.test.sh:875 - muse has no cox harness card
+	// n/a muse_interrupt_confirms_adapter_acknowledgement fm:tests/fm-control.test.sh:875@a8572f6 - muse has no cox harness card
 
-	// fm: tests/fm-control.test.sh:895
+	// fm: tests/fm-control.test.sh:895@a8572f6
 	t.Run("FM/fm-control/interrupt_revalidates_agent_after_acknowledgement_wait", func(t *testing.T) {
 		epic := epicWith(t, "claude")
 		b := &diesOnInterrupt{Backend: fake.New()}
@@ -517,7 +517,7 @@ func TestPortControl(t *testing.T) {
 		}
 	})
 
-	// fm: tests/fm-control.test.sh:918
+	// fm: tests/fm-control.test.sh:918@a8572f6
 	t.Run("FM/fm-control/exit_accepts_agent_stopped_by_busy_interrupt", func(t *testing.T) {
 		epic := epicWith(t, "claude")
 		b := fake.New()
@@ -529,7 +529,7 @@ func TestPortControl(t *testing.T) {
 		}
 	})
 
-	// fm: tests/fm-control.test.sh:938
+	// fm: tests/fm-control.test.sh:938@a8572f6
 	t.Run("FM/fm-control/agent_that_does_not_stop_fails_closed", func(t *testing.T) {
 		epic := epicWith(t, "claude")
 		b := fake.New()
@@ -541,10 +541,10 @@ func TestPortControl(t *testing.T) {
 		}
 	})
 
-	// n/a grok_interrupt_without_acknowledgement_reports_unconfirmed fm:tests/fm-control.test.sh:961 - grok has no cox harness card
-	// n/a grok_idle_footer_does_not_confirm_cancellation fm:tests/fm-control.test.sh:974 - grok has no cox harness card
-	// n/a secondmate_control_command_carries_no_marker fm:tests/fm-control.test.sh:990 - secondmates and from-firstmate markers, firstmate-only
-	// n/a fm_send_still_marks_the_same_secondmate_task fm:tests/fm-control.test.sh:1014 - secondmates and fm-send markers, firstmate-only
+	// n/a grok_interrupt_without_acknowledgement_reports_unconfirmed fm:tests/fm-control.test.sh:961@a8572f6 - grok has no cox harness card
+	// n/a grok_idle_footer_does_not_confirm_cancellation fm:tests/fm-control.test.sh:974@a8572f6 - grok has no cox harness card
+	// n/a secondmate_control_command_carries_no_marker fm:tests/fm-control.test.sh:990@a8572f6 - secondmates and from-firstmate markers, firstmate-only
+	// n/a fm_send_still_marks_the_same_secondmate_task fm:tests/fm-control.test.sh:1014@a8572f6 - secondmates and fm-send markers, firstmate-only
 }
 
 func relaunch(t *testing.T, epic string, b backend.Backend, wt, note string, prior backend.Session) error {
@@ -554,7 +554,7 @@ func relaunch(t *testing.T, epic string, b backend.Backend, wt, note string, pri
 }
 
 func TestPortControlRelaunch(t *testing.T) {
-	// fm: tests/fm-control-relaunch.test.sh:365 (cox replaces the endpoint by design - close then spawn - so the
+	// fm: tests/fm-control-relaunch.test.sh:367@a8572f6 (cox replaces the endpoint by design - close then spawn - so the
 	// translated invariant is one live agent in the same worktree and branch at attempt+1)
 	t.Run("FM/fm-control-relaunch/same_harness_relaunch_keeps_identity_and_reuses_the_endpoint", func(t *testing.T) {
 		epic := epicWith(t, "claude")
@@ -566,7 +566,7 @@ func TestPortControlRelaunch(t *testing.T) {
 		}
 	})
 
-	// fm: tests/fm-control-relaunch.test.sh:390
+	// fm: tests/fm-control-relaunch.test.sh:392@a8572f6
 	t.Run("FM/fm-control-relaunch/relaunch_refuses_before_exit_when_the_composer_holds_pending_text", func(t *testing.T) {
 		epic := epicWith(t, "claude")
 		b := alive(true)
@@ -576,7 +576,7 @@ func TestPortControlRelaunch(t *testing.T) {
 		}
 	})
 
-	// fm: tests/fm-control-relaunch.test.sh:408
+	// fm: tests/fm-control-relaunch.test.sh:410@a8572f6
 	t.Run("FM/fm-control-relaunch/relaunch_refuses_before_exit_when_the_composer_state_is_unproven", func(t *testing.T) {
 		epic := epicWith(t, "claude")
 		b := alive(true)
@@ -586,7 +586,7 @@ func TestPortControlRelaunch(t *testing.T) {
 		}
 	})
 
-	// fm: tests/fm-control-relaunch.test.sh:428
+	// fm: tests/fm-control-relaunch.test.sh:430@a8572f6
 	t.Run("FM/fm-control-relaunch/relaunch_from_linked_home_preserves_recorded_worktree", func(t *testing.T) {
 		epic := epicWith(t, "claude")
 		b := &spawnRecorder{Backend: fake.New()}
@@ -597,7 +597,7 @@ func TestPortControlRelaunch(t *testing.T) {
 		}
 	})
 
-	// fm: tests/fm-control-relaunch.test.sh:466
+	// fm: tests/fm-control-relaunch.test.sh:468@a8572f6
 	t.Run("FM/fm-control-relaunch/relaunch_preserves_durable_task_metadata", func(t *testing.T) {
 		epic := epicWith(t, "claude")
 		before, _ := os.ReadFile(filepath.Join(epic, "stories", story+".md"))
@@ -608,7 +608,7 @@ func TestPortControlRelaunch(t *testing.T) {
 		}
 	})
 
-	// fm: tests/fm-control-relaunch.test.sh:490
+	// fm: tests/fm-control-relaunch.test.sh:492@a8572f6
 	t.Run("FM/fm-control-relaunch/relaunch_serializes_concurrent_durable_metadata_publication", func(t *testing.T) {
 		epic := epicWith(t, "claude")
 		b := &gatedSpawn{Backend: fake.New(), entered: make(chan struct{}), release: make(chan struct{})}
@@ -654,9 +654,9 @@ func TestPortControlRelaunch(t *testing.T) {
 		}
 	})
 
-	// n/a disabled_relaunch_clears_prior_trace_context fm:tests/fm-control-relaunch.test.sh:564 - firstmate tracing context
+	// n/a disabled_relaunch_clears_prior_trace_context fm:tests/fm-control-relaunch.test.sh:566@a8572f6 - firstmate tracing context
 
-	// fm: tests/fm-control-relaunch.test.sh:584
+	// fm: tests/fm-control-relaunch.test.sh:586@a8572f6
 	t.Run("FM/fm-control-relaunch/relaunch_appends_the_progress_note_to_the_instructions", func(t *testing.T) {
 		epic := epicWith(t, "claude")
 		b := &spawnRecorder{Backend: fake.New()}
@@ -666,7 +666,7 @@ func TestPortControlRelaunch(t *testing.T) {
 		}
 	})
 
-	// fm: tests/fm-control-relaunch.test.sh:611
+	// fm: tests/fm-control-relaunch.test.sh:613@a8572f6
 	t.Run("FM/fm-control-relaunch/relaunch_requires_a_note_for_a_ship_task", func(t *testing.T) {
 		epic := epicWith(t, "claude")
 		b := fake.New()
@@ -675,7 +675,7 @@ func TestPortControlRelaunch(t *testing.T) {
 		}
 	})
 
-	// fm: tests/fm-control-relaunch.test.sh:628 (a reroute resume leaves the old harness's worker hooks behind)
+	// fm: tests/fm-control-relaunch.test.sh:630@a8572f6 (a reroute resume leaves the old harness's worker hooks behind)
 	t.Run("FM/fm-control-relaunch/harness_switch_moves_the_record_and_clears_prior_wiring", func(t *testing.T) {
 		c := workspaceCase(t, "harness: claude\n")
 		c.priorExited()
@@ -692,7 +692,7 @@ func TestPortControlRelaunch(t *testing.T) {
 		}
 	})
 
-	// fm: tests/fm-control-relaunch.test.sh:648
+	// fm: tests/fm-control-relaunch.test.sh:650@a8572f6
 	t.Run("FM/fm-control-relaunch/harness_switch_does_not_carry_the_old_profile_axes", func(t *testing.T) {
 		c := workspaceCase(t, "harness: claude\nmodel: claude-opus-4-8\n")
 		c.priorExited()
@@ -702,10 +702,10 @@ func TestPortControlRelaunch(t *testing.T) {
 		}
 	})
 
-	// n/a harness_switch_resolves_a_prefixed_recorded_harness fm:tests/fm-control-relaunch.test.sh:665 - cox records canonical harness names
-	// n/a prefixed_recorded_harness_requires_explicit_replacement fm:tests/fm-control-relaunch.test.sh:692 - cox records canonical harness names
+	// n/a harness_switch_resolves_a_prefixed_recorded_harness fm:tests/fm-control-relaunch.test.sh:667@a8572f6 - cox records canonical harness names
+	// n/a prefixed_recorded_harness_requires_explicit_replacement fm:tests/fm-control-relaunch.test.sh:694@a8572f6 - cox records canonical harness names
 
-	// fm: tests/fm-control-relaunch.test.sh:723
+	// fm: tests/fm-control-relaunch.test.sh:725@a8572f6
 	t.Run("FM/fm-control-relaunch/same_harness_relaunch_keeps_the_profile_axes", func(t *testing.T) {
 		c := workspaceCase(t, "harness: claude\nmodel: claude-opus-4-8\n")
 		c.priorExited()
@@ -715,9 +715,9 @@ func TestPortControlRelaunch(t *testing.T) {
 		}
 	})
 
-	// n/a native_ultra_relaunch_preserves_profile_and_rejects_before_stop fm:tests/fm-control-relaunch.test.sh:737 - native Ultra profile, firstmate-only
+	// n/a native_ultra_relaunch_preserves_profile_and_rejects_before_stop fm:tests/fm-control-relaunch.test.sh:739@a8572f6 - native Ultra profile, firstmate-only
 
-	// fm: tests/fm-control-relaunch.test.sh:762
+	// fm: tests/fm-control-relaunch.test.sh:816@a8572f6
 	t.Run("FM/fm-control-relaunch/explicit_model_wins_over_the_recorded_one", func(t *testing.T) {
 		c := workspaceCase(t, "harness: claude\nmodel: claude-opus-4-8\n")
 		c.priorExited()
@@ -727,7 +727,7 @@ func TestPortControlRelaunch(t *testing.T) {
 		}
 	})
 
-	// fm: tests/fm-control-relaunch.test.sh:773
+	// fm: tests/fm-control-relaunch.test.sh:827@a8572f6
 	t.Run("FM/fm-control-relaunch/relaunch_onto_an_unverified_harness_is_refused", func(t *testing.T) {
 		c := workspaceCase(t, "harness: claude\n")
 		if _, code := c.cox(t, "story", "resume", story, "--epic", c.epic, "--harness", "someagent", "--allow-unsandboxed"); code == 0 || strings.Contains(c.calls(t), "terminal close") {
@@ -735,7 +735,7 @@ func TestPortControlRelaunch(t *testing.T) {
 		}
 	})
 
-	// fm: tests/fm-control-relaunch.test.sh:784 (the retired incarnation's token is the busy gen: a re-arm revokes it)
+	// fm: tests/fm-control-relaunch.test.sh:838@a8572f6 (the retired incarnation's token is the busy gen: a re-arm revokes it)
 	t.Run("FM/fm-control-relaunch/prior_harness_turnend_registry_entry_is_cleared", func(t *testing.T) {
 		epic := epicWith(t, "claude")
 		old, err := busy.Arm(epic, story, "claude", registry.Card("claude").BusySources)
@@ -747,7 +747,7 @@ func TestPortControlRelaunch(t *testing.T) {
 		}
 	})
 
-	// fm: tests/fm-control-relaunch.test.sh:800
+	// fm: tests/fm-control-relaunch.test.sh:854@a8572f6
 	t.Run("FM/fm-control-relaunch/wiring_removal_failure_refuses_before_replacement_arm", func(t *testing.T) {
 		epic := epicWith(t, "claude")
 		b := alive(true)
@@ -767,13 +767,13 @@ func TestPortControlRelaunch(t *testing.T) {
 		}
 	})
 
-	// n/a turnend_auth_paths_are_owned_by_the_control_adapter fm:tests/fm-control-relaunch.test.sh:824 - firstmate library ownership of turn-end registry paths
-	// n/a secondmate_relaunch_picks_up_the_configured_harness_pin fm:tests/fm-control-relaunch.test.sh:845 - secondmates, firstmate-only
-	// n/a secondmate_relaunch_ignores_invalid_configured_effort_before_stop fm:tests/fm-control-relaunch.test.sh:885 - secondmates, firstmate-only
-	// n/a secondmate_relaunch_onto_a_crewmate_only_adapter_refuses_before_stop fm:tests/fm-control-relaunch.test.sh:927 - secondmates, firstmate-only
-	// n/a explicit_secondmate_harness_ignores_configured_profile_axes fm:tests/fm-control-relaunch.test.sh:963 - secondmates, firstmate-only
+	// n/a turnend_auth_paths_are_owned_by_the_control_adapter fm:tests/fm-control-relaunch.test.sh:878@a8572f6 - firstmate library ownership of turn-end registry paths
+	// n/a secondmate_relaunch_picks_up_the_configured_harness_pin fm:tests/fm-control-relaunch.test.sh:899@a8572f6 - secondmates, firstmate-only
+	// n/a secondmate_relaunch_ignores_invalid_configured_effort_before_stop fm:tests/fm-control-relaunch.test.sh:939@a8572f6 - secondmates, firstmate-only
+	// n/a secondmate_relaunch_onto_a_crewmate_only_adapter_refuses_before_stop fm:tests/fm-control-relaunch.test.sh:981@a8572f6 - secondmates, firstmate-only
+	// n/a explicit_secondmate_harness_ignores_configured_profile_axes fm:tests/fm-control-relaunch.test.sh:1017@a8572f6 - secondmates, firstmate-only
 
-	// fm: tests/fm-control-relaunch.test.sh:1000
+	// fm: tests/fm-control-relaunch.test.sh:1054@a8572f6
 	t.Run("FM/fm-control-relaunch/ship_relaunch_ignores_the_crew_harness_config", func(t *testing.T) {
 		c := workspaceCase(t, "harness: codex\n")
 		c.priorExited()
@@ -783,7 +783,7 @@ func TestPortControlRelaunch(t *testing.T) {
 		}
 	})
 
-	// fm: tests/fm-control-relaunch.test.sh:1014
+	// fm: tests/fm-control-relaunch.test.sh:1068@a8572f6
 	t.Run("FM/fm-control-relaunch/spawn_relaunch_without_a_harness_reuses_the_recorded_one", func(t *testing.T) {
 		c := workspaceCase(t, "harness: codex\n")
 		c.priorExited()
@@ -793,12 +793,12 @@ func TestPortControlRelaunch(t *testing.T) {
 		}
 	})
 
-	// n/a promoted_scout_relaunch_receives_the_current_delivery_contract fm:tests/fm-control-relaunch.test.sh:1028 - scout promotion, firstmate-only
-	// n/a prefixed_prior_harness_wiring_is_still_retired fm:tests/fm-control-relaunch.test.sh:1098 - cox records canonical harness names
-	// n/a muse_session_binding_is_retired_on_a_harness_switch fm:tests/fm-control-relaunch.test.sh:1122 - muse has no cox harness card
-	// n/a cursor_session_binding_is_retired_on_a_harness_switch fm:tests/fm-control-relaunch.test.sh:1138 - cursor has no cox harness card
+	// n/a promoted_scout_relaunch_receives_the_current_delivery_contract fm:tests/fm-control-relaunch.test.sh:1101@a8572f6 - scout promotion, firstmate-only
+	// n/a prefixed_prior_harness_wiring_is_still_retired fm:tests/fm-control-relaunch.test.sh:1171@a8572f6 - cox records canonical harness names
+	// n/a muse_session_binding_is_retired_on_a_harness_switch fm:tests/fm-control-relaunch.test.sh:1195@a8572f6 - muse has no cox harness card
+	// n/a cursor_session_binding_is_retired_on_a_harness_switch fm:tests/fm-control-relaunch.test.sh:1211@a8572f6 - cursor has no cox harness card
 
-	// fm: tests/fm-control-relaunch.test.sh:1153
+	// fm: tests/fm-control-relaunch.test.sh:1226@a8572f6
 	t.Run("FM/fm-control-relaunch/missing_worktree_refuses_before_stopping_anything", func(t *testing.T) {
 		epic := epicWith(t, "claude")
 		b := fake.New()
@@ -809,7 +809,7 @@ func TestPortControlRelaunch(t *testing.T) {
 		}
 	})
 
-	// fm: tests/fm-control-relaunch.test.sh:1166
+	// fm: tests/fm-control-relaunch.test.sh:1239@a8572f6
 	t.Run("FM/fm-control-relaunch/missing_instructions_refuse_before_stopping_anything", func(t *testing.T) {
 		epic := epicWith(t, "claude")
 		must(t, os.Remove(filepath.Join(epic, "stories", story+".md")))
@@ -819,7 +819,7 @@ func TestPortControlRelaunch(t *testing.T) {
 		}
 	})
 
-	// fm: tests/fm-control-relaunch.test.sh:1178
+	// fm: tests/fm-control-relaunch.test.sh:1251@a8572f6
 	t.Run("FM/fm-control-relaunch/checkpoint_refusal_leaves_the_record_byte_identical", func(t *testing.T) {
 		epic := epicWith(t, "claude")
 		b := alive(true)
@@ -837,7 +837,7 @@ func TestPortControlRelaunch(t *testing.T) {
 		}
 	})
 
-	// fm: tests/fm-control-relaunch.test.sh:1190
+	// fm: tests/fm-control-relaunch.test.sh:1263@a8572f6
 	t.Run("FM/fm-control-relaunch/checkpoint_refuses_uninspectable_head_and_status", func(t *testing.T) {
 		realGit, err := exec.LookPath("git")
 		must(t, err)
@@ -865,7 +865,7 @@ exec '`+realGit+`' "$@"
 		}
 	})
 
-	// fm: tests/fm-control-relaunch.test.sh:1216
+	// fm: tests/fm-control-relaunch.test.sh:1289@a8572f6
 	t.Run("FM/fm-control-relaunch/launch_failure_keeps_the_prior_record_and_reports_it", func(t *testing.T) {
 		epic := epicWith(t, "claude")
 		b := alive(true)
@@ -876,10 +876,10 @@ exec '`+realGit+`' "$@"
 		}
 	})
 
-	// n/a prepublication_failure_keeps_concurrent_durable_metadata fm:tests/fm-control-relaunch.test.sh:1239 - meta publication rollback; cox's durable record is the append-only event log
-	// n/a post_publication_launch_failure_keeps_the_new_record fm:tests/fm-control-relaunch.test.sh:1272 - meta publication rollback; cox's durable record is the append-only event log
+	// n/a prepublication_failure_keeps_concurrent_durable_metadata fm:tests/fm-control-relaunch.test.sh:1312@a8572f6 - meta publication rollback; cox's durable record is the append-only event log
+	// n/a post_publication_launch_failure_keeps_the_new_record fm:tests/fm-control-relaunch.test.sh:1345@a8572f6 - meta publication rollback; cox's durable record is the append-only event log
 
-	// fm: tests/fm-control-relaunch.test.sh:1289
+	// fm: tests/fm-control-relaunch.test.sh:1362@a8572f6
 	t.Run("FM/fm-control-relaunch/stop_transport_failure_reconciles_a_dead_agent", func(t *testing.T) {
 		epic := epicWith(t, "claude")
 		b := alive(false)
@@ -889,9 +889,9 @@ exec '`+realGit+`' "$@"
 		}
 	})
 
-	// n/a complete_journal_failure_rolls_back_from_durable_phase fm:tests/fm-control-relaunch.test.sh:1307 - relaunch journal, firstmate-only
+	// n/a complete_journal_failure_rolls_back_from_durable_phase fm:tests/fm-control-relaunch.test.sh:1380@a8572f6 - relaunch journal, firstmate-only
 
-	// fm: tests/fm-control-relaunch.test.sh:1330 (a relaunch that aborts before its replacement is live retires the
+	// fm: tests/fm-control-relaunch.test.sh:1403@a8572f6 (a relaunch that aborts before its replacement is live retires the
 	// busy record armed for it)
 	t.Run("FM/fm-control-relaunch/prepublication_abort_retires_replacement_wiring_and_busy_state", func(t *testing.T) {
 		c := workspaceCase(t, "harness: claude\n")
@@ -905,7 +905,7 @@ exec '`+realGit+`' "$@"
 		}
 	})
 
-	// fm: tests/fm-control-relaunch.test.sh:1353
+	// fm: tests/fm-control-relaunch.test.sh:1426@a8572f6
 	t.Run("FM/fm-control-relaunch/journal_records_the_checkpoint_it_proved", func(t *testing.T) {
 		epic := epicWith(t, "claude")
 		wt := gitWT(t)
@@ -925,12 +925,12 @@ exec '`+realGit+`' "$@"
 		}
 	})
 
-	// n/a secondmate_relaunch_checkpoints_child_work_and_spares_the_charter fm:tests/fm-control-relaunch.test.sh:1370 - secondmates, firstmate-only
-	// n/a secondmate_relaunch_refuses_an_unmarked_home fm:tests/fm-control-relaunch.test.sh:1413 - secondmates, firstmate-only
-	// n/a secondmate_checkpoint_refuses_unreadable_child_state fm:tests/fm-control-relaunch.test.sh:1441 - secondmates, firstmate-only
-	// n/a secondmate_checkpoint_ignores_a_vanished_scratch_find_walk fm:tests/fm-control-relaunch.test.sh:1484 - secondmates, firstmate-only
+	// n/a secondmate_relaunch_checkpoints_child_work_and_spares_the_charter fm:tests/fm-control-relaunch.test.sh:1443@a8572f6 - secondmates, firstmate-only
+	// n/a secondmate_relaunch_refuses_an_unmarked_home fm:tests/fm-control-relaunch.test.sh:1486@a8572f6 - secondmates, firstmate-only
+	// n/a secondmate_checkpoint_refuses_unreadable_child_state fm:tests/fm-control-relaunch.test.sh:1514@a8572f6 - secondmates, firstmate-only
+	// n/a secondmate_checkpoint_ignores_a_vanished_scratch_find_walk fm:tests/fm-control-relaunch.test.sh:1557@a8572f6 - secondmates, firstmate-only
 
-	// fm: tests/fm-control-relaunch.test.sh:1536
+	// fm: tests/fm-control-relaunch.test.sh:1609@a8572f6
 	t.Run("FM/fm-control-relaunch/concurrent_relaunch_is_refused", func(t *testing.T) {
 		epic := epicWith(t, "claude")
 		b := fake.New()
@@ -946,7 +946,7 @@ exec '`+realGit+`' "$@"
 		}
 	})
 
-	// fm: tests/fm-control-relaunch.test.sh:1568
+	// fm: tests/fm-control-relaunch.test.sh:1641@a8572f6
 	t.Run("FM/fm-control-relaunch/direct_spawn_relaunch_participates_in_the_lifecycle_lock", func(t *testing.T) {
 		c := workspaceCase(t, "harness: claude\n")
 		release := holdLock(t, c.epic)
@@ -960,9 +960,9 @@ exec '`+realGit+`' "$@"
 		}
 	})
 
-	// n/a promotion_participates_in_the_lifecycle_lock_before_metadata_resolution fm:tests/fm-control-relaunch.test.sh:1596 - scout promotion, firstmate-only
+	// n/a promotion_participates_in_the_lifecycle_lock_before_metadata_resolution fm:tests/fm-control-relaunch.test.sh:1669@a8572f6 - scout promotion, firstmate-only
 
-	// fm: tests/fm-control-relaunch.test.sh:1625
+	// fm: tests/fm-control-relaunch.test.sh:1698@a8572f6
 	t.Run("FM/fm-control-relaunch/spawn_relaunch_refuses_a_live_agent", func(t *testing.T) {
 		epic := epicWith(t, "claude")
 		b := alive(false)
@@ -971,9 +971,9 @@ exec '`+realGit+`' "$@"
 		}
 	})
 
-	// n/a spawn_relaunch_refuses_a_symlinked_task_record_before_inspection fm:tests/fm-control-relaunch.test.sh:1636 - firstmate state/<id>.meta symlink handling
+	// n/a spawn_relaunch_refuses_a_symlinked_task_record_before_inspection fm:tests/fm-control-relaunch.test.sh:1709@a8572f6 - firstmate state/<id>.meta symlink handling
 
-	// fm: tests/fm-control-relaunch.test.sh:1663
+	// fm: tests/fm-control-relaunch.test.sh:1736@a8572f6
 	t.Run("FM/fm-control-relaunch/spawn_relaunch_keeps_its_early_meta_lock_continuous", func(t *testing.T) {
 		epic := epicWith(t, "claude")
 		b := &lockObserver{agent: alive(true), lock: control.LockPath(epic, story)}
@@ -986,7 +986,7 @@ exec '`+realGit+`' "$@"
 		}
 	})
 
-	// fm: tests/fm-control-relaunch.test.sh:1693 (a story whose close is authoritative is never relaunched)
+	// fm: tests/fm-control-relaunch.test.sh:1766@a8572f6 (a story whose close is authoritative is never relaunched)
 	t.Run("FM/fm-control-relaunch/spawn_relaunch_refuses_a_pending_authoritative_close", func(t *testing.T) {
 		epic := epicWith(t, "claude")
 		must(t, state.Append(epic, state.Event{Epic: filepath.Base(epic), Story: story, Attempt: 1, Actor: state.Leader,
@@ -997,9 +997,9 @@ exec '`+realGit+`' "$@"
 		}
 	})
 
-	// n/a spawn_relaunch_refuses_contradicting_flags fm:tests/fm-control-relaunch.test.sh:1719 - cox relaunch takes no identity-axis flags to contradict
+	// n/a spawn_relaunch_refuses_contradicting_flags fm:tests/fm-control-relaunch.test.sh:1792@a8572f6 - cox relaunch takes no identity-axis flags to contradict
 
-	// fm: tests/fm-control-relaunch.test.sh:1736
+	// fm: tests/fm-control-relaunch.test.sh:1809@a8572f6
 	t.Run("FM/fm-control-relaunch/spawn_relaunch_refuses_an_unrecorded_task", func(t *testing.T) {
 		epic := t.TempDir()
 		must(t, os.MkdirAll(filepath.Join(epic, "stories"), 0o755))
@@ -1010,12 +1010,12 @@ exec '`+realGit+`' "$@"
 		}
 	})
 
-	// n/a spawn_relaunch_refuses_a_pane_outside_the_worktree fm:tests/fm-control-relaunch.test.sh:1746 - tmux pane cwd drift; the spawn worktree case is relaunch_from_linked_home_preserves_recorded_worktree
-	// n/a tmux_refuses_a_window_missing_from_its_session fm:tests/fm-control-relaunch.test.sh:1807 - tmux backend, firstmate-only
-	// n/a tmux_refuses_a_session_that_cannot_be_found fm:tests/fm-control-relaunch.test.sh:1816 - tmux backend, firstmate-only
-	// n/a tmux_refuses_when_the_server_is_gone fm:tests/fm-control-relaunch.test.sh:1828 - tmux backend, firstmate-only
+	// n/a spawn_relaunch_refuses_a_pane_outside_the_worktree fm:tests/fm-control-relaunch.test.sh:1819@a8572f6 - tmux pane cwd drift; the spawn worktree case is relaunch_from_linked_home_preserves_recorded_worktree
+	// n/a tmux_refuses_a_window_missing_from_its_session fm:tests/fm-control-relaunch.test.sh:1880@a8572f6 - tmux backend, firstmate-only
+	// n/a tmux_refuses_a_session_that_cannot_be_found fm:tests/fm-control-relaunch.test.sh:1889@a8572f6 - tmux backend, firstmate-only
+	// n/a tmux_refuses_when_the_server_is_gone fm:tests/fm-control-relaunch.test.sh:1901@a8572f6 - tmux backend, firstmate-only
 
-	// fm: tests/fm-control-relaunch.test.sh:1839 (reclaim -> Reconcile: an unclassifiable endpoint is never adopted)
+	// fm: tests/fm-control-relaunch.test.sh:1912@a8572f6 (reclaim -> Reconcile: an unclassifiable endpoint is never adopted)
 	t.Run("FM/fm-control-relaunch/reclaim_refuses_an_unreadable_endpoint", func(t *testing.T) {
 		epic := epicWith(t, "claude")
 		must(t, state.Append(epic, state.Event{Epic: filepath.Base(epic), Story: story, Attempt: 2, Actor: state.Leader,
@@ -1027,28 +1027,28 @@ exec '`+realGit+`' "$@"
 		}
 	})
 
-	// n/a herdr_reclaim_adopts_a_pane_that_outlived_its_server fm:tests/fm-control-relaunch.test.sh:2022 - herdr, firstmate-only (DESIGN rule 5)
-	// n/a herdr_exit_reports_already_stopped_when_the_pane_outlived_its_server fm:tests/fm-control-relaunch.test.sh:2059 - herdr, firstmate-only
-	// n/a herdr_rebind_stays_in_the_recorded_session fm:tests/fm-control-relaunch.test.sh:2078 - herdr, firstmate-only
-	// n/a herdr_reclaim_refuses_an_agent_that_came_back fm:tests/fm-control-relaunch.test.sh:2106 - herdr, firstmate-only
-	// n/a herdr_reclaim_keeps_the_task_whole fm:tests/fm-control-relaunch.test.sh:2129 - herdr, firstmate-only
-	// n/a herdr_rebind_failure_from_a_plain_shell_names_the_real_cause fm:tests/fm-control-relaunch.test.sh:2179 - herdr, firstmate-only
-	// n/a herdr_reclaim_of_a_secondmate_names_its_own_owner fm:tests/fm-control-relaunch.test.sh:2203 - herdr and secondmates, firstmate-only
-	// n/a relaunch_reverifies_an_already_in_flight_item_instead_of_rewriting_it fm:tests/fm-control-relaunch.test.sh:2220 - tasks-axi backlog items, firstmate-only
-	// n/a relaunch_moves_a_drifted_item_back_in_flight fm:tests/fm-control-relaunch.test.sh:2238 - tasks-axi backlog items, firstmate-only
+	// n/a herdr_reclaim_adopts_a_pane_that_outlived_its_server fm:tests/fm-control-relaunch.test.sh:2095@a8572f6 - herdr, firstmate-only (DESIGN rule 5)
+	// n/a herdr_exit_reports_already_stopped_when_the_pane_outlived_its_server fm:tests/fm-control-relaunch.test.sh:2132@a8572f6 - herdr, firstmate-only
+	// n/a herdr_rebind_stays_in_the_recorded_session fm:tests/fm-control-relaunch.test.sh:2151@a8572f6 - herdr, firstmate-only
+	// n/a herdr_reclaim_refuses_an_agent_that_came_back fm:tests/fm-control-relaunch.test.sh:2179@a8572f6 - herdr, firstmate-only
+	// n/a herdr_reclaim_keeps_the_task_whole fm:tests/fm-control-relaunch.test.sh:2202@a8572f6 - herdr, firstmate-only
+	// n/a herdr_rebind_failure_from_a_plain_shell_names_the_real_cause fm:tests/fm-control-relaunch.test.sh:2252@a8572f6 - herdr, firstmate-only
+	// n/a herdr_reclaim_of_a_secondmate_names_its_own_owner fm:tests/fm-control-relaunch.test.sh:2276@a8572f6 - herdr and secondmates, firstmate-only
+	// n/a relaunch_reverifies_an_already_in_flight_item_instead_of_rewriting_it fm:tests/fm-control-relaunch.test.sh:2293@a8572f6 - tasks-axi backlog items, firstmate-only
+	// n/a relaunch_moves_a_drifted_item_back_in_flight fm:tests/fm-control-relaunch.test.sh:2315@a8572f6 - tasks-axi backlog items, firstmate-only
 }
 
 // fm-control-herdr-smoke drives a real herdr binary; herdr is a firstmate-only surface (DESIGN rule 5).
-// n/a herdr_exit_on_a_pane_with_no_registered_agent_is_idempotent fm:tests/fm-control-herdr-smoke.test.sh:117 - real herdr binary
-// n/a herdr_gone_session_reads_recoverable fm:tests/fm-control-herdr-smoke.test.sh:155 - real herdr binary
-// n/a herdr_drifted_shell_returns_to_its_worktree fm:tests/fm-control-herdr-smoke.test.sh:194 - real herdr binary
-// n/a herdr_interrupt_refuses_with_no_registered_agent fm:tests/fm-control-herdr-smoke.test.sh:203 - real herdr binary
-// n/a herdr_interrupt_delivers_and_agent_survives fm:tests/fm-control-herdr-smoke.test.sh:249 - real herdr binary
-// n/a herdr_no_verb_removed_the_endpoint_or_copy fm:tests/fm-control-herdr-smoke.test.sh:254 - real herdr binary
-// n/a herdr_stale_registration_reads_dead fm:tests/fm-control-herdr-smoke.test.sh:282 - real herdr binary
-// n/a herdr_exit_on_a_stale_registration_is_idempotent fm:tests/fm-control-herdr-smoke.test.sh:289 - real herdr binary
-// n/a herdr_stale_registration_no_longer_blocks_relaunch fm:tests/fm-control-herdr-smoke.test.sh:308 - real herdr binary
-// n/a herdr_unproven_composer_fails_closed fm:tests/fm-control-herdr-smoke.test.sh:325 - real herdr binary
+// n/a herdr_exit_on_a_pane_with_no_registered_agent_is_idempotent fm:tests/fm-control-herdr-smoke.test.sh:117@a8572f6 - real herdr binary
+// n/a herdr_gone_session_reads_recoverable fm:tests/fm-control-herdr-smoke.test.sh:155@a8572f6 - real herdr binary
+// n/a herdr_drifted_shell_returns_to_its_worktree fm:tests/fm-control-herdr-smoke.test.sh:194@a8572f6 - real herdr binary
+// n/a herdr_interrupt_refuses_with_no_registered_agent fm:tests/fm-control-herdr-smoke.test.sh:203@a8572f6 - real herdr binary
+// n/a herdr_interrupt_delivers_and_agent_survives fm:tests/fm-control-herdr-smoke.test.sh:249@a8572f6 - real herdr binary
+// n/a herdr_no_verb_removed_the_endpoint_or_copy fm:tests/fm-control-herdr-smoke.test.sh:254@a8572f6 - real herdr binary
+// n/a herdr_stale_registration_reads_dead fm:tests/fm-control-herdr-smoke.test.sh:282@a8572f6 - real herdr binary
+// n/a herdr_exit_on_a_stale_registration_is_idempotent fm:tests/fm-control-herdr-smoke.test.sh:289@a8572f6 - real herdr binary
+// n/a herdr_stale_registration_no_longer_blocks_relaunch fm:tests/fm-control-herdr-smoke.test.sh:308@a8572f6 - real herdr binary
+// n/a herdr_unproven_composer_fails_closed fm:tests/fm-control-herdr-smoke.test.sh:325@a8572f6 - real herdr binary
 
 // agent is the fake backend with a live agent at the story's endpoint (fm alive_as claude): Probe reads Alive until a
 // Stop kills it (kills), and the composer reads empty.

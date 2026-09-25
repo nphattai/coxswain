@@ -75,7 +75,7 @@ func wakeAckThrough(args []string) int {
 	if *recoveryGen != "" {
 		switch err := recoveryAck(*epicDir, *recoveryGen); {
 		case errors.Is(err, errRecoveryMoved):
-			// The sequence alone owns consumption; a moved generation names its own remedy (fm-wake-drain.sh:757).
+			// The sequence alone owns consumption; a moved generation names its own remedy (fm-wake-drain.sh:762).
 			fmt.Fprintf(os.Stderr, "wake drain: acknowledged wakes through %d (%d row(s) consumed), but a newer recovery episode is pending; re-run cox wake drain --epic %s and use the new WAKE_ACK_REQUIRED command\n",
 				g, res.Consumed, *epicDir)
 		case err != nil:

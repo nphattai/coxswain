@@ -89,7 +89,7 @@ func TestFold(t *testing.T) {
 	}
 }
 
-// TestOpenActivities pins firstmate's activity fixture (tests/fm-watch-triage.test.sh:398-419).
+// TestOpenActivities pins firstmate's activity fixture (tests/fm-watch-triage.test.sh:399-420).
 func TestOpenActivities(t *testing.T) {
 	lines := []string{
 		"working [key=phase7]: Phase 7 started",

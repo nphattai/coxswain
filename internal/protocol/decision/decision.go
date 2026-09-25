@@ -1,11 +1,11 @@
 // Package decision ports firstmate's status-line grammar and keyed decision fold (bin/fm-classify-lib.sh, pinned
-// 1e0e773) so every cox reader of a worker status line agrees on one statement of the rules. It is pure: lines in,
+// a8572f6) so every cox reader of a worker status line agrees on one statement of the rules. It is pure: lines in,
 // verdicts out, no I/O. A worker's status history is an append-only event log; reading it last-event-wins cannot
 // represent "an earlier decision is still open after a later, unrelated event", so Fold is the one authoritative
 // open set: a needs-decision/blocked line OPENS a keyed decision, an explicit resolved or captain-held line naming
 // that key CLOSES it, and a ship/scout terminal declaration (done:/failed:) supersedes everything open.
 //
-// Grammar (fm-classify-lib.sh:420-560): "<verb> [name=value]...: <note>". Tags before the first colon may come in any
+// Grammar (fm-classify-lib.sh:486-626): "<verb> [name=value]...: <note>". Tags before the first colon may come in any
 // order: [key=<slug>] names the decision (a complete token at the head of the note is an equivalent position),
 // [corr=<16 hex>] or a bare corr=<16 hex> after the verb is correlation metadata, [at=<epoch>] is the optional
 // emission time. A line with no key token folds under "default". A malformed key is rejected, never rewritten.
@@ -29,11 +29,11 @@ const (
 // tokens exist only for legacy lines that lack a standard terminal verb.
 const DefaultCaptainRE = `done:|needs-decision:|blocked:|failed:|PR ready|checks green|ready in branch|merged`
 
-// ReservedKeyPrefixes is FM_CLASSIFY_RESERVED_KEY_PREFIXES_DEFAULT (fm-classify-lib.sh:644): a reserved key may be
+// ReservedKeyPrefixes is FM_CLASSIFY_RESERVED_KEY_PREFIXES_DEFAULT (fm-classify-lib.sh:710): a reserved key may be
 // opened or closed only by a line whose note speaks that namespace's own vocabulary.
 var ReservedKeyPrefixes = []string{"pending-reply-"}
 
-// Kind is the task kind the terminal-supersession rule reads (fm-classify-lib.sh:669 _fm_status_kind).
+// Kind is the task kind the terminal-supersession rule reads (fm-classify-lib.sh:735 _fm_status_kind).
 type Kind string
 
 const (
@@ -71,7 +71,7 @@ func (v Verbs) held() string {
 }
 
 // Decision is one still-open record of the fold: its key, the opening verb, the note, and Line, the 1-based index of
-// the line that opened it (firstmate's decision origin, fm-classify-lib.sh:2091).
+// the line that opened it (firstmate's decision origin, fm-classify-lib.sh:2181).
 type Decision struct {
 	Key  string
 	Verb string
@@ -102,7 +102,7 @@ func hasTag(s, open string) bool {
 }
 
 // Unstamped strips every [at=...]-shaped run a worker could have written as the stamp, however malformed, while
-// nothing before it holds a colon (fm-classify-lib.sh:388 _fm_status_unstamped). It is the shared head-boundary rule:
+// nothing before it holds a colon (fm-classify-lib.sh:454 _fm_status_unstamped). It is the shared head-boundary rule:
 // a time tag never decides where the head ends, which note or key a line carries, or whether a decision moves.
 func Unstamped(line string) string {
 	rest, keep := line, ""
@@ -119,7 +119,7 @@ func Unstamped(line string) string {
 	return keep + rest
 }
 
-// AtEpoch returns the well-formed emission time of a line (fm-classify-lib.sh:301 _fm_status_at_epoch): one
+// AtEpoch returns the well-formed emission time of a line (fm-classify-lib.sh:367 _fm_status_at_epoch): one
 // [at=<epoch>] tag before the first colon, canonical unsigned decimal, at most 12 digits. Missing, malformed or
 // duplicate tags mean unknown time. Time describes history only and never decides state or closure.
 func AtEpoch(line string) (string, bool) {
@@ -146,10 +146,10 @@ func AtEpoch(line string) (string, bool) {
 	return value, true
 }
 
-// corrTokenRe is exactly the unbracketed correlation token firstmate's tooling writes (fm-classify-lib.sh:496).
+// corrTokenRe is exactly the unbracketed correlation token firstmate's tooling writes (fm-classify-lib.sh:562).
 var corrTokenRe = regexp.MustCompile(`^corr=[0-9A-Fa-f]{16}$`)
 
-// Verb returns the leading verb word of a line (fm-classify-lib.sh:509 status_line_verb): the text before the first
+// Verb returns the leading verb word of a line (fm-classify-lib.sh:575 status_line_verb): the text before the first
 // colon, ended at the first bracket tag, trimmed. When that prefix holds corr=, the first word is retained and only
 // whole-word correlation tokens after it are dropped, so a token-first line keeps its token and its following word
 // cannot impersonate a transition; an unrecognised word stays, so prose still matches no verb.
@@ -192,7 +192,7 @@ func keyAtNoteHead(line string) (string, bool) {
 
 var slugRe = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 
-// Note returns the text after the first colon, left-trimmed, read on the unstamped copy (fm-classify-lib.sh:573). A
+// Note returns the text after the first colon, left-trimmed, read on the unstamped copy (fm-classify-lib.sh:639). A
 // note-head key token that states the line's key is key metadata and is stripped, so both positions yield one note.
 func Note(line string) string {
 	u := Unstamped(line)
@@ -209,7 +209,7 @@ func Note(line string) string {
 	return n
 }
 
-// Key returns the decision key a line states (fm-classify-lib.sh:590 _fm_decision_key): the before-colon token wins,
+// Key returns the decision key a line states (fm-classify-lib.sh:656 _fm_decision_key): the before-colon token wins,
 // a note-head token is equivalent, no token is "default", and a malformed slug is rejected (ok=false).
 func Key(line string) (string, bool) {
 	u := Unstamped(line)
@@ -229,7 +229,7 @@ func Key(line string) (string, bool) {
 	return k, true
 }
 
-// transitionAllowed is _fm_decision_key_transition_allowed (fm-classify-lib.sh:646).
+// transitionAllowed is _fm_decision_key_transition_allowed (fm-classify-lib.sh:712).
 func transitionAllowed(key, note string) bool {
 	for _, p := range ReservedKeyPrefixes {
 		if strings.HasPrefix(key, p) {
@@ -253,7 +253,7 @@ func drop(open []Decision, key string) []Decision {
 	return out
 }
 
-// foldLine folds one line into the open set (fm-classify-lib.sh:681 _fm_decision_fold_line), the ONE place the
+// foldLine folds one line into the open set (fm-classify-lib.sh:747 _fm_decision_fold_line), the ONE place the
 // per-line open/resolved rule is written. n is the line's 1-based index.
 func foldLine(open []Decision, line string, n int, kind Kind, v Verbs) []Decision {
 	u := Unstamped(line)
@@ -280,7 +280,7 @@ func foldLine(open []Decision, line string, n int, kind Kind, v Verbs) []Decisio
 }
 
 // Fold folds a whole status history into the decisions still open, most-recently-opened last
-// (fm-classify-lib.sh:742 status_open_decisions).
+// (fm-classify-lib.sh:808 status_open_decisions).
 func Fold(lines []string, kind Kind, v Verbs) []Decision {
 	var open []Decision
 	for i, l := range lines {
@@ -305,7 +305,7 @@ func phaseKey(line string) (string, bool) {
 }
 
 // OpenActivities folds a status history into the keyed activity phases still open, most-recently-opened last
-// (fm-classify-lib.sh:1869 status_open_activities@a8572f6): a working or paused line opens (or replaces) its key's
+// (fm-classify-lib.sh:1959 status_open_activities@a8572f6): a working or paused line opens (or replaces) its key's
 // phase, and a done, failed, needs-decision, blocked, resolve or captain-held line under the same key closes it. A line
 // that states no key is its own keyless phase, published as "default": a stated [key=default] retraction (the shared
 // decision bucket a keyless decision's answer uses) does not cancel a keyless wait, while a keyless retraction does. A
@@ -394,7 +394,7 @@ func candidateRe(v Verbs) *regexp.Regexp {
 		regexp.QuoteMeta(v.held()) + `)[[:space:]:[]`)
 }
 
-// ClosingVerb returns the verb that last moved key (fm-classify-lib.sh:852 status_key_closing_verb): the opening verb
+// ClosingVerb returns the verb that last moved key (fm-classify-lib.sh:919 status_key_closing_verb): the opening verb
 // while it is still open, the closing verb (resolved, captain-held, or a ship/scout done/failed) once closed, and ""
 // when no line ever stated a transition for it.
 func ClosingVerb(lines []string, key string, kind Kind, v Verbs) string {
@@ -446,7 +446,7 @@ func compile(pattern string) *regexp.Regexp {
 	return re
 }
 
-// CaptainRelevant reports whether a line is work the leader must see (fm-classify-lib.sh:216
+// CaptainRelevant reports whether a line is work the leader must see (fm-classify-lib.sh:222
 // status_is_captain_relevant). Verb-aware: working, resolved, captain-held and paused never match from prose; with no
 // override the terminal verbs always match; otherwise the pattern (override, else DefaultCaptainRE) is matched on the
 // unstamped line. override is FM_CAPTAIN_RE: "" means unset.
@@ -469,7 +469,7 @@ func CaptainRelevant(line, override string) bool {
 	return compile(pattern).MatchString(Unstamped(line))
 }
 
-// IsTerminalVerb reports a real terminal captain verb (fm-classify-lib.sh:197); free-text tokens never count.
+// IsTerminalVerb reports a real terminal captain verb (fm-classify-lib.sh:203); free-text tokens never count.
 func IsTerminalVerb(line string) bool {
 	switch Verb(line) {
 	case "done", "needs-decision", "blocked", "failed":
@@ -478,7 +478,7 @@ func IsTerminalVerb(line string) bool {
 	return false
 }
 
-// IsPaused / IsCaptainHeld read the verb only (fm-classify-lib.sh:238,251).
+// IsPaused / IsCaptainHeld read the verb only (fm-classify-lib.sh:244,257).
 func IsPaused(line string) bool      { return line != "" && Verb(line) == PausedVerb }
 func IsCaptainHeld(line string) bool { return line != "" && Verb(line) == CaptainHeldVerb }
 
@@ -518,7 +518,7 @@ func Latest(lines []string, override string) string {
 	return fallback
 }
 
-// Actionable returns every actionable event of a span, in order (fm-classify-lib.sh:2126
+// Actionable returns every actionable event of a span, in order (fm-classify-lib.sh:2216
 // status_span_first_actionable_record), and whether the span carries a captain decision (needsDecision). A keyed
 // needs-decision/blocked counts only when it is the live origin of that key's open record in the span's own fold, so
 // a decision the span already closed is not actionable; a malformed key is actionable as-is; a reserved key spoken by
@@ -568,7 +568,7 @@ func Actionable(lines []string, kind Kind, override string) (events []string, ne
 	return events, needsDecision
 }
 
-// isPendingReplyEscalation is _fm_is_pending_reply_escalation (fm-classify-lib.sh:661).
+// isPendingReplyEscalation is _fm_is_pending_reply_escalation (fm-classify-lib.sh:727).
 func isPendingReplyEscalation(key, note string) bool {
 	if !strings.HasPrefix(key, "pending-reply-") {
 		return false

@@ -2,7 +2,7 @@
 // 2026-09-21, wave 3), never something a backend infers from a UI. One record per story at
 // <epic>/.cox/sessions/<story>.busy.json holds {schema, state, gen, seq, ts, source, event}, beside the armed-gen
 // sidecar <story>.busy-gen and the native-progress marker <story>.busy-progress. It ports firstmate's semantic busy-state
-// contract (references/firstmate/bin/fm-busy-lib.sh and fm-busy-event.sh @1e0e773): a gen minted at Arm binds one
+// contract (references/firstmate/bin/fm-busy-lib.sh and fm-busy-event.sh @a8572f6): a gen minted at Arm binds one
 // incarnation, every Apply must present the armed gen (a stale gen is rejected so a hook that outlives its incarnation
 // fails closed), and seq advances under a writer lock so an out-of-order Apply can never regress a newer record. Arm also
 // stamps the story's harness and the sources that harness trusts (from its capability card). Classify returns

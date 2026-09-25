@@ -1,6 +1,7 @@
 // Port tests for internal/bearings: firstmate's session-start digest and memory-curation contracts, translated case by
 // case from firstmate@1e0e773 (epic cox-supervision-port, wave 1 story cox-supervision-port-session) and turned green
-// by wave 2 (story cox-supervision-port-w2-bearings), so the file runs untagged under go test ./... . Every case runs
+// by wave 2 (story cox-supervision-port-w2-bearings), so the file runs untagged under go test ./... ; its citations were
+// re-pinned @a8572f6 by epic cox-refresh (ADR 0021 Decision 2). Every case runs
 // against the Bearings interface below through the realBearings adapter. Firstmate names map to cox names as follows:
 // home -> workspace, fleet lock -> leader lease, bootstrap -> cox doctor, state/*.status -> story status wakes,
 // data/backlog.md -> BACKLOG.md, data/captain.md, data/captain-shared.md, data/learnings.md ->
@@ -46,7 +47,7 @@ const (
 // pinned, learnings.md aging (captain ruling 2026-09-24). The budget lives in cox/notes-budget.
 const (
 	notesBudgetRel     = "cox/notes-budget"
-	defaultNotesBudget = 7500 // docs/configuration.md:262
+	defaultNotesBudget = 7500 // docs/configuration.md:281
 	agingDays          = 30   // stow SKILL.md:38
 	perishableDays     = 7    // stow SKILL.md:39
 	agingPasses        = 10   // stow SKILL.md:70
@@ -67,9 +68,9 @@ const (
 
 // Bounds ported verbatim from firstmate's cases.
 const (
-	defaultStatusTail  = 5   // fm: tests/fm-session-start.test.sh:1107
-	statusLineCap      = 220 // fm: tests/fm-session-start.test.sh:1147
-	defaultQueuedLimit = 20  // fm: tests/fm-session-start.test.sh:1744
+	defaultStatusTail  = 5   // fm: tests/fm-session-start.test.sh:1107@a8572f6
+	statusLineCap      = 220 // fm: tests/fm-session-start.test.sh:1147@a8572f6
+	defaultQueuedLimit = 20  // fm: tests/fm-session-start.test.sh:1744@a8572f6
 )
 
 // The digest and curation types are the package's own.
@@ -327,7 +328,7 @@ func TestPortSessionStart(t *testing.T) {
 	const s = "FM/fm-session-start/"
 
 	t.Run(s+"context_digest_absent_empty_present", func(t *testing.T) {
-		// fm: tests/fm-session-start.test.sh:722
+		// fm: tests/fm-session-start.test.sh:722@a8572f6
 		w := newWorld(t)
 		for _, rel := range notesFiles {
 			w.write(rel, "") // present, empty; BACKLOG.md deliberately absent
@@ -349,7 +350,7 @@ func TestPortSessionStart(t *testing.T) {
 	})
 
 	t.Run(s+"lock_refusal_read_only_path", func(t *testing.T) {
-		// fm: tests/fm-session-start.test.sh:767
+		// fm: tests/fm-session-start.test.sh:767@a8572f6
 		w := newWorld(t)
 		gen := w.wake("s1", wake.KindWorkerDone, "done: surfaced before refusal")
 		if ok := got(impl.Acquire(w.ws, "leader-other", func(string) bool { return true }))(t, mechLease); !ok {
@@ -379,7 +380,7 @@ func TestPortSessionStart(t *testing.T) {
 	})
 
 	t.Run(s+"lock_write_failure_read_only_path", func(t *testing.T) {
-		// fm: tests/fm-session-start.test.sh:828
+		// fm: tests/fm-session-start.test.sh:828@a8572f6
 		w := newWorld(t)
 		gen := w.wake("a", wake.KindWorkerDone, "done: must remain queued")
 		ctl := filepath.Join(w.ws, ".cox")
@@ -399,7 +400,7 @@ func TestPortSessionStart(t *testing.T) {
 	})
 
 	t.Run(s+"session_lock_concurrent_single_winner", func(t *testing.T) {
-		// fm: tests/fm-session-start.test.sh:887
+		// fm: tests/fm-session-start.test.sh:887@a8572f6
 		w := newWorld(t)
 		const n = 40
 		var wg sync.WaitGroup
@@ -431,7 +432,7 @@ func TestPortSessionStart(t *testing.T) {
 	})
 
 	t.Run(s+"output_ordering_diagnostics_lead", func(t *testing.T) {
-		// fm: tests/fm-session-start.test.sh:966
+		// fm: tests/fm-session-start.test.sh:966@a8572f6
 		w := newWorld(t)
 		w.story("task-a")
 		w.status("task-a", "working: step 1")
@@ -455,7 +456,7 @@ func TestPortSessionStart(t *testing.T) {
 	})
 
 	t.Run(s+"read_once_contract_is_stated_once_before_its_subject", func(t *testing.T) {
-		// fm: tests/fm-session-start.test.sh:1024
+		// fm: tests/fm-session-start.test.sh:1024@a8572f6
 		w := newWorld(t)
 		d := digest(t, mechDigest, w.opts())
 		contains(t, d.Text, "Do NOT re-read any of them after reading this digest", "contract lost its core instruction")
@@ -467,7 +468,7 @@ func TestPortSessionStart(t *testing.T) {
 	})
 
 	t.Run(s+"status_tail_bounding", func(t *testing.T) {
-		// fm: tests/fm-session-start.test.sh:1091
+		// fm: tests/fm-session-start.test.sh:1091@a8572f6
 		w := newWorld(t)
 		w.story("task-a")
 		for i := 1; i <= 7; i++ {
@@ -487,7 +488,7 @@ func TestPortSessionStart(t *testing.T) {
 	})
 
 	t.Run(s+"status_tail_line_cap", func(t *testing.T) {
-		// fm: tests/fm-session-start.test.sh:1123
+		// fm: tests/fm-session-start.test.sh:1123@a8572f6
 		w := newWorld(t)
 		w.story("task-cap")
 		lede := "needs-decision: [key=cap] pick the rendering strategy"
@@ -518,7 +519,7 @@ func TestPortSessionStart(t *testing.T) {
 	})
 
 	t.Run(s+"orphan_status_logs_are_printed", func(t *testing.T) {
-		// fm: tests/fm-session-start.test.sh:1161
+		// fm: tests/fm-session-start.test.sh:1161@a8572f6
 		w := newWorld(t)
 		w.story("task-a")
 		w.status("task-a", "matched: surfaced once")
@@ -539,7 +540,7 @@ func TestPortSessionStart(t *testing.T) {
 	})
 
 	t.Run(s+"endpoint_liveness_tmux", func(t *testing.T) {
-		// fm: tests/fm-session-start.test.sh:1330
+		// fm: tests/fm-session-start.test.sh:1330@a8572f6
 		w := newWorld(t)
 		w.story("task-live")
 		w.story("task-dead")
@@ -551,7 +552,7 @@ func TestPortSessionStart(t *testing.T) {
 	})
 
 	t.Run(s+"composition_invokes_real_scripts", func(t *testing.T) {
-		// fm: tests/fm-session-start.test.sh:1372
+		// fm: tests/fm-session-start.test.sh:1372@a8572f6
 		w := newWorld(t)
 		w.story("task-z")
 		w.wake("task-z", wake.KindQuestion, "needs-decision: pick a library")
@@ -565,7 +566,7 @@ func TestPortSessionStart(t *testing.T) {
 	})
 
 	t.Run(s+"inactive_reconcile_never_blocks_the_digest", func(t *testing.T) {
-		// fm: tests/fm-session-start.test.sh:1493
+		// fm: tests/fm-session-start.test.sh:1493@a8572f6
 		w := newWorld(t)
 		w.story("slow-child")
 		w.transition("slow-child", state.Submitted, state.Working)
@@ -624,7 +625,7 @@ func TestPortSessionStart(t *testing.T) {
 	})
 
 	t.Run(s+"unreachable_network_never_blocks_the_digest", func(t *testing.T) {
-		// fm: tests/fm-session-start.test.sh:1582
+		// fm: tests/fm-session-start.test.sh:1582@a8572f6
 		w := newWorld(t)
 		done := make(chan struct{})
 		o := w.opts()
@@ -647,7 +648,7 @@ func TestPortSessionStart(t *testing.T) {
 	})
 
 	t.Run(s+"deferred_result_reaches_the_agent_when_the_digest_cannot_print_it", func(t *testing.T) {
-		// fm: tests/fm-session-start.test.sh:1619
+		// fm: tests/fm-session-start.test.sh:1619@a8572f6
 		w := newWorld(t)
 		o := w.opts()
 		o.Forge = func() error { time.Sleep(8 * time.Second); return errors.New("gh auth: unreachable") }
@@ -669,7 +670,7 @@ func TestPortSessionStart(t *testing.T) {
 	})
 
 	t.Run(s+"read_only_session_declares_skipped_network_checks", func(t *testing.T) {
-		// fm: tests/fm-session-start.test.sh:1639
+		// fm: tests/fm-session-start.test.sh:1639@a8572f6
 		w := newWorld(t)
 		got(impl.Acquire(w.ws, "leader-other", func(string) bool { return true }))(t, mechLease)
 		o := w.opts()
@@ -685,7 +686,7 @@ func TestPortSessionStart(t *testing.T) {
 	})
 
 	t.Run(s+"backlog_compact_tasks_axi_omits_bodies_and_keeps_metadata", func(t *testing.T) {
-		// fm: tests/fm-session-start.test.sh:1726
+		// fm: tests/fm-session-start.test.sh:1726@a8572f6
 		w := newWorld(t)
 		w.write("BACKLOG.md", longBacklog(3))
 		d := digest(t, mechBacklog, w.opts())
@@ -701,7 +702,7 @@ func TestPortSessionStart(t *testing.T) {
 	})
 
 	t.Run(s+"backlog_queued_bound_discloses_its_remainder", func(t *testing.T) {
-		// fm: tests/fm-session-start.test.sh:1786
+		// fm: tests/fm-session-start.test.sh:1786@a8572f6
 		w := newWorld(t)
 		w.write("BACKLOG.md", longBacklog(7))
 		o := w.opts()
@@ -717,7 +718,7 @@ func TestPortSessionStart(t *testing.T) {
 	})
 
 	t.Run(s+"backlog_compact_manual_backend_skips_indented_bodies", func(t *testing.T) {
-		// fm: tests/fm-session-start.test.sh:1819
+		// fm: tests/fm-session-start.test.sh:1819@a8572f6
 		// A cox row's "body" is its evidence prose below the table (longBacklog's "## Evidence"), not an indented line.
 		w := newWorld(t)
 		w.write("BACKLOG.md", longBacklog(25))
@@ -736,7 +737,7 @@ func TestPortSessionStart(t *testing.T) {
 	})
 
 	t.Run(s+"runtime_bound_truncates_loudly_and_exits_zero", func(t *testing.T) {
-		// fm: tests/fm-session-start.test.sh:1934
+		// fm: tests/fm-session-start.test.sh:1934@a8572f6
 		w := newWorld(t)
 		marker := filepath.Join(t.TempDir(), "hung")
 		o := w.opts()
@@ -762,7 +763,7 @@ func TestPortSessionStart(t *testing.T) {
 	})
 
 	t.Run(s+"portable_timeout_escalates_term_resistant_process", func(t *testing.T) {
-		// fm: tests/fm-session-start.test.sh:1984
+		// fm: tests/fm-session-start.test.sh:1984@a8572f6
 		code := got(impl.RunBounded(time.Second, "perl", "-e", `$SIG{TERM}="IGNORE"; sleep 600`))(t, mechBound)
 		if code != 124 {
 			t.Errorf("TERM-resistant child: exit %d, want 124", code)
@@ -774,7 +775,7 @@ func TestPortSessionStart(t *testing.T) {
 	})
 
 	t.Run(s+"runtime_bound_leaves_a_healthy_digest_untouched", func(t *testing.T) {
-		// fm: tests/fm-session-start.test.sh:2016
+		// fm: tests/fm-session-start.test.sh:2016@a8572f6
 		w := newWorld(t)
 		d := digest(t, mechBound, w.opts())
 		notContains(t, d.Text, "STARTUP TRUNCATED - SESSION START HIT ITS", "an in-time digest reported itself truncated")
@@ -785,7 +786,7 @@ func TestPortSessionStart(t *testing.T) {
 	})
 
 	t.Run(s+"reemit_skips_startup_sweeps_but_keeps_the_wake_drain", func(t *testing.T) {
-		// fm: tests/fm-session-start.test.sh:2103
+		// fm: tests/fm-session-start.test.sh:2103@a8572f6
 		w := newWorld(t)
 		w.wake("task-r", wake.KindWorkerDone, "done: queued after startup")
 		o := w.opts()
@@ -810,7 +811,7 @@ func TestPortSessionStart(t *testing.T) {
 	})
 
 	t.Run(s+"agents_baseline_stays_at_true_start_and_reemits_on_every_drifted_pi_compact", func(t *testing.T) {
-		// fm: tests/fm-session-start.test.sh:2146
+		// fm: tests/fm-session-start.test.sh:2146@a8572f6
 		w := newWorld(t)
 		w.write("AGENTS.md", "LEADER_TEST_INSTRUCTION=original\n")
 		o := w.opts()
@@ -836,7 +837,7 @@ func TestPortSessionStart(t *testing.T) {
 	})
 
 	t.Run(s+"read_only_pi_compact_refreshes_against_its_own_session_identity", func(t *testing.T) {
-		// fm: tests/fm-session-start.test.sh:2232
+		// fm: tests/fm-session-start.test.sh:2232@a8572f6
 		w := newWorld(t)
 		w.write("AGENTS.md", "READ_ONLY_AGENTS=original\n")
 		o := w.opts()
@@ -855,7 +856,7 @@ func TestPortSessionStart(t *testing.T) {
 	})
 
 	t.Run(s+"codex_unreachable_reset_sources_do_not_claim_instruction_refresh", func(t *testing.T) {
-		// fm: tests/fm-session-start.test.sh:2267
+		// fm: tests/fm-session-start.test.sh:2267@a8572f6
 		w := newWorld(t)
 		o := w.opts()
 		o.Harness = "codex"
@@ -871,7 +872,7 @@ func TestPortSessionStart(t *testing.T) {
 	})
 
 	t.Run(s+"agents_baseline_requires_sha256_and_successful_completion", func(t *testing.T) {
-		// fm: tests/fm-session-start.test.sh:2294
+		// fm: tests/fm-session-start.test.sh:2294@a8572f6
 		// The sha256-tool-failure half is n/a (Go's crypto/sha256 cannot be absent); the completion half is ported.
 		w := newWorld(t)
 		w.write("AGENTS.md", "AGENTS_SHA_TEST=original\n")
@@ -890,7 +891,7 @@ func TestPortSessionStart(t *testing.T) {
 	})
 
 	t.Run(s+"reemit_keeps_repair_ownership_with_the_lock_holder", func(t *testing.T) {
-		// fm: tests/fm-session-start.test.sh:2333
+		// fm: tests/fm-session-start.test.sh:2333@a8572f6
 		w := newWorld(t)
 		o := w.opts()
 		digest(t, mechReemit, o) // this session holds the lease
@@ -905,14 +906,14 @@ func TestPortSessionStart(t *testing.T) {
 	})
 
 	t.Run(s+"fleet_digest_empty_fleet", func(t *testing.T) {
-		// fm: tests/fm-session-start.test.sh:2374
+		// fm: tests/fm-session-start.test.sh:2374@a8572f6
 		w := newWorld(t)
 		d := digest(t, mechDigest, w.opts())
 		contains(t, between(d.Text, hFleet, hNotes), "(none)", "empty fleet did not report (none)")
 	})
 
 	t.Run(s+"supervision_block_exactly_one_and_pi_diagnostic", func(t *testing.T) {
-		// fm: tests/fm-session-start.test.sh:2474
+		// fm: tests/fm-session-start.test.sh:2474@a8572f6
 		w := newWorld(t)
 		o := w.opts()
 		o.Harness = "pi"
@@ -927,7 +928,7 @@ func TestPortSessionStart(t *testing.T) {
 	})
 
 	t.Run(s+"pi_diagnostic_rejects_stale_loaded_marker", func(t *testing.T) {
-		// fm: tests/fm-session-start.test.sh:2524
+		// fm: tests/fm-session-start.test.sh:2524@a8572f6
 		w := newWorld(t)
 		w.write(".cox/pi-leader-extension-loaded", "stale-extension-version\n"+fmt.Sprint(os.Getpid())+"\n")
 		o := w.opts()
@@ -937,7 +938,7 @@ func TestPortSessionStart(t *testing.T) {
 	})
 
 	t.Run(s+"pi_diagnostic_rejects_handoff_generation_marker", func(t *testing.T) {
-		// fm: tests/fm-session-start.test.sh:2551
+		// fm: tests/fm-session-start.test.sh:2551@a8572f6
 		w := newWorld(t)
 		w.write(".cox/pi-leader-extension-loaded", pi.ExtensionHash()+"\n"+fmt.Sprint(os.Getpid())+"\ngeneration=1 phase=handoff\n")
 		o := w.opts()
@@ -947,7 +948,7 @@ func TestPortSessionStart(t *testing.T) {
 	})
 
 	t.Run(s+"pi_diagnostic_accepts_prelock_loaded_marker", func(t *testing.T) {
-		// fm: tests/fm-session-start.test.sh:2580
+		// fm: tests/fm-session-start.test.sh:2580@a8572f6
 		w := newWorld(t)
 		w.write(".cox/pi-leader-extension-loaded", pi.ExtensionHash()+"\n"+fmt.Sprint(os.Getpid())+"\n")
 		o := w.opts()
@@ -957,7 +958,7 @@ func TestPortSessionStart(t *testing.T) {
 	})
 
 	t.Run(s+"pi_diagnostic_rejects_missing_turnend_guard_marker", func(t *testing.T) {
-		// fm: tests/fm-session-start.test.sh:2650
+		// fm: tests/fm-session-start.test.sh:2650@a8572f6
 		w := newWorld(t)
 		w.write(".cox/pi-leader-extension-loaded", pi.ExtensionHash()+"\n"+fmt.Sprint(os.Getpid())+"\nturnend=absent\n")
 		o := w.opts()
@@ -967,7 +968,7 @@ func TestPortSessionStart(t *testing.T) {
 	})
 
 	t.Run(s+"pi_diagnostic_rejects_previous_session_loaded_marker", func(t *testing.T) {
-		// fm: tests/fm-session-start.test.sh:2675
+		// fm: tests/fm-session-start.test.sh:2675@a8572f6
 		w := newWorld(t)
 		w.write(".cox/pi-leader-extension-loaded", pi.ExtensionHash()+"\n999999\n")
 		o := w.opts()
@@ -1023,7 +1024,7 @@ func (w *world) notes(captain, learnings []string) {
 	}
 }
 
-// notesTotal is the reference total: the three memory files' estimates summed (docs/configuration.md:261).
+// notesTotal is the reference total: the three memory files' estimates summed (docs/configuration.md:280).
 func (w *world) notesTotal() int {
 	n := 0
 	for _, rel := range notesFiles {
@@ -1051,7 +1052,7 @@ func (w *world) transition(story string, from, to state.State) {
 	}
 }
 
-// estimate is the reference startup-memory estimate: ceil(UTF-8 bytes / 3) (docs/configuration.md:268).
+// estimate is the reference startup-memory estimate: ceil(UTF-8 bytes / 3) (docs/configuration.md:287).
 func estimate(s string) int { return (len(s) + 2) / 3 }
 
 func day(s string) time.Time {
@@ -1190,7 +1191,7 @@ func TestPortStowCascade(t *testing.T) {
 	const s = "FM/fm-stow-cascade/"
 
 	t.Run(s+"budget_is_enforced_per_home_and_never_summed", func(t *testing.T) {
-		// fm: tests/fm-stow-cascade.test.sh:125
+		// fm: tests/fm-stow-cascade.test.sh:125@a8572f6
 		over, within := newWorld(t), newWorld(t)
 		for _, w := range []*world{over, within} {
 			w.write(notesBudgetRel, "10\n")
@@ -1215,7 +1216,7 @@ func TestPortStowCascade(t *testing.T) {
 	})
 
 	t.Run(s+"receipt_facts_are_complete_and_show_before_and_after", func(t *testing.T) {
-		// fm: tests/fm-stow-cascade.test.sh:254
+		// fm: tests/fm-stow-cascade.test.sh:254@a8572f6
 		w := newWorld(t)
 		w.write(notesBudgetRel, "45\n")
 		w.notes(nil, []string{
@@ -1247,7 +1248,7 @@ func TestPortStowSkill(t *testing.T) {
 	now := day("2026-09-24")
 
 	t.Run(s+"markers_name_their_tier", func(t *testing.T) {
-		// fm: .agents/skills/stow/SKILL.md:21
+		// fm: .agents/skills/stow/SKILL.md:21@a8572f6
 		for _, c := range []struct{ line, tier, date string }{
 			{"- fact <!--a:2026-09-01-->", "aging", "2026-09-01"},
 			{"- fact <!--p:2026-09-20-->", "perishable", "2026-09-20"},
@@ -1262,7 +1263,7 @@ func TestPortStowSkill(t *testing.T) {
 	})
 
 	t.Run(s+"pass_counter_marker_absent_means_zero", func(t *testing.T) {
-		// fm: .agents/skills/stow/SKILL.md:23
+		// fm: .agents/skills/stow/SKILL.md:23@a8572f6
 		e := got(impl.Classify("learnings.md", "- fact <!--a:2026-09-20/6-->", now, true))(t, mechTiers)
 		if e.Passes != 6 {
 			t.Errorf("counter /6 read as %d", e.Passes)
@@ -1274,7 +1275,7 @@ func TestPortStowSkill(t *testing.T) {
 	})
 
 	t.Run(s+"pinned_is_exempt_from_decay", func(t *testing.T) {
-		// fm: .agents/skills/stow/SKILL.md:37
+		// fm: .agents/skills/stow/SKILL.md:37@a8572f6
 		e := got(impl.Classify("learnings.md", "- ancient but pinned <!--P-->", now.AddDate(5, 0, 0), true))(t, mechTiers)
 		if e.Stale {
 			t.Error("a pinned entry read a clock")
@@ -1282,7 +1283,7 @@ func TestPortStowSkill(t *testing.T) {
 	})
 
 	t.Run(s+"aging_is_stale_at_30_days", func(t *testing.T) {
-		// fm: .agents/skills/stow/SKILL.md:38
+		// fm: .agents/skills/stow/SKILL.md:38@a8572f6
 		for _, c := range []struct {
 			age   int
 			stale bool
@@ -1295,7 +1296,7 @@ func TestPortStowSkill(t *testing.T) {
 	})
 
 	t.Run(s+"perishable_is_stale_at_7_days", func(t *testing.T) {
-		// fm: .agents/skills/stow/SKILL.md:39
+		// fm: .agents/skills/stow/SKILL.md:39@a8572f6
 		for _, c := range []struct {
 			age   int
 			stale bool
@@ -1308,7 +1309,7 @@ func TestPortStowSkill(t *testing.T) {
 	})
 
 	t.Run(s+"tier_defaults_are_section_scoped", func(t *testing.T) {
-		// fm: .agents/skills/stow/SKILL.md:45
+		// fm: .agents/skills/stow/SKILL.md:45@a8572f6
 		if e := got(impl.Classify("captain.md", "- the captain merges", now, false))(t, mechTiers); e.Tier != "pinned" {
 			t.Errorf("unmarked captain.md entry tier %q, want pinned", e.Tier)
 		}
@@ -1318,7 +1319,7 @@ func TestPortStowSkill(t *testing.T) {
 	})
 
 	t.Run(s+"marker_and_header_bytes_count_toward_the_budget", func(t *testing.T) {
-		// fm: .agents/skills/stow/SKILL.md:47
+		// fm: .agents/skills/stow/SKILL.md:47@a8572f6
 		w := newWorld(t)
 		w.notes([]string{"- pinned"}, []string{"- fact <!--a:2026-09-20-->"})
 		r := got(impl.Budget(w.ws))(t, mechBudget)
@@ -1330,7 +1331,7 @@ func TestPortStowSkill(t *testing.T) {
 	})
 
 	t.Run(s+"header_pointer_is_one_line_and_added_once", func(t *testing.T) {
-		// fm: .agents/skills/stow/SKILL.md:48
+		// fm: .agents/skills/stow/SKILL.md:48@a8572f6
 		w := newWorld(t)
 		w.write(captainRel, "# Captain\n\n- pinned\n")
 		got(impl.Curate(w.ws, now, nil))(t, mechCurate)
@@ -1341,7 +1342,7 @@ func TestPortStowSkill(t *testing.T) {
 	})
 
 	t.Run(s+"unmarked_entry_takes_its_default_tier_never_destructive", func(t *testing.T) {
-		// fm: .agents/skills/stow/SKILL.md:53
+		// fm: .agents/skills/stow/SKILL.md:53@a8572f6
 		w := newWorld(t)
 		w.notes([]string{"- the captain merges"}, nil)
 		got(impl.Curate(w.ws, now, nil))(t, mechCurate)
@@ -1349,7 +1350,7 @@ func TestPortStowSkill(t *testing.T) {
 	})
 
 	t.Run(s+"pass_horizon_absent_ignores_counters", func(t *testing.T) {
-		// fm: .agents/skills/stow/SKILL.md:61
+		// fm: .agents/skills/stow/SKILL.md:61@a8572f6
 		w := newWorld(t)
 		w.notes(nil, []string{"- fact <!--a:2026-09-20/99-->", "- other <!--a:2026-09-20-->"})
 		got(impl.Curate(w.ws, now, nil))(t, mechCurate)
@@ -1359,7 +1360,7 @@ func TestPortStowSkill(t *testing.T) {
 	})
 
 	t.Run(s+"pass_horizon_aging_stale_at_10_passes", func(t *testing.T) {
-		// fm: .agents/skills/stow/SKILL.md:70
+		// fm: .agents/skills/stow/SKILL.md:70@a8572f6
 		for _, c := range []struct {
 			passes int
 			stale  bool
@@ -1372,7 +1373,7 @@ func TestPortStowSkill(t *testing.T) {
 	})
 
 	t.Run(s+"pass_horizon_perishable_stale_at_3_passes", func(t *testing.T) {
-		// fm: .agents/skills/stow/SKILL.md:71
+		// fm: .agents/skills/stow/SKILL.md:71@a8572f6
 		for _, c := range []struct {
 			passes int
 			stale  bool
@@ -1385,7 +1386,7 @@ func TestPortStowSkill(t *testing.T) {
 	})
 
 	t.Run(s+"pass_horizon_reinforcement_clears_the_counter", func(t *testing.T) {
-		// fm: .agents/skills/stow/SKILL.md:72
+		// fm: .agents/skills/stow/SKILL.md:72@a8572f6
 		w := newWorld(t)
 		w.write("cox/notes-pass-horizon", "")
 		w.notes(nil, []string{"- exercised <!--a:2026-09-01/7-->", "- idle <!--a:2026-09-20/2-->"})
@@ -1396,7 +1397,7 @@ func TestPortStowSkill(t *testing.T) {
 	})
 
 	t.Run(s+"pass_horizon_removal_leaves_counters_in_place", func(t *testing.T) {
-		// fm: .agents/skills/stow/SKILL.md:74
+		// fm: .agents/skills/stow/SKILL.md:74@a8572f6
 		w := newWorld(t)
 		w.write("cox/notes-pass-horizon", "")
 		w.notes(nil, []string{"- idle <!--a:2026-09-20/5-->"})
@@ -1410,7 +1411,7 @@ func TestPortStowSkill(t *testing.T) {
 	})
 
 	t.Run(s+"rejected_budget_setting_is_an_exception_not_a_default", func(t *testing.T) {
-		// fm: .agents/skills/stow/SKILL.md:84
+		// fm: .agents/skills/stow/SKILL.md:84@a8572f6
 		w := newWorld(t)
 		w.write(notesBudgetRel, "abc\n")
 		w.notes(nil, nil)
@@ -1424,7 +1425,7 @@ func TestPortStowSkill(t *testing.T) {
 	})
 
 	t.Run(s+"absent_notes_are_not_manufactured", func(t *testing.T) {
-		// fm: .agents/skills/stow/SKILL.md:87
+		// fm: .agents/skills/stow/SKILL.md:87@a8572f6
 		w := newWorld(t)
 		got(impl.Curate(w.ws, now, nil))(t, mechCurate)
 		for _, rel := range notesFiles {
@@ -1435,7 +1436,7 @@ func TestPortStowSkill(t *testing.T) {
 	})
 
 	t.Run(s+"new_entries_are_stamped_with_today_and_tier", func(t *testing.T) {
-		// fm: .agents/skills/stow/SKILL.md:101
+		// fm: .agents/skills/stow/SKILL.md:101@a8572f6
 		w := newWorld(t)
 		w.notes(nil, []string{"- a brand new learning"})
 		got(impl.Curate(w.ws, now, []string{"- a brand new learning"}))(t, mechCurate)
@@ -1443,7 +1444,7 @@ func TestPortStowSkill(t *testing.T) {
 	})
 
 	t.Run(s+"pass_tick_increments_unreinforced_counters", func(t *testing.T) {
-		// fm: .agents/skills/stow/SKILL.md:103
+		// fm: .agents/skills/stow/SKILL.md:103@a8572f6
 		w := newWorld(t)
 		w.write("cox/notes-pass-horizon", "")
 		w.notes(nil, []string{"- idle <!--a:2026-09-20-->"})
@@ -1452,7 +1453,7 @@ func TestPortStowSkill(t *testing.T) {
 	})
 
 	t.Run(s+"stale_unreinforced_entry_is_archived_not_kept", func(t *testing.T) {
-		// fm: .agents/skills/stow/SKILL.md:104
+		// fm: .agents/skills/stow/SKILL.md:104@a8572f6
 		w := newWorld(t)
 		w.notes(nil, []string{"- stale learning <!--a:2026-08-01-->", "- stale but re-proved <!--a:2026-08-01-->"})
 		got(impl.Curate(w.ws, now, []string{"- stale but re-proved"}))(t, mechCurate)
@@ -1463,7 +1464,7 @@ func TestPortStowSkill(t *testing.T) {
 	})
 
 	t.Run(s+"budget_eviction_takes_oldest_reinforced_aging_first", func(t *testing.T) {
-		// fm: .agents/skills/stow/SKILL.md:114
+		// fm: .agents/skills/stow/SKILL.md:114@a8572f6
 		w := newWorld(t)
 		w.notes([]string{"- pinned fact"}, []string{
 			"- older " + strings.Repeat("o", 90) + " <!--a:2026-09-01-->",
@@ -1483,7 +1484,7 @@ func TestPortStowSkill(t *testing.T) {
 	})
 
 	t.Run(s+"convergence_precondition_skips_futile_eviction", func(t *testing.T) {
-		// fm: .agents/skills/stow/SKILL.md:115
+		// fm: .agents/skills/stow/SKILL.md:115@a8572f6
 		w := newWorld(t)
 		w.notes([]string{"- pinned " + strings.Repeat("p", 300)}, []string{"- small <!--a:2026-09-20-->"})
 		w.write(notesBudgetRel, "10\n")
@@ -1496,7 +1497,7 @@ func TestPortStowSkill(t *testing.T) {
 	})
 
 	t.Run(s+"pinned_is_never_moved_automatically", func(t *testing.T) {
-		// fm: .agents/skills/stow/SKILL.md:116
+		// fm: .agents/skills/stow/SKILL.md:116@a8572f6
 		w := newWorld(t)
 		w.notes([]string{"- pinned " + strings.Repeat("p", 300)}, []string{"- fact <!--P-->"})
 		w.write(notesBudgetRel, "10\n")
@@ -1507,7 +1508,7 @@ func TestPortStowSkill(t *testing.T) {
 	})
 
 	t.Run(s+"over_budget_never_ends_as_an_accepted_exception", func(t *testing.T) {
-		// fm: .agents/skills/stow/SKILL.md:126
+		// fm: .agents/skills/stow/SKILL.md:126@a8572f6
 		w := newWorld(t)
 		w.notes([]string{"- pinned " + strings.Repeat("p", 300)}, nil)
 		w.write(notesBudgetRel, "10\n")
@@ -1521,7 +1522,7 @@ func TestPortStowSkill(t *testing.T) {
 	})
 
 	t.Run(s+"archive_is_a_move_with_provenance_under_a_dated_heading", func(t *testing.T) {
-		// fm: .agents/skills/stow/SKILL.md:134
+		// fm: .agents/skills/stow/SKILL.md:134@a8572f6
 		w := newWorld(t)
 		w.notes(nil, []string{"- stale learning <!--a:2026-08-01-->"})
 		got(impl.Curate(w.ws, now, nil))(t, mechCurate)
@@ -1531,7 +1532,7 @@ func TestPortStowSkill(t *testing.T) {
 	})
 
 	t.Run(s+"archive_is_never_counted_by_the_budget", func(t *testing.T) {
-		// fm: .agents/skills/stow/SKILL.md:134
+		// fm: .agents/skills/stow/SKILL.md:134@a8572f6
 		w := newWorld(t)
 		w.notes(nil, nil)
 		w.write(archiveRel, strings.Repeat("archived line\n", 500))
@@ -1542,7 +1543,7 @@ func TestPortStowSkill(t *testing.T) {
 	})
 
 	t.Run(s+"archive_counter_reason_only_when_the_pass_horizon_caused_it", func(t *testing.T) {
-		// fm: .agents/skills/stow/SKILL.md:136
+		// fm: .agents/skills/stow/SKILL.md:136@a8572f6
 		w := newWorld(t)
 		w.write("cox/notes-pass-horizon", "")
 		w.notes(nil, []string{"- by passes <!--a:2026-09-20/9-->", "- by days <!--a:2026-08-01/2-->"})
@@ -1553,7 +1554,7 @@ func TestPortStowSkill(t *testing.T) {
 	})
 
 	t.Run(s+"unmarked_captain_entry_stays_pinned_through_migration", func(t *testing.T) {
-		// fm: .agents/skills/stow/SKILL.md:252
+		// fm: .agents/skills/stow/SKILL.md:252@a8572f6
 		w := newWorld(t)
 		w.notes([]string{"- unmarked preference"}, nil)
 		got(impl.Curate(w.ws, now.AddDate(1, 0, 0), nil))(t, mechCurate)
@@ -1561,7 +1562,7 @@ func TestPortStowSkill(t *testing.T) {
 	})
 
 	t.Run(s+"unevidenced_unmarked_learning_consumes_one_grace_cycle", func(t *testing.T) {
-		// fm: .agents/skills/stow/SKILL.md:254
+		// fm: .agents/skills/stow/SKILL.md:254@a8572f6
 		w := newWorld(t)
 		w.notes(nil, []string{"- legacy learning"})
 		got(impl.Curate(w.ws, now, nil))(t, mechCurate)
@@ -1573,7 +1574,7 @@ func TestPortStowSkill(t *testing.T) {
 	})
 
 	t.Run(s+"grace_entry_resolves_on_the_next_pass", func(t *testing.T) {
-		// fm: .agents/skills/stow/SKILL.md:255
+		// fm: .agents/skills/stow/SKILL.md:255@a8572f6
 		w := newWorld(t)
 		w.notes(nil, []string{"- confirmed legacy <!--g-->", "- unconfirmed legacy <!--g-->"})
 		got(impl.Curate(w.ws, now, []string{"- confirmed legacy"}))(t, mechCurate)
@@ -1582,7 +1583,7 @@ func TestPortStowSkill(t *testing.T) {
 	})
 
 	t.Run(s+"receipt_reports_budget_before_and_after", func(t *testing.T) {
-		// fm: .agents/skills/stow/SKILL.md:262
+		// fm: .agents/skills/stow/SKILL.md:262@a8572f6
 		w := newWorld(t)
 		w.notes([]string{"- pref"}, []string{"- fact <!--a:2026-09-20-->"})
 		before := w.notesTotal()
@@ -1593,7 +1594,7 @@ func TestPortStowSkill(t *testing.T) {
 	})
 
 	t.Run(s+"receipt_actions_use_the_fixed_vocabulary", func(t *testing.T) {
-		// fm: .agents/skills/stow/SKILL.md:263
+		// fm: .agents/skills/stow/SKILL.md:263@a8572f6
 		w := newWorld(t)
 		w.notes([]string{"- pref"}, []string{"- legacy"})
 		r := got(impl.Curate(w.ws, now, nil))(t, mechCurate)
@@ -1611,7 +1612,7 @@ func TestPortStowSkill(t *testing.T) {
 	})
 
 	t.Run(s+"reset_safe_only_within_budget_without_exception", func(t *testing.T) {
-		// fm: .agents/skills/stow/SKILL.md:268
+		// fm: .agents/skills/stow/SKILL.md:268@a8572f6
 		w := newWorld(t)
 		w.notes([]string{"- pref"}, nil)
 		if r := got(impl.Curate(w.ws, now, nil))(t, mechCurate); !r.ResetSafe {
@@ -1631,7 +1632,7 @@ func TestPortBearingsSkill(t *testing.T) {
 	sections := []string{"Captain's Call", "Recently Landed", "Underway", "Charted Next"}
 
 	t.Run(s+"digest_is_operationally_read_only", func(t *testing.T) {
-		// fm: .agents/skills/bearings/SKILL.md:21
+		// fm: .agents/skills/bearings/SKILL.md:21@a8572f6
 		w := newWorld(t)
 		w.story("s1")
 		w.transition("s1", state.Submitted, state.Working)
@@ -1649,7 +1650,7 @@ func TestPortBearingsSkill(t *testing.T) {
 	})
 
 	t.Run(s+"one_deterministic_fleet_state_source", func(t *testing.T) {
-		// fm: .agents/skills/bearings/SKILL.md:39
+		// fm: .agents/skills/bearings/SKILL.md:39@a8572f6
 		w := newWorld(t)
 		w.story("s1")
 		w.transition("s1", state.Submitted, state.Working)
@@ -1661,7 +1662,7 @@ func TestPortBearingsSkill(t *testing.T) {
 	})
 
 	t.Run(s+"four_sections_in_order", func(t *testing.T) {
-		// fm: .agents/skills/bearings/SKILL.md:148
+		// fm: .agents/skills/bearings/SKILL.md:148@a8572f6
 		w := newWorld(t)
 		d := digest(t, mechFour, w.opts())
 		for i := 1; i < len(sections); i++ {
@@ -1670,7 +1671,7 @@ func TestPortBearingsSkill(t *testing.T) {
 	})
 
 	t.Run(s+"captains_call_holds_only_captain_actions", func(t *testing.T) {
-		// fm: .agents/skills/bearings/SKILL.md:150
+		// fm: .agents/skills/bearings/SKILL.md:150@a8572f6
 		w := newWorld(t)
 		w.story("asker")
 		w.transition("asker", state.Working, state.InputRequired)
@@ -1684,7 +1685,7 @@ func TestPortBearingsSkill(t *testing.T) {
 	})
 
 	t.Run(s+"recently_landed_renders_the_current_baseline", func(t *testing.T) {
-		// fm: .agents/skills/bearings/SKILL.md:156
+		// fm: .agents/skills/bearings/SKILL.md:156@a8572f6
 		w := newWorld(t)
 		w.story("landed")
 		w.status("landed", "working: LANDED-TAIL-MARKER")
@@ -1698,7 +1699,7 @@ func TestPortBearingsSkill(t *testing.T) {
 	})
 
 	t.Run(s+"underway_one_line_per_working_story", func(t *testing.T) {
-		// fm: .agents/skills/bearings/SKILL.md:158
+		// fm: .agents/skills/bearings/SKILL.md:158@a8572f6
 		w := newWorld(t)
 		w.story("busy")
 		w.transition("busy", state.Submitted, state.Working)
@@ -1708,7 +1709,7 @@ func TestPortBearingsSkill(t *testing.T) {
 	})
 
 	t.Run(s+"charted_next_holds_queued_and_parked_work", func(t *testing.T) {
-		// fm: .agents/skills/bearings/SKILL.md:160
+		// fm: .agents/skills/bearings/SKILL.md:160@a8572f6
 		w := newWorld(t)
 		w.story("queued")
 		w.transition("queued", "", state.Submitted)
@@ -1720,7 +1721,7 @@ func TestPortBearingsSkill(t *testing.T) {
 	})
 
 	t.Run(s+"every_section_renders_its_empty_state", func(t *testing.T) {
-		// fm: .agents/skills/bearings/SKILL.md:165
+		// fm: .agents/skills/bearings/SKILL.md:165@a8572f6
 		d := digest(t, mechFour, newWorld(t).opts())
 		for _, e := range []string{"Nothing needs your action right now", "No recent completions are in the current baseline.", "Nothing is underway.", "Nothing is queued."} {
 			contains(t, d.Text, e, "an empty section did not render its empty-state sentence")
@@ -1728,7 +1729,7 @@ func TestPortBearingsSkill(t *testing.T) {
 	})
 
 	t.Run(s+"pr_appears_as_a_full_url", func(t *testing.T) {
-		// fm: .agents/skills/bearings/SKILL.md:175
+		// fm: .agents/skills/bearings/SKILL.md:175@a8572f6
 		w := newWorld(t)
 		w.story("pr")
 		_, err := wake.Append(w.epic, wake.Wake{Epic: "demo", Story: "pr", Kind: wake.KindPRReady, Note: "PR ready",
@@ -1750,7 +1751,7 @@ func TestPortConfigurationDoc(t *testing.T) {
 	const s = "FM/doc-configuration/"
 
 	t.Run(s+"captain_preferences_print_in_the_digest", func(t *testing.T) {
-		// fm: docs/configuration.md:248
+		// fm: docs/configuration.md:267@a8572f6
 		w := newWorld(t)
 		w.notes([]string{"- review before merge"}, []string{"- a learning <!--a:2026-09-20-->"})
 		d := digest(t, mechDigest, w.opts())
@@ -1762,7 +1763,7 @@ func TestPortConfigurationDoc(t *testing.T) {
 	})
 
 	t.Run(s+"memory_files_count_together", func(t *testing.T) {
-		// fm: docs/configuration.md:261
+		// fm: docs/configuration.md:280@a8572f6
 		w := newWorld(t)
 		w.notes([]string{"- a"}, []string{"- b <!--a:2026-09-20-->"})
 		r := got(impl.Budget(w.ws))(t, mechBudget)
@@ -1776,7 +1777,7 @@ func TestPortConfigurationDoc(t *testing.T) {
 	})
 
 	t.Run(s+"default_budget_is_materialized_when_absent", func(t *testing.T) {
-		// fm: docs/configuration.md:262
+		// fm: docs/configuration.md:281@a8572f6
 		w := newWorld(t)
 		w.notes(nil, nil)
 		got(impl.Curate(w.ws, day("2026-09-24"), nil))(t, mechBudget)
@@ -1786,7 +1787,7 @@ func TestPortConfigurationDoc(t *testing.T) {
 	})
 
 	t.Run(s+"a_valid_value_selects_the_allowance", func(t *testing.T) {
-		// fm: docs/configuration.md:263
+		// fm: docs/configuration.md:282@a8572f6
 		w := newWorld(t)
 		w.write(notesBudgetRel, "1234\n")
 		if r := got(impl.Budget(w.ws))(t, mechBudget); r.Budget != 1234 {
@@ -1795,7 +1796,7 @@ func TestPortConfigurationDoc(t *testing.T) {
 	})
 
 	t.Run(s+"malformed_values_are_rejected_not_defaulted", func(t *testing.T) {
-		// fm: docs/configuration.md:265
+		// fm: docs/configuration.md:284@a8572f6
 		for _, v := range []string{"0\n", "-5\n", "abc\n", "10", "10\n11\n", "10\n\n", " 10\n", "+10\n"} {
 			w := newWorld(t)
 			w.write(notesBudgetRel, v)
@@ -1811,7 +1812,7 @@ func TestPortConfigurationDoc(t *testing.T) {
 	})
 
 	t.Run(s+"unsafe_budget_files_are_rejected", func(t *testing.T) {
-		// fm: docs/configuration.md:266
+		// fm: docs/configuration.md:285@a8572f6
 		cases := map[string]func(w *world){
 			"symlink": func(w *world) {
 				w.write("elsewhere", "10\n")
@@ -1846,7 +1847,7 @@ func TestPortConfigurationDoc(t *testing.T) {
 	})
 
 	t.Run(s+"report_accounts_absent_and_empty_distinctly", func(t *testing.T) {
-		// fm: docs/configuration.md:267
+		// fm: docs/configuration.md:286@a8572f6
 		w := newWorld(t)
 		r := got(impl.Budget(w.ws))(t, mechBudget)
 		if _, ok := r.Files[learningsRel]; ok || r.Total != 0 {
@@ -1860,7 +1861,7 @@ func TestPortConfigurationDoc(t *testing.T) {
 	})
 
 	t.Run(s+"estimate_is_ceil_utf8_bytes_over_3_per_file", func(t *testing.T) {
-		// fm: docs/configuration.md:268
+		// fm: docs/configuration.md:287@a8572f6
 		w := newWorld(t)
 		w.write(learningsRel, "- é\n") // 5 UTF-8 bytes, 4 runes
 		r := got(impl.Budget(w.ws))(t, mechBudget)

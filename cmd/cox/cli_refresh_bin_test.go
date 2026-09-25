@@ -472,6 +472,33 @@ func TestWorkspaceAddRepoBinaryRegistersWithOrca(t *testing.T) {
 	}
 }
 
+// Leader ruling on cox-refresh-cli q002 against the real binary: `cox workspace init --repo` registers each named checkout
+// Orca does not know, exactly like add-repo; a known one is left alone, a re-run registers nothing, and a repo the
+// existing registry does not take is never registered.
+func TestWorkspaceInitBinaryRegistersRepoWithOrca(t *testing.T) {
+	root := t.TempDir()
+	known, fresh := gitCheckout(t), gitCheckout(t)
+	log := fakeOrcaRepos(t, known)
+	args := []string{"workspace", "init", "--root", root, "--repo", "app=" + fresh + ":main", "--repo", "api=" + known + ":main"}
+	so, se, code := runCox(t, root, nil, args...)
+	if code != 0 || !strings.Contains(so, "registered "+fresh+" with orca") || strings.Contains(so, "registered "+known) {
+		t.Fatalf("init --repo must register only the unknown checkout: exit %d\n%s%s", code, so, se)
+	}
+	if so, se, code = runCox(t, root, nil, args...); code != 0 || strings.Contains(so, "registered") {
+		t.Errorf("a re-run must register nothing: exit %d\n%s%s", code, so, se)
+	}
+	// On an existing workspace Scaffold keeps the registry, so a new --repo is not added there and must not reach Orca
+	// either (Orca has no repo remove, B-35).
+	ignored := gitCheckout(t)
+	if so, se, code = runCox(t, root, nil, "workspace", "init", "--root", root, "--repo", "web="+ignored+":main"); code != 0 || strings.Contains(so, "registered") {
+		t.Errorf("init on an existing workspace must not register a repo it does not add: exit %d\n%s%s", code, so, se)
+	}
+	b, _ := os.ReadFile(log)
+	if n := strings.Count(string(b), "repo add"); n != 1 {
+		t.Errorf("orca repo add ran %d time(s), want once:\n%s", n, b)
+	}
+}
+
 // B-34b against the real binary (leader ruling q001): `cox epic new` never registers; on a checkout Orca does not know
 // it fails before creating anything, naming the exact `orca repo add` command, and doctor reports the same fix.
 func TestEpicNewBinaryRefusesUnregisteredRepo(t *testing.T) {

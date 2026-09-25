@@ -157,7 +157,7 @@ func (w *Watcher) Tick() (int, error) {
 	}
 	appended := 0
 
-	// Registered custom checks run before the signal scan (fm-watch.sh:2470: a check placed after it would starve
+	// Registered custom checks run before the signal scan (fm-watch.sh:2615: a check placed after it would starve
 	// behind a chatty crew).
 	n, err := w.checkPass()
 	if err != nil {
@@ -584,7 +584,7 @@ func (w *Watcher) mailPass(dispatchStory map[string]string) (int, bool, error) {
 // reportUnreadable reports a failed status-source read (the mailbox) once per failure state instead of aborting the
 // watch pass: the signature is the error text, so an unchanged failure stays quiet and a changed one reports again.
 // The mailbox is never consumed on a failed read, so its content surfaces once it is readable (firstmate
-// fm-watch-triage.test.sh:2021, :2067: an unreadable log is reported once per distinct file state).
+// fm-watch-triage.test.sh:2023, :2067: an unreadable log is reported once per distinct file state).
 func (w *Watcher) reportUnreadable(cause error) (int, bool, error) {
 	sig := cause.Error()
 	path := filepath.Join(w.watchDir(), "mail-unreadable")
@@ -1048,7 +1048,7 @@ func runAlarmChannel(channel, summary string) error {
 	case err := <-done:
 		return err
 	case <-time.After(alarmTimeout):
-		// fm's group stop (fm-watch.sh:1896): TERM the whole group, a 0.2 s grace, then KILL it, then reap.
+		// fm's group stop (fm-watch.sh:2031): TERM the whole group, a 0.2 s grace, then KILL it, then reap.
 		// The KILL always goes to the group: its members can outlive the shell that started them.
 		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
 		reaped := false

@@ -27,11 +27,12 @@ Captain ruling 2026-09-24 (epic `cox-supervision-port`):
    - the decision fold;
    - control;
    - session start and the curated memory notes.
-2. **The source is firstmate's regression corpus, not its prose.** The pin is `kunchenguid/firstmate` at `1e0e773`
-   (2026-09-23), with read-only clone paths such as `tests/fm-watch-triage.test.sh`, `tests/fm-wake-queue.test.sh`,
-   `tests/fm-watcher-lock.test.sh`, `tests/fm-busy-adapter-wiring.test.sh`, `tests/fm-session-start.test.sh` and
-   `docs/supervision-protocols/`. Each firstmate case becomes one `t.Run("FM/<suite>/<case>")` carrying a
-   `// fm: tests/<file>.test.sh:<line>` citation. Names, thresholds, defaults and wording are ported as-is unless cox
+2. **The source is firstmate's regression corpus, not its prose.** The pin is `kunchenguid/firstmate` at `a8572f6`
+   (2026-09-24; moved from `1e0e773` by epic `cox-refresh` after its re-diff scout), with read-only clone paths such as
+   `tests/fm-watch-triage.test.sh`, `tests/fm-wake-queue.test.sh`, `tests/fm-watcher-lock.test.sh`,
+   `tests/fm-busy-adapter-wiring.test.sh`, `tests/fm-session-start.test.sh` and `docs/supervision-protocols/`. Each
+   firstmate case becomes one `t.Run("FM/<suite>/<case>")` carrying a `// fm: tests/<file>.test.sh:<line>@a8572f6`
+   citation; `cmd/cox/fm_pin_test.go` fails on any citation that does not name the pin. Names, thresholds, defaults and wording are ported as-is unless cox
    already had a name for them.
 3. **No case is waived.** A cox ADR, policy default or invariant that a firstmate case contradicts is superseded by the
    case. The story that turns the case green adds a one-line supersession note to the ADR (listed under Consequences).
@@ -41,7 +42,7 @@ Captain ruling 2026-09-24 (epic `cox-supervision-port`):
    - an active no-mistakes run-step is the story PR's CI running at the live head;
    - firstmate's Pi guard cases are translated into the extension's node suite;
    - firstmate's three memory files stay three files (`cox/notes/captain.md`, `captain-shared.md`, `learnings.md`)
-     with its 7,500-token budget (ceil(bytes/3), firstmate `docs/configuration.md:262-268`).
+     with its 7,500-token budget (ceil(bytes/3), firstmate `docs/configuration.md:281-287`).
 
 ## Method
 
@@ -60,6 +61,11 @@ Captain ruling 2026-09-24 (epic `cox-supervision-port`):
 At every epic close, a scout diffs firstmate's `tests/` and `docs/` since the pin and files each new or changed case as
 a backlog row. The pin moves forward only with that scout, so cox never silently drifts from, or silently adopts, a
 newer firstmate.
+
+Epic `cox-refresh` (2026-09-25) was the first move, `1e0e773` -> `a8572f6` (25 commits; delta report
+`epics/cox-refresh/reports/cox-refresh-firstmate-delta.md`). Every firstmate `file:line` reference in the Go tree was
+remapped through `git diff -U0` hunk offsets and each endpoint checked byte-identical at both shas; a reference whose
+line had changed was re-read by hand.
 
 ## Consequences
 

@@ -360,7 +360,7 @@ func cmdWatch(args []string) int {
 	// Catch the exit signals before the claim, so one landing during start-up still runs the release (a signal that
 	// reached Go's default action would kill the watcher with its pidfile behind).
 	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, watch.ExitSignals...) // HUP, INT and TERM all run the pidfile release (docs/watcher-continuity.md:117)
+	signal.Notify(sig, watch.ExitSignals...) // HUP, INT and TERM all run the pidfile release (docs/watcher-continuity.md:121)
 	release, err := claimWatchPid(*epicDir, *replace)
 	if err != nil {
 		return fail("%v", err)

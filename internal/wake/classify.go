@@ -31,7 +31,7 @@ const (
 	KindIdleNoDone    Kind = "idle_no_done"
 	KindQuotaLow      Kind = "quota_low" // a harness at/near quota exhaustion (M11)
 	// KindCheck is a registered custom check's output, or a rejected unauthenticated check (firstmate's check row,
-	// fm-watch.sh:2544,2583): always actionable, so urgent.
+	// fm-watch.sh:2689,2728): always actionable, so urgent.
 	KindCheck Kind = "check"
 
 	// Review wakes (M13): a lavish review comment lands as review_feedback (routine, batched); a review decision or a

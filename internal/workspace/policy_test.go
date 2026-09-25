@@ -264,3 +264,51 @@ func TestMergeSectionIsJustified(t *testing.T) {
 		t.Fatalf("merge override without why must be refused naming merge, got: %v", err)
 	}
 }
+
+// A rule's min_confidence (firstmate 795e4b5) is accepted in 0..1 and refused outside it or as a non-number, at load.
+func TestFMRoutingRuleMinConfidence(t *testing.T) {
+	const msg = "min_confidence must be a number from 0 through 1 when present"
+	withFloor := func(f float64) *Policy {
+		pol := validBasePolicy(t)
+		pol.Routing.Rules = []RoutingRule{{When: "hard design", MinConfidence: &f, Profiles: []RoutingProfile{{Harness: "claude"}}}}
+		return pol
+	}
+	t.Run("FM/fm-bootstrap/rule_min_confidence_is_accepted", func(t *testing.T) {
+		// fm: tests/fm-bootstrap.test.sh:1166@a8572f6
+		for _, f := range []float64{0, 0.9, 1} {
+			if err := withFloor(f).Validate(); err != nil {
+				t.Errorf("min_confidence %v must be accepted: %v", f, err)
+			}
+		}
+	})
+	t.Run("FM/fm-bootstrap/rule_min_confidence_out_of_range_is_flagged", func(t *testing.T) {
+		// fm: tests/fm-bootstrap.test.sh:1167@a8572f6
+		// fm: tests/fm-dispatch-resolve.test.sh:876@a8572f6
+		for _, f := range []float64{1.2, 1.5, -0.1} {
+			if err := withFloor(f).Validate(); err == nil || !strings.Contains(err.Error(), "routing.rules[0] ("+msg+")") {
+				t.Errorf("min_confidence %v must be refused naming the field, got %v", f, err)
+			}
+		}
+	})
+	t.Run("FM/fm-dispatch-resolve/min_confidence_not_a_number_is_refused", func(t *testing.T) {
+		// fm: tests/fm-dispatch-resolve.test.sh:875@a8572f6
+		root := t.TempDir()
+		if _, err := Init(root, nil); err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(root, ControlDir, "policy.json")
+		b, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		bad := strings.Replace(string(b), `"default": "policy",`,
+			`"default": "policy", "rules": [{"when":"x","profiles":[{"harness":"claude"}],"min_confidence":"high"}],`, 1)
+		if err := os.WriteFile(path, []byte(bad), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		// Go's decoder refuses the type before Validate runs; its error names the field.
+		if _, err := LoadPolicy(root); err == nil || !strings.Contains(err.Error(), "min_confidence") {
+			t.Fatalf("a non-number min_confidence must be refused naming the field, got %v", err)
+		}
+	})
+}

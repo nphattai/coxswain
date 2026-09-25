@@ -18,7 +18,7 @@ import (
 	"github.com/nphattai/coxswain/internal/wake"
 )
 
-// Wake triage, ported from firstmate bin/fm-watch.sh's main loop (pinned 1e0e773): classify every worker signal and
+// Wake triage, ported from firstmate bin/fm-watch.sh's main loop (pinned a8572f6): classify every worker signal and
 // every quiet worker, ABSORB the benign majority, and SURFACE everything else. Absorb is only ever on positive evidence
 // that the crew is still executing (crewClass); a crew that stopped its turn without a report is surfaced, so a finish
 // reported only through an interactive menu is never swallowed (B-50).
@@ -421,7 +421,7 @@ func (w *Watcher) signalTriage(open map[string]bool) (int, error) {
 			}
 			if l := held[s]; l != "" && open[s] && !w.surfaced[s] {
 				// A captain-held declaration is a leader-owed decision even while the crew works: fm marks its row
-				// payload "needs-decision:" (fm-watch.sh:2661), cox raises input_required.
+				// payload "needs-decision:" (fm-watch.sh:2806), cox raises input_required.
 				if err := w.surface(s, wake.KindInputRequired, s+" holds a decision for the captain: "+l,
 					map[string]any{"payload": "needs-decision:" + s}); err != nil {
 					return appended, err
@@ -462,7 +462,7 @@ func (w *Watcher) signalTriage(open map[string]bool) (int, error) {
 			}
 			kind := wake.KindIdleNoDone
 			if held[s] != "" {
-				// fm-watch.sh:2661: a decision-owned span marks the row payload "needs-decision:".
+				// fm-watch.sh:2806: a decision-owned span marks the row payload "needs-decision:".
 				kind = wake.KindInputRequired
 				if ev == nil {
 					ev = map[string]any{}
