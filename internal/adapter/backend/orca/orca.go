@@ -8,6 +8,8 @@
 package orca
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,6 +20,7 @@ import (
 	"time"
 
 	"github.com/nphattai/coxswain/internal/adapter/backend"
+	"github.com/nphattai/coxswain/internal/boundexec"
 )
 
 // Client is an Orca backend bound to one orchestration run (needed for worker and mailbox operations). Plane selects
@@ -42,8 +45,58 @@ func New(runID string) *Client {
 // terminalPlane reports whether this client drives Orca at the terminal plane (ADR 0012).
 func (c *Client) terminalPlane() bool { return c.Plane == "terminal" }
 
+// Orca call bounds, one per verb class (firstmate fm_exec_timed at every external call, ac2ed3b). The watcher reads the
+// pane through this adapter every tick (Screen, Mail, Probe), so a hung `orca` must never hang the tick. They are
+// variables only so a test can shorten them.
+var (
+	// ReadBound bounds a read (terminal read|show|list, orchestration check|worker-*|run-current, worktree ps, status,
+	// repo show): 10s, the bound doctor's `orca status` and `orca repo show` already use.
+	ReadBound = 10 * time.Second
+	// ActBound bounds a call that starts, stops or sends (terminal create|send|close, orchestration task-create|
+	// worker-start|worker-stop|run-use|reply, and any verb not listed).
+	ActBound = 30 * time.Second
+	// WorktreeBound bounds `worktree create|rm`, which check out or delete a whole tree.
+	WorktreeBound = 120 * time.Second
+)
+
+var orcaReads = map[string]bool{
+	"terminal read": true, "terminal show": true, "terminal list": true, "worktree ps": true, "repo show": true,
+	"orchestration check": true, "orchestration worker-list": true, "orchestration worker-read": true,
+	"orchestration worker-show": true, "orchestration run-current": true,
+}
+
+// orcaBound is the bound of one orca invocation by its verb class.
+func orcaBound(args []string) time.Duration {
+	if len(args) > 0 && args[0] == "status" {
+		return ReadBound
+	}
+	verb := strings.Join(args[:min(2, len(args))], " ")
+	switch {
+	case orcaReads[verb]:
+		return ReadBound
+	case verb == "worktree create" || verb == "worktree rm":
+		return WorktreeBound
+	}
+	return ActBound
+}
+
+// execOrca runs `orca <args>` through boundexec (own process group, TERM then KILL at the bound; a descendant holding
+// stdout cannot keep the caller waiting). Stdout comes back even on failure, so call() still reads an ok=false envelope.
 func execOrca(args ...string) ([]byte, error) {
-	return exec.Command("orca", args...).Output()
+	var out bytes.Buffer
+	cmd := exec.Command("orca", args...)
+	cmd.Stdout = &out
+	bound := orcaBound(args)
+	code, err := boundexec.Run(context.Background(), bound, cmd)
+	switch {
+	case err != nil:
+		return out.Bytes(), err
+	case code == boundexec.ExitTimeout:
+		return out.Bytes(), fmt.Errorf("timed out after %s", bound)
+	case code != 0:
+		return out.Bytes(), fmt.Errorf("exit status %d", code)
+	}
+	return out.Bytes(), nil
 }
 
 // execGit never lets git prompt: cox runs non-interactively, so a credential prompt (a fetch over HTTPS) must fail
