@@ -1771,6 +1771,34 @@ func fmMarker(epic string) string {
 	return strings.TrimSpace(string(b))
 }
 
+// fmRetiredEpisode leaves epic with a handled and acknowledged recovery episode (marker acked:), the state every
+// epic keeps after its first real watcher-down.
+func fmRetiredEpisode(t *testing.T, epic string) {
+	t.Helper()
+	if err := publishRecoveryDowntime(epic); err != nil {
+		t.Fatal(err)
+	}
+	gen, err := recoveryBeginHandling(epic, false)
+	if err != nil || gen == "" {
+		t.Fatalf("no episode to retire: %q %v", gen, err)
+	}
+	if err := recoveryAck(epic, gen); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// fmWantNoEpisode asserts a drain on epic opens no recovery episode: no WAKE_ACK_REQUIRED line, the marker still
+// retired.
+func fmWantNoEpisode(t *testing.T, epic string) {
+	t.Helper()
+	if _, gen, out := fmDrain(t, epic); gen != "" || strings.Contains(out, "WAKE_ACK_REQUIRED") {
+		t.Fatalf("a drain on a live watcher opened a recovery episode %q: %q", gen, out)
+	}
+	if tok := fmMarker(epic); !strings.HasPrefix(tok, "acked:") {
+		t.Fatalf("the retired episode was re-opened on a live watcher: %q", tok)
+	}
+}
+
 // fmDrain runs `cox wake drain --epic epic` and returns the printed ack pair (through, generation) from its
 // WAKE_ACK_REQUIRED --recovery-generation line.
 func fmDrain(t *testing.T, epic string) (through, gen string, out string) {
@@ -2917,6 +2945,45 @@ func fmClaudeStopAutoarm(t *testing.T) {
 		}
 		if readPid(watchPidPath(epic)) != watcher.Process.Pid {
 			t.Fatal("the watcher lost watch.pid across the rewake")
+		}
+	})
+
+	// fm: tests/fm-claude-stop-autoarm.test.sh:465@a8572f6 (the successor's rewake is the delivered wake, not a
+	// recovery: firstmate's episode stays with the watcher-down marker). Leader-findings 20: on a live watcher with a
+	// retired episode, every attached-delivered-wake cycle made the next drain demand a recovery acknowledgement.
+	t.Run("attached_cycle_end_opens_no_recovery_episode", func(t *testing.T) {
+		epic := fmEpic(t, "s1")
+		fmRetiredEpisode(t, epic)
+		fmRealWatcher(t, epic)
+		fmBeacon(t, epic, 0)
+		code, out := fmWait(t, epic, 10, func(i int) {
+			if i == 1 {
+				seedWake(t, epic, wake.KindWorkerDone)
+			}
+		})
+		if code != 2 {
+			t.Fatalf("an attached cycle's delivered wake must rewake, got %d %q", code, out)
+		}
+		fmWantNoEpisode(t, epic)
+	})
+
+	// fm: tests/fm-claude-stop-autoarm.test.sh:602@a8572f6 (test_benign_cycle_end_with_live_watcher_is_silent: a cycle
+	// end with a live watcher and a fresh beacon stays silent across the next cycle - no recovery, no notice).
+	t.Run("benign_cycle_end_with_live_watcher_is_silent", func(t *testing.T) {
+		epic := fmEpic(t, "s1")
+		fmRetiredEpisode(t, epic)
+		fmRealWatcher(t, epic)
+		for i := 0; i < 2; i++ {
+			fmBeacon(t, epic, 0)
+			seedWake(t, epic, wake.KindStatus)
+			if code, out := fmWait(t, epic, 3, func(int) {}); code != 2 || strings.Contains(out, "was down") {
+				t.Fatalf("cycle %d with a live watcher must deliver the wake without a recovery, got %d %q", i, code, out)
+			}
+			fmWantNoEpisode(t, epic)
+			w, _ := wake.Drain(epic, true)
+			if err := wake.AckThrough(epic, w[len(w)-1].Gen); err != nil {
+				t.Fatal(err)
+			}
 		}
 	})
 

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/nphattai/coxswain/internal/wake"
+	"github.com/nphattai/coxswain/internal/watch"
 )
 
 // The watcher-down recovery episode, ported from firstmate bin/fm-wake-lib.sh fm_recovery_marker_* and
@@ -170,6 +171,11 @@ func recoveryArmCheck(epicDir string, stalePid int) (recover bool, err error) {
 // episode is retired and never presented again: with no queued row there is nothing to acknowledge, and queued rows
 // open a fresh generation (fm_recovery_marker_publish downtime, then begin handling), so the drain never reprints the
 // generation an earlier ack-through already retired (leader-findings 19).
+//
+// Unlike fm-wake-drain.sh:811-820, that fresh generation opens only while the watcher is down (watch.Healthy, the
+// turn-end guard's predicate). Firstmate acknowledges every wake through WAKE_ACK_REQUIRED, so its drain always binds
+// a generation. Cox acknowledges an ordinary wake with a plain `cox wake ack-through <gen>`, so a generation on a live
+// watcher would be a spurious "the watcher was down" episode after every delivered wake (leader-findings 20).
 func recoveryBeginHandling(epicDir string, queued bool) (string, error) {
 	var gen string
 	err := withRecoveryLock(epicDir, func() error {
@@ -178,7 +184,7 @@ func recoveryBeginHandling(epicDir string, queued bool) (string, error) {
 			return nil
 		}
 		if cur.status == "acked" {
-			if !queued {
+			if !queued || watch.Healthy(epicDir, time.Now(), 0) {
 				return nil
 			}
 			t := recoveryToken{status: "pending", kind: "handling"}
