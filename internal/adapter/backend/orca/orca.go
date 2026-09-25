@@ -9,7 +9,9 @@ package orca
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"regexp"
 	"strings"
@@ -44,8 +46,12 @@ func execOrca(args ...string) ([]byte, error) {
 	return exec.Command("orca", args...).Output()
 }
 
+// execGit never lets git prompt: cox runs non-interactively, so a credential prompt (a fetch over HTTPS) must fail
+// rather than hang a dispatch.
 func execGit(args ...string) ([]byte, error) {
-	return exec.Command("git", args...).Output()
+	cmd := exec.Command("git", args...)
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	return cmd.Output()
 }
 
 // envelope is the common `orca ... --json` response shape.
@@ -53,27 +59,49 @@ type envelope struct {
 	OK     bool            `json:"ok"`
 	Result json.RawMessage `json:"result"`
 	Error  struct {
+		Code    string `json:"code"`
 		Message string `json:"message"`
 	} `json:"error"`
 }
 
-// call runs an orca command and returns its result payload, or an error if the process failed, the output was not
-// valid JSON, or Orca reported ok=false. The raw JSON is never assumed valid; a parse failure is a real error.
-func (c *Client) call(args ...string) (json.RawMessage, error) {
-	out, err := c.run(args...)
-	if err != nil {
-		return nil, fmt.Errorf("orca %s: %w", strings.Join(args, " "), err)
+// Error is an Orca ok=false envelope: Code is Orca's machine error code (e.g. repo_not_found), empty when it sent none.
+type Error struct {
+	Cmd     string
+	Code    string
+	Message string
+}
+
+func (e *Error) Error() string {
+	if e.Code != "" {
+		return fmt.Sprintf("orca %s: %s (%s)", e.Cmd, e.Message, e.Code)
 	}
+	return fmt.Sprintf("orca %s: %s", e.Cmd, e.Message)
+}
+
+// call runs an orca command and returns its result payload, or an error if the process failed, the output was not
+// valid JSON, or Orca reported ok=false. The raw JSON is never assumed valid; a parse failure is a real error. Orca
+// exits non-zero on an ok=false envelope and still prints it on stdout, so a failed process whose stdout is an ok=false
+// envelope reports Orca's own code and message (an *Error), never a bare exit status (B-34a).
+func (c *Client) call(args ...string) (json.RawMessage, error) {
+	cmd := strings.Join(args, " ")
+	out, err := c.run(args...)
 	var env envelope
-	if err := json.Unmarshal(out, &env); err != nil {
-		return nil, fmt.Errorf("orca %s: invalid JSON: %w", strings.Join(args, " "), err)
+	perr := json.Unmarshal(out, &env)
+	if err != nil {
+		if perr == nil && !env.OK && (env.Error.Code != "" || env.Error.Message != "") {
+			return nil, &Error{Cmd: cmd, Code: env.Error.Code, Message: env.Error.Message}
+		}
+		return nil, fmt.Errorf("orca %s: %w", cmd, err)
+	}
+	if perr != nil {
+		return nil, fmt.Errorf("orca %s: invalid JSON: %w", cmd, perr)
 	}
 	if !env.OK {
 		msg := env.Error.Message
 		if msg == "" {
 			msg = "ok=false with no error message"
 		}
-		return nil, fmt.Errorf("orca %s: %s", strings.Join(args, " "), msg)
+		return nil, &Error{Cmd: cmd, Code: env.Error.Code, Message: msg}
 	}
 	return env.Result, nil
 }
@@ -151,6 +179,14 @@ func (c *Client) WorktreeCreate(repo, branch, base string) (backend.Worktree, er
 		"--base-branch", base,
 		"--no-parent", "--json")
 	if err != nil {
+		var oe *Error
+		if errors.As(err, &oe) && oe.Code == "repo_not_found" {
+			path := repo
+			if !strings.HasPrefix(path, "/") {
+				path = "<checkout of " + repo + ">"
+			}
+			return backend.Worktree{}, fmt.Errorf("%w; the repo is not registered with Orca - register it with `orca repo add --path %s`, then retry", err, path)
+		}
 		return backend.Worktree{}, err
 	}
 	var r struct {
@@ -171,26 +207,90 @@ func (c *Client) WorktreeCreate(repo, branch, base string) (backend.Worktree, er
 	// (exit 128), so switch to the existing branch instead. Either way worktree.Ensure re-verifies the result.
 	// ponytail: leaving the orphaned mangled branch behind is the ceiling - never delete it (F01); operators prune the
 	// nphattai/<...> leftovers by hand (docs/adapters/orca.md).
+	//
+	// A story branch already on origin holds pushed work (a re-dispatch of story/<id> on a new host or after its worktree
+	// was removed, B-22): the worktree lands on origin/story/<id>, never on a fresh cut from base that orphans those
+	// commits. See syncToOrigin for the local-vs-origin rules. Only story/ branches: an epic slug or a baseline replay
+	// branch found on origin keeps its refusal (a collision or a pinned sha, not work to resume).
 	if path != "" && branch != "" {
 		if cur, err := c.git("-C", path, "branch", "--show-current"); err == nil {
 			if strings.TrimSpace(string(cur)) != branch {
+				remote := ""
+				if strings.HasPrefix(branch, "story/") {
+					remote = c.fetchOrigin(path, branch)
+				}
 				if _, err := c.git("-C", path, "show-ref", "--verify", "--quiet", "refs/heads/"+branch); err == nil {
 					if _, err := c.git("-C", path, "switch", branch); err != nil {
 						return backend.Worktree{}, fmt.Errorf("switch worktree to existing branch %s: %w", branch, err)
 					}
 					// A switch lands on the existing branch at its OLD HEAD (M5: the adversary reviewed d770a2a while the
-					// pack said cd1e383). Bring the branch to the requested base, but only when it carries no unmerged work
-					// (A11): reset --hard is safe when base..branch is empty; otherwise refuse rather than discard commits.
-					if err := c.resetReusedBranch(path, branch, base); err != nil {
-						return backend.Worktree{}, err
+					// pack said cd1e383). With no origin branch, bring it to the requested base, but only when it carries
+					// no unmerged work (A11): reset --hard is safe when base..branch is empty; otherwise refuse rather than
+					// discard commits.
+					if remote == "" {
+						if err := c.resetReusedBranch(path, branch, base); err != nil {
+							return backend.Worktree{}, err
+						}
 					}
 				} else if _, err := c.git("-C", path, "branch", "-m", branch); err != nil {
 					return backend.Worktree{}, fmt.Errorf("rename worktree branch to %s: %w", branch, err)
+				}
+				if remote != "" {
+					if err := c.syncToOrigin(path, branch, remote, base); err != nil {
+						return backend.Worktree{}, err
+					}
 				}
 			}
 		}
 	}
 	return backend.Worktree{Path: path, Branch: branch}, nil
+}
+
+// fetchOrigin returns refs/remotes/origin/<branch>, freshly fetched, when origin has the branch; "" when origin does
+// not (never pushed, or deleted after its PR merged - a stale local remote-tracking ref is not pushed work) or cannot be
+// reached (offline: the dispatch then cuts from base as before). A fetch failure after origin listed the branch is "",
+// so no stale view is ever adopted.
+func (c *Client) fetchOrigin(path, branch string) string {
+	if !c.branchOnOrigin(path, branch) {
+		return ""
+	}
+	ref := "refs/remotes/origin/" + branch
+	if _, err := c.git("-C", path, "fetch", "--quiet", "origin", "+refs/heads/"+branch+":"+ref); err != nil {
+		return ""
+	}
+	return ref
+}
+
+// syncToOrigin puts the checked-out branch on its pushed work (B-22). The local branch is reset to origin when it holds
+// no commit outside origin and base (a fresh cut from base, or a stale copy behind origin); it is kept when it is
+// ahead of origin (unpushed work on top of the pushed branch); anything else has diverged and is refused, never
+// reset, so no commit is discarded (the branch is never deleted either, F01). The upstream is set best-effort.
+func (c *Client) syncToOrigin(path, branch, remote, base string) error {
+	args := []string{"-C", path, "rev-list", "--count", branch, "^" + remote}
+	if base != "" {
+		args = append(args, "^"+base)
+	}
+	own, err := c.git(args...)
+	if err != nil {
+		return fmt.Errorf("compare %s with %s: %w", branch, remote, err)
+	}
+	switch {
+	case strings.TrimSpace(string(own)) == "0":
+		if _, err := c.git("-C", path, "reset", "--hard", remote); err != nil {
+			return fmt.Errorf("reset %s to its pushed work %s: %w", branch, remote, err)
+		}
+	case c.isAncestor(path, remote, branch):
+		// ahead of origin: keep the unpushed commits
+	default:
+		return fmt.Errorf("existing branch %s has diverged from %s (each has commits the other lacks); not resetting either (would discard work) - remove the new worktree at %s, reconcile the branch by hand, then retry", branch, remote, path)
+	}
+	_, _ = c.git("-C", path, "branch", "--set-upstream-to="+remote, branch)
+	return nil
+}
+
+func (c *Client) isAncestor(path, a, b string) bool {
+	_, err := c.git("-C", path, "merge-base", "--is-ancestor", a, b)
+	return err == nil
 }
 
 // resetReusedBranch brings a just-switched-onto existing branch to base. It resets --hard to base only when the branch
@@ -517,13 +617,22 @@ func (c *Client) Composer(s backend.Session) (string, error) {
 	if s.Handle == "" {
 		return backend.ComposerUnknown, nil
 	}
-	if c.terminalPlane() {
-		if st, found, err := c.agentStateForHandle(s.Handle); err == nil && found &&
-			strings.EqualFold(strings.TrimSpace(st), "waiting") {
-			return backend.ComposerBlocked, nil
-		}
+	if c.terminalPlane() && c.waiting(s.Handle) {
+		return backend.ComposerBlocked, nil
 	}
 	return c.composerState(s.Handle), nil
+}
+
+// Dialog reports whether the worker's agent is on a local dialog (agents[] "waiting": a permission or question prompt)
+// whatever its busy record says: a harness on a dialog is mid-turn by its own hook, so Composer reads it busy (B-01).
+// Only the terminal plane has the agents[] state; elsewhere it is false (not a proven dialog).
+func (c *Client) Dialog(s backend.Session) bool {
+	return c.terminalPlane() && s.Handle != "" && c.waiting(s.Handle)
+}
+
+func (c *Client) waiting(handle string) bool {
+	st, found, err := c.agentStateForHandle(handle)
+	return err == nil && found && strings.EqualFold(strings.TrimSpace(st), "waiting")
 }
 
 // composerState classifies a worker terminal's composer from a bounded `terminal read` tail: empty | pending | busy |

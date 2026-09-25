@@ -22,7 +22,7 @@ var coxSelf = func() string {
 
 // LaunchLine builds the shell line a terminal-plane backend types into a fresh worker terminal: the cox env prefix
 // (COX_EPIC/COX_STORY derived from the story path, COX_PLANE=terminal, COX_BIN so the worker's harness hooks use the
-// launching cox, and COX_BUSY_GEN when the harness reports its own busy state) followed by the adapter-owned harness
+// launching cox, COMPACT_ADVISER_DISABLE=1, and COX_BUSY_GEN when the harness reports its own busy state) followed by the adapter-owned harness
 // argv, shell-quoted token by token. The argv (executable, model/provider syntax, trust/resource flags, prompt) is
 // composed by cmd/cox/internal-arena via registry.LaunchArgs and threaded in as HarnessSpec.Argv, so both terminal-plane
 // backends (orca, herdr) type the command without importing the harness layer (decision 0002). Shared so the env
@@ -39,7 +39,10 @@ func LaunchLine(h HarnessSpec, brief Brief) string {
 	if coxSelf != "" {
 		fmt.Fprintf(&b, "COX_BIN=%s ", shellQuote(coxSelf))
 	}
-	b.WriteString("COX_PLANE=terminal")
+	// A worker is an unattended session: compact-adviser (machine-wide plugin, B-41) must stay inert there, since no one
+	// reads its hints and its auto mode would compact under cox's own checkpoint flow. Its README: a truthy
+	// COMPACT_ADVISER_DISABLE "wins over a saved hint or auto mode"; a harness without the plugin ignores it.
+	b.WriteString("COMPACT_ADVISER_DISABLE=1 COX_PLANE=terminal")
 	if h.BusyGen != "" {
 		fmt.Fprintf(&b, " COX_BUSY_GEN=%s", shellQuote(h.BusyGen))
 	}

@@ -242,6 +242,9 @@ func TestWorktreeCreateSwitchesToExistingBranch(t *testing.T) {
 		if len(args) >= 3 && args[2] == "show-ref" {
 			return nil, nil // target branch exists -> switch path
 		}
+		if len(args) >= 3 && args[2] == "rev-parse" {
+			return nil, errors.New("not found") // never pushed: no origin/<branch> -> the base rules apply
+		}
 		if len(args) >= 3 && args[2] == "rev-list" {
 			return []byte("0\n"), nil // no unmerged commits -> safe to reset to base
 		}

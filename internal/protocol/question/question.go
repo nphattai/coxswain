@@ -26,6 +26,16 @@ const Schema = "coxswain.question.v1"
 // idRe matches an allocated question id qNNN (at least three digits).
 var idRe = regexp.MustCompile(`^q[0-9]{3,}$`)
 
+// CanonID returns the allocated form of a question id typed by a worker or the leader. Ids are case-insensitive (B-61):
+// Alloc always writes lower-case qNNN, but a worker that retypes it as Q001 addresses the same question.
+func CanonID(id string) (string, error) {
+	c := strings.ToLower(strings.TrimSpace(id))
+	if !idRe.MatchString(c) {
+		return "", fmt.Errorf("not a question id: %q (want qNNN)", id)
+	}
+	return c, nil
+}
+
 // Dir returns <epic>/questions/<story>.
 func Dir(epicDir, story string) string {
 	return filepath.Join(epicDir, "questions", story)
@@ -74,8 +84,9 @@ func Alloc(epicDir, story, body string) (string, error) {
 // Answer writes the leader's reply for an id. It refuses an unknown id and an already-answered id unless again is set,
 // in which case the reply is written as qNNN.answer.<n>.md. It returns the path written.
 func Answer(epicDir, story, id, answer string, again bool) (string, error) {
-	if !idRe.MatchString(id) {
-		return "", fmt.Errorf("not a question id: %q (want qNNN)", id)
+	id, err := CanonID(id)
+	if err != nil {
+		return "", err
 	}
 	d := Dir(epicDir, story)
 	unlock, err := lock(d)
@@ -104,8 +115,9 @@ func Answer(epicDir, story, id, answer string, again bool) (string, error) {
 // into handled/ and returns the answer body. It backs off from 1s up to 10s. On timeout it returns timedOut=true and
 // leaves the files in place so the worker can retry after checkpointing. An unknown id is an error up front.
 func Wait(epicDir, story, id string, max time.Duration) (answer string, timedOut bool, err error) {
-	if !idRe.MatchString(id) {
-		return "", false, fmt.Errorf("not a question id: %q (want qNNN)", id)
+	id, err = CanonID(id)
+	if err != nil {
+		return "", false, err
 	}
 	if !existsEither(epicDir, story, id) {
 		return "", false, fmt.Errorf("unknown question %s for story %s", id, story)
