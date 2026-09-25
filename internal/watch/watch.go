@@ -249,9 +249,11 @@ func openStorySet(epicDir string) (map[string]bool, error) {
 // backlog whose max gen is unchanged is re-nudged at most once per NudgeWindow (B-33): the last-nudged gen and time live
 // in watch/nudged. A backlog that GREW (a higher max gen) always nudges. The handle is read fresh each tick so a
 // re-bound .cox/leader is honoured; a failed doorbell is counted and logged (item 3), a delivered one resets the count.
+// A push leader (claude, pi) is never typed into (B-73): its hook rewake is the wake, and the turn-boundary guard plus
+// the wedge alarm are its liveness signal.
 func (w *Watcher) nudgeLeader() {
 	handle := w.leaderHandle()
-	if handle == "" {
+	if handle == "" || leaderIsPush(w.EpicDir) {
 		return
 	}
 	wakes, err := wake.Drain(w.EpicDir, true)
