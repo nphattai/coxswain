@@ -1,6 +1,7 @@
 package workspace
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io/fs"
@@ -99,18 +100,21 @@ func StaleOptionNotices(onDisk, tmpl *Policy) []string {
 	return notices
 }
 
-// ScaffoldReport lists what a Scaffold run wrote (Created) and what it found already in place (Present), so the CLI can
-// tell a first-time user everything it made and tell a re-run that nothing was missing.
+// ScaffoldReport lists what a Scaffold run wrote (Created), rewrote in place (Updated) and found already current
+// (Present), so the CLI can name every file a run changed.
 type ScaffoldReport struct {
 	Created []string
+	Updated []string
 	Present []string
 }
 
 func (r *ScaffoldReport) created(p string) { r.Created = append(r.Created, p) }
+func (r *ScaffoldReport) updated(p string) { r.Updated = append(r.Updated, p) }
 func (r *ScaffoldReport) present(p string) { r.Present = append(r.Present, p) }
 
-// Scaffold writes everything a leader needs under wsRoot, creating only what is missing and never rewriting a file that
-// exists (so a re-run is idempotent and a user-edited workspace.json/policy.json/AGENTS.md is never clobbered): the two
+// Scaffold writes everything a leader needs under wsRoot, creating only what is missing and never rewriting a user-owned
+// file (so a re-run is idempotent and a user-edited workspace.json/policy.json/AGENTS.md is never clobbered; the pinned
+// leader skills are the exception, refreshed from the embed by ensureSkills): the two
 // registry files and cox/services/ (via Init), a .gitignore covering the machine-bound paths, an AGENTS.md skeleton,
 // and the pinned leader skills under .agents/skills/. Hooks are written by the caller (they depend on the policy's
 // leader harness options). When workspace.json is absent, repos seeds it, so the caller must pass at least one repo in
@@ -262,23 +266,27 @@ func ensureFile(dest, tmpl string, rep *ScaffoldReport) error {
 	return nil
 }
 
-// ensureSkills copies the embedded leader skills under <ws>/.agents/skills/, writing only files that are missing.
+// ensureSkills copies the embedded leader skills under <ws>/.agents/skills/. They are pinned copies of the driver's
+// skills, not user-owned (B-72): a missing file is written, a file whose content differs from the embed is rewritten and
+// reported in Updated, so a driver upgrade followed by init leaves the workspace current. Files the embed does not carry
+// are never touched.
 func ensureSkills(wsRoot string, rep *ScaffoldReport) error {
 	base := filepath.Join(wsRoot, ".agents", "skills")
 	missing := 0
-	present := 0
 	err := fs.WalkDir(skills.FS, ".", func(p string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return err
 		}
-		dest := filepath.Join(base, p)
-		if fileExists(dest) {
-			present++
-			return nil
-		}
 		b, rErr := skills.FS.ReadFile(p)
 		if rErr != nil {
 			return rErr
+		}
+		dest := filepath.Join(base, p)
+		existed := fileExists(dest)
+		if existed {
+			if cur, cErr := os.ReadFile(dest); cErr == nil && bytes.Equal(cur, b) {
+				return nil
+			}
 		}
 		if mErr := os.MkdirAll(filepath.Dir(dest), 0o755); mErr != nil {
 			return mErr
@@ -286,7 +294,11 @@ func ensureSkills(wsRoot string, rep *ScaffoldReport) error {
 		if wErr := os.WriteFile(dest, b, 0o644); wErr != nil {
 			return wErr
 		}
-		missing++
+		if existed {
+			rep.updated(dest)
+		} else {
+			missing++
+		}
 		return nil
 	})
 	if err != nil {

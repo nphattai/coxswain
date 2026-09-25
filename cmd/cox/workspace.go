@@ -84,6 +84,9 @@ func cmdWorkspaceInit(args []string) int {
 	for _, c := range rep.Created {
 		fmt.Println("created", c)
 	}
+	for _, u := range rep.Updated {
+		fmt.Println("updated", u)
+	}
 	for _, p := range rep.Present {
 		fmt.Println("present", p)
 	}

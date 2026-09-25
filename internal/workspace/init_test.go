@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/nphattai/coxswain/skills"
 )
 
 // Scaffold writes the whole workspace (registry, services/, .gitignore, AGENTS.md, embedded skills) and is idempotent:
@@ -210,5 +212,48 @@ func TestDetectProduction(t *testing.T) {
 	run("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/trunk")
 	if got := DetectProduction(repo); got != "trunk" {
 		t.Errorf("production = %q, want trunk (from origin/HEAD)", got)
+	}
+}
+
+// B-72: a re-run of Scaffold after a driver upgrade rewrites every embedded skill file whose content differs from the
+// embed and reports it in Updated; a file the embed does not carry is left alone, and a current tree reports nothing.
+func TestScaffoldRefreshesStaleSkills(t *testing.T) {
+	root := t.TempDir()
+	if _, err := Scaffold(root, []Repo{{Alias: "app", Path: t.TempDir(), Production: "main"}}); err != nil {
+		t.Fatal(err)
+	}
+	stale := filepath.Join(root, ".agents", "skills", "cox-dispatch", "SKILL.md")
+	if err := os.WriteFile(stale, []byte("STALE-MARKER\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	own := filepath.Join(root, ".agents", "skills", "my-own", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(own), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(own, []byte("mine\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	rep, err := Scaffold(root, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, _ := skills.FS.ReadFile("cox-dispatch/SKILL.md")
+	if got, _ := os.ReadFile(stale); string(got) != string(want) {
+		t.Errorf("stale skill not refreshed from the embed:\n%s", got)
+	}
+	if len(rep.Updated) != 1 || rep.Updated[0] != stale {
+		t.Errorf("Updated = %q, want [%s]", rep.Updated, stale)
+	}
+	if got, _ := os.ReadFile(own); string(got) != "mine\n" {
+		t.Errorf("a file outside the embed was touched: %q", got)
+	}
+
+	rep, err = Scaffold(root, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.Updated) != 0 {
+		t.Errorf("current skills re-run reported Updated %q", rep.Updated)
 	}
 }
