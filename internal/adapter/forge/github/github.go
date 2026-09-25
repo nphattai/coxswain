@@ -78,6 +78,8 @@ func (c *Client) PR(headRef string) (forge.PR, error) {
 		State:     strings.ToLower(r.State),
 		Draft:     r.IsDraft,
 		Mergeable: strings.EqualFold(r.Mergeable, "MERGEABLE"), // only a known-clean state is mergeable; UNKNOWN fails closed
+		// UNKNOWN (or an absent value) is not yet computed, so it is not a conflict either (B-60).
+		MergeableUnknown: r.Mergeable == "" || strings.EqualFold(r.Mergeable, "UNKNOWN"),
 	}, nil
 }
 

@@ -14,6 +14,10 @@ type PR struct {
 	State     string // open | merged | closed
 	Draft     bool   // true while the PR is a draft (not ready for merge)
 	Mergeable bool   // true only when the forge reports the PR cleanly mergeable (no conflicts, mergeable state known)
+
+	// MergeableUnknown is true while the forge has not computed mergeability yet (GitHub `mergeable: UNKNOWN`, e.g.
+	// recomputing after a sibling merge). Mergeable is then false too, but it is not a conflict (B-60).
+	MergeableUnknown bool
 }
 
 // Check is one CI check run. Status is the run status (queued | in_progress | completed); Conclusion is set only when

@@ -53,6 +53,27 @@ func TestMergedReadsLive(t *testing.T) {
 	}
 }
 
+// B-60: mergeable is three-state. UNKNOWN (GitHub still computing) is not mergeable and flagged unknown; CONFLICTING is
+// a definite not-mergeable; MERGEABLE is clean.
+func TestPRMergeableThreeState(t *testing.T) {
+	for _, tc := range []struct {
+		gh               string
+		mergeable, unkwn bool
+	}{{"MERGEABLE", true, false}, {"CONFLICTING", false, false}, {"UNKNOWN", false, true}, {"", false, true}} {
+		c := New("/repo")
+		c.run = func(dir string, args ...string) ([]byte, error) {
+			return []byte(`{"number":42,"headRefOid":"deadbeef","state":"OPEN","mergeable":"` + tc.gh + `"}`), nil
+		}
+		pr, err := c.PR("story/x")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if pr.Mergeable != tc.mergeable || pr.MergeableUnknown != tc.unkwn {
+			t.Errorf("mergeable %q: got Mergeable=%v MergeableUnknown=%v, want %v %v", tc.gh, pr.Mergeable, pr.MergeableUnknown, tc.mergeable, tc.unkwn)
+		}
+	}
+}
+
 func TestChecksMapBuckets(t *testing.T) {
 	c := New("/repo")
 	c.run = func(dir string, args ...string) ([]byte, error) {

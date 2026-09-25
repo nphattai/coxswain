@@ -136,3 +136,20 @@ func TestBinaryShipMergeReadsBackMerged(t *testing.T) {
 		t.Fatalf("a confirmed merge must write the ledger merged row (err=%v):\n%s", err, ledger)
 	}
 }
+
+// B-60: `mergeable: UNKNOWN` through the built binary exits 3 (unknown), merges nothing and writes no ledger row. On the
+// base it exited 1 (refused), indistinguishable from a conflict.
+func TestBinaryShipMergeUnknownMergeableExits3(t *testing.T) {
+	c := newBinCase(t)
+	c.env = append(c.env, "FAKE_GH_MERGEABLE=UNKNOWN")
+	out, rc := c.cox(t, "ship", "merge", "--pr", "9", "--epic", c.epic, "--captain")
+	if rc != 3 || !strings.Contains(out, "verdict=unknown") {
+		t.Fatalf("cox ship merge on UNKNOWN mergeable rc=%d, want 3 and verdict=unknown:\n%s", rc, out)
+	}
+	if _, err := os.Stat(filepath.Join(c.ghDir, "merged")); err == nil {
+		t.Error("UNKNOWN mergeable must never reach gh pr merge")
+	}
+	if _, err := os.Stat(filepath.Join(c.epic, "ledger.jsonl")); err == nil {
+		t.Error("an unknown merge must not write a ledger row")
+	}
+}
