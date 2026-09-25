@@ -1077,3 +1077,27 @@ func TestWatcherOutlivesADeliveredWake(t *testing.T) {
 		}
 	})
 }
+
+// leader inbox 004 (found during cox-refresh-watch): the turn-end idle note claimed "no running CI" while the story PR's
+// checks were pending, because the watcher had no forge to read (cmd/cox wires none). The note names the CI evidence
+// as read: unknown when the forge cannot answer, "no running CI" only when it answered with every check completed.
+func TestIdleNoDoneNoteNamesCIEvidenceAsRead(t *testing.T) {
+	for _, tc := range []struct {
+		ci, want, not string
+	}{{"", "CI state unknown", "no running CI"}, {"unknown", "CI state unknown", "no running CI"}, {"passed", "no running CI", "CI state unknown"}} {
+		r := newPortRig(t)
+		if tc.ci != "" {
+			r.ci(tc.ci)
+		}
+		r.busySet(busy.Idle) // the worker's turn ended with no report
+		var note string
+		for _, w := range r.tick() {
+			if w.Kind == wake.KindIdleNoDone {
+				note = w.Note
+			}
+		}
+		if !strings.Contains(note, tc.want) || strings.Contains(note, tc.not) {
+			t.Errorf("forge %q: idle note %q, want it to say %q", tc.ci, note, tc.want)
+		}
+	}
+}

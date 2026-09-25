@@ -442,7 +442,13 @@ func (w *Watcher) signalTriage(open map[string]bool) (int, error) {
 				}
 				appended++
 			}
-			note := s + " turn ended with no report since it began and is not provably working (no busy turn, no running CI) - it may be done, waiting on a decision, or wedged"
+			// Name the CI evidence as read: "no running CI" only when the forge answered; an unreadable forge (or none
+			// wired) is unknown, never a claim that nothing runs.
+			ciNote := "no running CI"
+			if _, known := w.ciRunning(s); !known {
+				ciNote = "CI state unknown"
+			}
+			note := s + " turn ended with no report since it began and is not provably working (no busy turn, " + ciNote + ") - it may be done, waiting on a decision, or wedged"
 			var ev map[string]any
 			if len(sg.lines) > 0 {
 				note = s + " is not provably working after its status: " + sg.lines[len(sg.lines)-1]
