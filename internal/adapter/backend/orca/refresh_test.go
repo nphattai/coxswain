@@ -146,3 +146,152 @@ func TestDialogSeesWaitingDespiteBusyRecord(t *testing.T) {
 		t.Fatal("orchestration plane has no agents[] state: Dialog must be false")
 	}
 }
+
+// redispatch is a real-git fixture for B-22: a bare origin, a host clone with epic/e1, and a fake orca whose worktree
+// create does what Orca does - a new worktree on a username-mangled branch cut from the base.
+type redispatch struct {
+	t                  *testing.T
+	origin, host, peer string
+	n                  int
+}
+
+func newRedispatch(t *testing.T) *redispatch {
+	r := &redispatch{t: t, origin: filepath.Join(t.TempDir(), "origin.git"), host: filepath.Join(t.TempDir(), "host"), peer: filepath.Join(t.TempDir(), "peer")}
+	r.git("", "init", "-q", "--bare", "-b", "main", r.origin)
+	r.git("", "clone", "-q", r.origin, r.peer)
+	r.commit(r.peer, "init")
+	r.git(r.peer, "push", "-q", "origin", "HEAD:main", "HEAD:refs/heads/epic/e1")
+	r.git("", "clone", "-q", r.origin, r.host)
+	r.git(r.host, "branch", "epic/e1", "origin/epic/e1")
+	return r
+}
+
+func (r *redispatch) git(dir string, args ...string) string {
+	r.t.Helper()
+	if dir != "" {
+		args = append([]string{"-C", dir}, args...)
+	}
+	cmd := exec.Command("git", args...)
+	cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		r.t.Fatalf("git %v: %v: %s", args, err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func (r *redispatch) commit(dir, msg string) string {
+	r.git(dir, "commit", "-q", "--allow-empty", "-m", msg)
+	return r.git(dir, "rev-parse", "HEAD")
+}
+
+// create runs WorktreeCreate for story/s1 from epic/e1 through a client whose orca makes a fresh mangled worktree.
+func (r *redispatch) create() (string, error) { return r.createBranch("story/s1") }
+
+func (r *redispatch) createBranch(branch string) (string, error) {
+	r.n++
+	wt := filepath.Join(r.t.TempDir(), "wt")
+	c := New("run")
+	c.run = func(args ...string) ([]byte, error) {
+		mangled := "nphattai/x-" + string(rune('a'+r.n))
+		r.git(r.host, "worktree", "add", "-q", "-b", mangled, wt, "epic/e1")
+		return []byte(`{"ok":true,"result":{"worktree":{"path":"` + wt + `","branch":"` + mangled + `"}}}`), nil
+	}
+	_, err := c.WorktreeCreate(r.host, branch, "epic/e1")
+	return wt, err
+}
+
+// B-22: a re-dispatch of a story whose branch is on origin lands on the pushed work in each local-branch case, and a
+// diverged local branch is refused with both sides intact. The epic has moved on since the story was cut, as it does.
+func TestWorktreeCreateReusesOriginBranch(t *testing.T) {
+	setup := func(t *testing.T) (*redispatch, string) {
+		r := newRedispatch(t)
+		r.git(r.peer, "switch", "-q", "-c", "story/s1", "origin/epic/e1")
+		pushed := r.commit(r.peer, "story work")
+		r.git(r.peer, "push", "-q", "origin", "story/s1")
+		r.git(r.peer, "switch", "-q", "-c", "e", "origin/epic/e1")
+		r.commit(r.peer, "epic moves on")
+		r.git(r.peer, "push", "-q", "origin", "HEAD:epic/e1")
+		r.git(r.host, "fetch", "-q", "origin")
+		r.git(r.host, "branch", "-f", "epic/e1", "origin/epic/e1")
+		return r, pushed
+	}
+	t.Run("no local branch", func(t *testing.T) {
+		r, pushed := setup(t)
+		wt, err := r.create()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if h := r.git(wt, "rev-parse", "HEAD"); h != pushed {
+			t.Fatalf("worktree HEAD %s, want the pushed story/s1 %s (not a fresh cut from the epic)", h, pushed)
+		}
+		if b := r.git(wt, "branch", "--show-current"); b != "story/s1" {
+			t.Fatalf("branch %q, want story/s1", b)
+		}
+		if up := r.git(wt, "rev-parse", "--abbrev-ref", "story/s1@{upstream}"); up != "origin/story/s1" {
+			t.Fatalf("upstream %q, want origin/story/s1", up)
+		}
+	})
+	t.Run("stale local branch behind origin", func(t *testing.T) {
+		r, pushed := setup(t)
+		r.git(r.host, "branch", "story/s1", pushed+"~1")
+		wt, err := r.create()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if h := r.git(wt, "rev-parse", "HEAD"); h != pushed {
+			t.Fatalf("worktree HEAD %s, want fast-forwarded to %s", h, pushed)
+		}
+	})
+	t.Run("local ahead of origin keeps unpushed work", func(t *testing.T) {
+		r, pushed := setup(t)
+		r.git(r.host, "branch", "story/s1", "origin/story/s1")
+		r.git(r.host, "switch", "-q", "story/s1")
+		local := r.commit(r.host, "unpushed")
+		r.git(r.host, "switch", "-q", "--detach")
+		wt, err := r.create()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if h := r.git(wt, "rev-parse", "HEAD"); h != local {
+			t.Fatalf("worktree HEAD %s, want the unpushed local %s on top of %s", h, local, pushed)
+		}
+	})
+	t.Run("branch deleted on origin is not adopted", func(t *testing.T) {
+		r, pushed := setup(t)
+		r.git(r.host, "fetch", "-q", "origin") // the host saw story/s1 once: a remote-tracking ref exists
+		r.git(r.peer, "push", "-q", "origin", "--delete", "story/s1")
+		wt, err := r.create()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if h, tip := r.git(wt, "rev-parse", "HEAD"), r.git(r.host, "rev-parse", "epic/e1"); h != tip || h == pushed {
+			t.Fatalf("worktree HEAD %s, want the epic tip %s (a stale origin/story/s1 is not pushed work)", h, tip)
+		}
+	})
+	t.Run("non-story branch on origin keeps the base rules", func(t *testing.T) {
+		r, _ := setup(t)
+		r.git(r.peer, "push", "-q", "origin", "origin/story/s1:refs/heads/arena/a-r1")
+		wt, err := r.createBranch("arena/a-r1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if h, tip := r.git(wt, "rev-parse", "HEAD"), r.git(r.host, "rev-parse", "epic/e1"); h != tip {
+			t.Fatalf("worktree HEAD %s, want the base %s (origin adoption is for story/ branches only)", h, tip)
+		}
+	})
+	t.Run("diverged is refused", func(t *testing.T) {
+		r, pushed := setup(t)
+		r.git(r.host, "branch", "story/s1", pushed+"~1")
+		r.git(r.host, "switch", "-q", "story/s1")
+		local := r.commit(r.host, "other host's work")
+		r.git(r.host, "switch", "-q", "--detach")
+		_, err := r.create()
+		if err == nil || !strings.Contains(err.Error(), "diverged") {
+			t.Fatalf("err = %v, want a diverged refusal", err)
+		}
+		if h := r.git(r.host, "rev-parse", "story/s1"); h != local {
+			t.Fatalf("refused branch moved: %s != %s", h, local)
+		}
+	})
+}
