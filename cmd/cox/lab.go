@@ -39,7 +39,7 @@ func labNew(args []string) int {
 	name, rest := onePositional(args)
 	fs := flag.NewFlagSet("lab new", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	epicDir := fs.String("epic", "", "epic directory")
+	epicDir := epicFlag(fs, "", "epic directory")
 	rule := fs.String("rule", "", "policy key the experiment toggles (e.g. arena.trigger)")
 	metric := fs.String("metric", "", "scorecard metric to compare (e.g. cost_usd, ci_wall_incl_queue_s)")
 	if err := fs.Parse(rest); err != nil {
@@ -67,7 +67,7 @@ func labAssign(args []string) int {
 	name, rest := onePositional(args)
 	fs := flag.NewFlagSet("lab assign", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	epicDir := fs.String("epic", "", "epic directory")
+	epicDir := epicFlag(fs, "", "epic directory")
 	story := fs.String("story", "", "story id to assign")
 	if err := fs.Parse(rest); err != nil {
 		return 2
@@ -119,7 +119,7 @@ func labReport(args []string) int {
 	name, rest := onePositional(args)
 	fs := flag.NewFlagSet("lab report", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	epicDir := fs.String("epic", "", "epic directory")
+	epicDir := epicFlag(fs, "", "epic directory")
 	noForge := fs.Bool("no-forge", false, "skip the GitHub forge probe (ci metric stays unknown)")
 	asJSON := fs.Bool("json", false, "emit the report as JSON")
 	if err := fs.Parse(rest); err != nil {
@@ -155,7 +155,7 @@ func labRetire(args []string) int {
 	name, rest := onePositional(args)
 	fs := flag.NewFlagSet("lab retire", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	epicDir := fs.String("epic", "", "epic directory")
+	epicDir := epicFlag(fs, "", "epic directory")
 	noForge := fs.Bool("no-forge", false, "skip the GitHub forge probe")
 	if err := fs.Parse(rest); err != nil {
 		return 2

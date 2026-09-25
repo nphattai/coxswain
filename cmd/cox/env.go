@@ -29,7 +29,7 @@ func cmdEnv(args []string) int {
 	}
 	fs := flag.NewFlagSet("env "+verb, flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	epicDir := fs.String("epic", "", "epic directory")
+	epicDir := epicFlag(fs, "", "epic directory")
 	svcAlias := fs.String("service", "", "service alias (default: epic.env BACKEND)")
 	apply := fs.Bool("apply", false, "reconcile: write released state for freed allocations (default: dry-run)")
 	if err := fs.Parse(rest); err != nil {
@@ -234,4 +234,41 @@ func readEpicEnvKey(epicDir, key string) string {
 		}
 	}
 	return ""
+}
+
+// epicFlag registers --epic on fs and returns its value made absolute at parse time (B-71a, B-50): a relative --epic
+// (or COX_EPIC default) is resolved against the caller's cwd once, so everything downstream - the rendered brief a
+// worker reads from its own worktree, the watcher argv doctor stats from its own cwd, the lock files - sees one
+// absolute path. "" stays "" (the flag's "not given").
+func epicFlag(fs *flag.FlagSet, def, usage string) *string {
+	p := new(string)
+	*p = absDir(def)
+	fs.Var(absDirValue{p}, "epic", usage)
+	return p
+}
+
+// absDirValue is the flag.Value behind epicFlag.
+type absDirValue struct{ p *string }
+
+func (v absDirValue) String() string {
+	if v.p == nil {
+		return ""
+	}
+	return *v.p
+}
+
+func (v absDirValue) Set(s string) error {
+	*v.p = absDir(s)
+	return nil
+}
+
+// absDir is filepath.Abs for a non-empty path; "" and an unresolvable path are returned as given.
+func absDir(p string) string {
+	if p == "" {
+		return ""
+	}
+	if abs, err := filepath.Abs(p); err == nil {
+		return abs
+	}
+	return p
 }

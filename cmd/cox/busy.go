@@ -46,7 +46,7 @@ func busyArm(args []string) int {
 	story, rest := onePositional(args)
 	fs := flag.NewFlagSet("busy arm", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	epicDir := fs.String("epic", os.Getenv("COX_EPIC"), "epic directory")
+	epicDir := epicFlag(fs, os.Getenv("COX_EPIC"), "epic directory")
 	storyFlag := fs.String("story", os.Getenv("COX_STORY"), "story id (defaults to $COX_STORY; or pass it as the positional)")
 	if err := fs.Parse(rest); err != nil {
 		return 2
@@ -70,7 +70,7 @@ func busyApply(args []string) int {
 	a, bPos, rest := twoPositionals(args)
 	fs := flag.NewFlagSet("busy apply", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	epicDir := fs.String("epic", os.Getenv("COX_EPIC"), "epic directory")
+	epicDir := epicFlag(fs, os.Getenv("COX_EPIC"), "epic directory")
 	storyFlag := fs.String("story", os.Getenv("COX_STORY"), "story id (defaults to $COX_STORY)")
 	gen := fs.String("gen", os.Getenv("COX_BUSY_GEN"), "the incarnation gen minted at arm (defaults to $COX_BUSY_GEN)")
 	source := fs.String("source", "", "who is reporting the state (e.g. claude-hook, pi-ext)")
@@ -97,7 +97,7 @@ func busyProgress(args []string) int {
 	story, rest := onePositional(args)
 	fs := flag.NewFlagSet("busy progress", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	epicDir := fs.String("epic", os.Getenv("COX_EPIC"), "epic directory")
+	epicDir := epicFlag(fs, os.Getenv("COX_EPIC"), "epic directory")
 	storyFlag := fs.String("story", os.Getenv("COX_STORY"), "story id (defaults to $COX_STORY)")
 	gen := fs.String("gen", os.Getenv("COX_BUSY_GEN"), "the incarnation gen minted at arm (defaults to $COX_BUSY_GEN)")
 	if err := fs.Parse(rest); err != nil {
@@ -117,7 +117,7 @@ func busyRetire(args []string) int {
 	story, rest := onePositional(args)
 	fs := flag.NewFlagSet("busy retire", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	epicDir := fs.String("epic", os.Getenv("COX_EPIC"), "epic directory")
+	epicDir := epicFlag(fs, os.Getenv("COX_EPIC"), "epic directory")
 	storyFlag := fs.String("story", os.Getenv("COX_STORY"), "story id (defaults to $COX_STORY)")
 	gen := fs.String("gen", os.Getenv("COX_BUSY_GEN"), "the incarnation gen minted at arm (defaults to $COX_BUSY_GEN)")
 	if err := fs.Parse(rest); err != nil {
@@ -137,7 +137,7 @@ func busyRead(args []string) int {
 	story, rest := onePositional(args)
 	fs := flag.NewFlagSet("busy read", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	epicDir := fs.String("epic", os.Getenv("COX_EPIC"), "epic directory")
+	epicDir := epicFlag(fs, os.Getenv("COX_EPIC"), "epic directory")
 	storyFlag := fs.String("story", os.Getenv("COX_STORY"), "story id (defaults to $COX_STORY)")
 	asJSON := fs.Bool("json", false, "print the full record as JSON")
 	if err := fs.Parse(rest); err != nil {

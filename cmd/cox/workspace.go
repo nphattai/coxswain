@@ -148,7 +148,7 @@ func cmdWorkspaceHooks(args []string) int {
 	fs.SetOutput(os.Stderr)
 	root := fs.String("root", ".", "workspace root")
 	harnessName := fs.String("harness", "claude", "harness whose hooks to install: "+harnessOptions())
-	epicDir := fs.String("epic", "", "epic dir the pi extension binds (pi only)")
+	epicDir := epicFlag(fs, "", "epic dir the pi extension binds (pi only)")
 	dryRun := fs.Bool("dry-run", false, "pi only: print the extension install plan and write nothing")
 	if err := fs.Parse(args); err != nil {
 		return 2

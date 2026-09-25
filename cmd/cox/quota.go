@@ -37,7 +37,7 @@ func quotaSet(args []string) int {
 	harnessName, percentStr, rest := twoPositional(args)
 	fs := flag.NewFlagSet("quota set", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	epicDir := fs.String("epic", "", "epic directory")
+	epicDir := epicFlag(fs, "", "epic directory")
 	until := fs.String("until", "", "RFC3339 expiry (required); the reading is unknown after it")
 	model := fs.String("model", "", "optional model family this reading is scoped to")
 	if err := fs.Parse(rest); err != nil {
@@ -89,7 +89,7 @@ func quotaUnset(args []string) int {
 	harnessName, rest := onePositional(args)
 	fs := flag.NewFlagSet("quota unset", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	epicDir := fs.String("epic", "", "epic directory")
+	epicDir := epicFlag(fs, "", "epic directory")
 	if err := fs.Parse(rest); err != nil {
 		return 2
 	}
@@ -139,7 +139,7 @@ func appendQuotaManualEvent(epicDir, action string, e quota.ManualEntry) error {
 func quotaTable(args []string) int {
 	fs := flag.NewFlagSet("quota", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	epicDir := fs.String("epic", "", "epic directory")
+	epicDir := epicFlag(fs, "", "epic directory")
 	asJSON := fs.Bool("json", false, "emit coxswain.quota.v1 readings as JSON")
 	if err := fs.Parse(args); err != nil {
 		return 2

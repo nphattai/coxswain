@@ -323,7 +323,7 @@ func cmdWatch(args []string) int {
 	}
 	fs := flag.NewFlagSet("watch", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	epicDir := fs.String("epic", "", "epic directory")
+	epicDir := epicFlag(fs, "", "epic directory")
 	once := fs.Bool("once", false, "run a single watch pass and exit")
 	replace := fs.Bool("replace", false, "kill an already-running watcher and take over the pidfile")
 	if err := fs.Parse(args); err != nil {
@@ -410,7 +410,7 @@ func watchCheck(args []string) int {
 	id, rest := onePositional(rest)
 	fs := flag.NewFlagSet("watch check", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	epicDir := fs.String("epic", "", "epic directory")
+	epicDir := epicFlag(fs, "", "epic directory")
 	if err := fs.Parse(rest); err != nil {
 		return 2
 	}

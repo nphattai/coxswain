@@ -40,7 +40,7 @@ func cmdShip(args []string) int {
 func cmdShipFacts(args []string) int {
 	fs := flag.NewFlagSet("ship facts", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	epicDir := fs.String("epic", "", "epic directory")
+	epicDir := epicFlag(fs, "", "epic directory")
 	asJSON := fs.Bool("json", false, "emit JSON")
 	noForge := fs.Bool("no-forge", false, "skip the GitHub forge probe (PR/checks/merged stay unknown)")
 	if err := fs.Parse(args[1:]); err != nil {
@@ -116,7 +116,7 @@ func cmdShipFacts(args []string) int {
 func cmdShipMerge(args []string) int {
 	fs := flag.NewFlagSet("ship merge", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	epicDir := fs.String("epic", "", "epic directory")
+	epicDir := epicFlag(fs, "", "epic directory")
 	prNumber := fs.Int("pr", 0, "PR number to merge")
 	method := fs.String("method", "squash", "merge method: squash|merge|rebase")
 	check := fs.Bool("check", false, "read and print the verdict, but never merge or write the ledger")

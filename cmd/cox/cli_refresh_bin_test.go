@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"flag"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/nphattai/coxswain/internal/protocol/checkpoint"
+	"github.com/nphattai/coxswain/internal/protocol/report"
 	"github.com/nphattai/coxswain/internal/state"
 	"github.com/nphattai/coxswain/internal/wake"
 )
@@ -135,6 +137,109 @@ func TestStopRewakeBinaryNoEpicReturnsAtOnceWithoutALock(t *testing.T) {
 		out, err := cmd.CombinedOutput()
 		if err != nil || time.Since(began) > 10*time.Second {
 			t.Errorf("%s (handle %q): waiter with no epic took %s, err %v\n%s", c.harness, c.handle, time.Since(began), err, out)
+		}
+	}
+}
+
+// B-50 / B-71a against the real binary: `cox story dispatch --epic <relative>` from the workspace root resolves the
+// epic once at parse time, so the worker's launch line (its COX_EPIC and the story path it reads from inside its own
+// worktree) carries the absolute epic dir. Before the fix both carried "epics/e1". The watcher dispatch starts takes
+// the same parsed value (startWatcher(*epicDir, ...)).
+func TestDispatchBinaryAbsolutizesRelativeEpic(t *testing.T) {
+	epic, _, log := launchFixture(t, "harness: pi\nrepo: r\n")
+	ws := filepath.Dir(filepath.Dir(epic))
+	t.Cleanup(func() {
+		if pid := readPid(watchPidPath(epic)); pid > 0 {
+			if p, err := os.FindProcess(pid); err == nil {
+				_ = p.Kill()
+			}
+		}
+	})
+	_, se, _ := runCox(t, ws, nil, "story", "dispatch", "s1", "--epic", filepath.Join("epics", "e1"), "--allow-unsandboxed")
+	b, _ := os.ReadFile(log)
+	var launch string
+	for _, l := range strings.Split(string(b), "\n") {
+		if strings.HasPrefix(l, "terminal send") {
+			launch = l
+		}
+	}
+	if launch == "" {
+		t.Fatalf("no launch line reached orca\nstderr: %s\norca calls:\n%s", se, b)
+	}
+	real, err := filepath.EvalSymlinks(epic) // the binary's cwd is the resolved path (/private/var on macOS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"COX_EPIC='" + real + "'", "story file " + real + "/stories/s1.md"} {
+		if !strings.Contains(launch, want) {
+			t.Errorf("launch line lacks %q (absolute epic): %s", want, launch)
+		}
+	}
+}
+
+// Adapters #43 follow-up (a) against the real binary: `cox reply s Q001` (an upper-cased id) writes its inbox record as
+// "answer to q001:", the form the watcher's replyAnswerRe reads, so the reply is marked consumed.
+func TestReplyBinaryCanonicalisesQuestionID(t *testing.T) {
+	epic := t.TempDir()
+	if _, err := report.Question(epic, "m10", 1, "which port range?"); err != nil {
+		t.Fatal(err)
+	}
+	so, se, code := runCox(t, epic, []string{"COX_PLANE=terminal"}, "reply", "m10", "Q001", "use 41000-41099", "--epic", epic)
+	if code != 0 {
+		t.Fatalf("cox reply exit %d: %s %s", code, so, se)
+	}
+	if !strings.Contains(so, "answered m10/q001") {
+		t.Errorf("reply echoed the raw id: %q", so)
+	}
+	entries, _ := os.ReadDir(filepath.Join(epic, "inbox", "m10"))
+	var body string
+	for _, e := range entries {
+		if !e.IsDir() {
+			b, _ := os.ReadFile(filepath.Join(epic, "inbox", "m10", e.Name()))
+			body += string(b)
+		}
+	}
+	if !strings.Contains(body, "answer to q001: use 41000-41099") {
+		t.Errorf("inbox record does not carry the canonical id:\n%s", body)
+	}
+}
+
+// Adapters #43 follow-up (c) against the real binary: with no run yet, dispatch's `orca orchestration run-create`
+// failing with an ok=false envelope surfaces Orca's code and message, not a bare "exit status 1".
+func TestDispatchBinarySurfacesRunCreateEnvelope(t *testing.T) {
+	epic, _, log := launchFixture(t, "harness: pi\nrepo: r\n")
+	mustWrite(t, filepath.Join(filepath.Dir(log), "orca"), "#!/bin/sh\necho '{\"ok\":false,\"error\":{\"code\":\"runtime_unavailable\",\"message\":\"Orca is not running\"}}'\nexit 1\n")
+	_, se, code := runCox(t, epic, []string{"ORCA_RUN_ID="}, "story", "dispatch", "s1", "--epic", epic, "--allow-unsandboxed")
+	if code == 0 {
+		t.Fatalf("dispatch with a failing run-create exited 0: %s", se)
+	}
+	if !strings.Contains(se, "Orca is not running (runtime_unavailable)") || strings.Contains(se, "exit status") {
+		t.Errorf("run-create failure did not surface the orca envelope: %q", se)
+	}
+}
+
+// B-71a: every --epic (flag or the COX_EPIC default) is absolute after Parse; "" stays "" (not given).
+func TestEpicFlagIsAbsoluteAtParse(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	wd, _ := os.Getwd()
+	for _, c := range []struct {
+		def  string
+		args []string
+		want string
+	}{
+		{"", []string{"--epic", "epics/e1"}, filepath.Join(wd, "epics", "e1")},
+		{"epics/env", nil, filepath.Join(wd, "epics", "env")},
+		{"", nil, ""},
+		{"", []string{"--epic=/abs/e"}, "/abs/e"},
+	} {
+		fs := flag.NewFlagSet("t", flag.ContinueOnError)
+		p := epicFlag(fs, c.def, "epic")
+		if err := fs.Parse(c.args); err != nil {
+			t.Fatal(err)
+		}
+		if *p != c.want {
+			t.Errorf("def %q args %v: --epic = %q, want %q", c.def, c.args, *p, c.want)
 		}
 	}
 }

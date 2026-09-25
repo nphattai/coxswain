@@ -16,7 +16,7 @@ func cmdArtifact(args []string) int {
 	}
 	fs := flag.NewFlagSet("artifact list", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	epicDir := fs.String("epic", "", "epic directory")
+	epicDir := epicFlag(fs, "", "epic directory")
 	if err := fs.Parse(args[1:]); err != nil {
 		return 2
 	}

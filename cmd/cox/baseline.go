@@ -26,7 +26,7 @@ func cmdBaseline(args []string) int {
 	}
 	fs := flag.NewFlagSet("baseline run", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	epicDir := fs.String("epic", "", "epic directory")
+	epicDir := epicFlag(fs, "", "epic directory")
 	story := fs.String("story", "", "story id to replay")
 	harness := fs.String("harness", "", "harness ("+harnessOptions()+")")
 	condition := fs.String("condition", "", "bare|v2")

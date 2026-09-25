@@ -17,7 +17,7 @@ import (
 func cmdReconcile(args []string) int {
 	fs := flag.NewFlagSet("reconcile", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	epicDir := fs.String("epic", "", "epic directory")
+	epicDir := epicFlag(fs, "", "epic directory")
 	apply := fs.Bool("apply", false, "write the confirmed transitions (default: dry-run, print only)")
 	asJSON := fs.Bool("json", false, "emit JSON")
 	if err := fs.Parse(args); err != nil {

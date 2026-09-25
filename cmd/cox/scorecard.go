@@ -22,7 +22,7 @@ import (
 func cmdScorecard(args []string) int {
 	fs := flag.NewFlagSet("scorecard", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	epicDir := fs.String("epic", "", "epic directory")
+	epicDir := epicFlag(fs, "", "epic directory")
 	story := fs.String("story", "", "one story id (default: every dispatched story)")
 	asJSON := fs.Bool("json", false, "emit coxswain.scorecard.v1 JSON")
 	noForge := fs.Bool("no-forge", false, "skip the GitHub forge probe (ci_wall_incl_queue_s stays unknown)")

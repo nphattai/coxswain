@@ -35,7 +35,7 @@ func cmdState(args []string) int {
 
 	fs := flag.NewFlagSet("state", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	epicDir := fs.String("epic", "", "epic directory (holds .cox/events.jsonl)")
+	epicDir := epicFlag(fs, "", "epic directory (holds .cox/events.jsonl)")
 	asJSON := fs.Bool("json", false, "emit coxswain.fleet.v1 JSON")
 	noForge := fs.Bool("no-forge", false, "skip the GitHub forge probe (pr/checks/merged stay unknown)")
 	if err := fs.Parse(args); err != nil {

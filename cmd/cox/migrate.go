@@ -21,7 +21,7 @@ import (
 func cmdMigrate(args []string) int {
 	fs := flag.NewFlagSet("migrate", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	epicDir := fs.String("epic", "", "epic directory (must hold a v1 .run)")
+	epicDir := epicFlag(fs, "", "epic directory (must hold a v1 .run)")
 	root := fs.String("root", "", "workspace clone root to check for v1 hooks (<root>/.claude/settings.json)")
 	apply := fs.Bool("apply", false, "write the v2 control tree and rename .run -> .run.migrated (default is a dry run)")
 	force := fs.Bool("force", false, "apply even when a live worker's composer is busy or pending")

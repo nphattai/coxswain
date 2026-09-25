@@ -149,7 +149,7 @@ func cmdDoctor(args []string) int {
 	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	asJSON := fs.Bool("json", false, "emit JSON")
-	epicDir := fs.String("epic", "", "epic directory (optional; adds an adapter column for its policy harness options)")
+	epicDir := epicFlag(fs, "", "epic directory (optional; adds an adapter column for its policy harness options)")
 	fs.Var(&rootFlags, "root", "extra root to scan for workspaces (repeatable; adds to $HOME/Work, $ORCA_WORKSPACES, $COX_ROOTS)")
 	if err := fs.Parse(args); err != nil {
 		return 2

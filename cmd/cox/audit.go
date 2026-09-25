@@ -23,7 +23,7 @@ func cmdAudit(args []string) int {
 	story, rest := onePositional(args[1:])
 	fs := flag.NewFlagSet("audit pr", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	epicDir := fs.String("epic", "", "epic directory")
+	epicDir := epicFlag(fs, "", "epic directory")
 	pr := fs.String("pr", "", "PR number or URL (default: the story branch)")
 	asJSON := fs.Bool("json", false, "emit JSON")
 	if err := fs.Parse(rest); err != nil {

@@ -25,7 +25,7 @@ import (
 func cmdBoard(args []string) int {
 	fs := flag.NewFlagSet("board", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	epicDir := fs.String("epic", "", "epic directory")
+	epicDir := epicFlag(fs, "", "epic directory")
 	out := fs.String("out", "", "write a self-contained HTML snapshot to this file")
 	serve := fs.String("serve", "", "serve the board on this address (e.g. :8787)")
 	noForge := fs.Bool("no-forge", false, "skip the GitHub forge probe (pr/checks stay unknown)")

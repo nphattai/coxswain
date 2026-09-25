@@ -114,7 +114,7 @@ func epicNew(args []string) int {
 func epicAttach(args []string) int {
 	fs := flag.NewFlagSet("epic attach", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	epicDir := fs.String("epic", "", "epic directory to re-attach")
+	epicDir := epicFlag(fs, "", "epic directory to re-attach")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -158,7 +158,7 @@ func resolveRepoAliases(ws *workspace.Workspace, repos repoList) ([]string, erro
 func epicStories(args []string) int {
 	fs := flag.NewFlagSet("epic stories", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	epicDir := fs.String("epic", "", "epic directory")
+	epicDir := epicFlag(fs, "", "epic directory")
 	var storyFlags repoList
 	fs.Var(&storyFlags, "story", "story as id=repo (repeatable); default is one per repo")
 	if err := fs.Parse(args); err != nil {
@@ -225,7 +225,7 @@ func storySpecs(epicDir string, storyFlags repoList) ([]epic.StorySpec, error) {
 func epicClose(args []string) int {
 	fs := flag.NewFlagSet("epic close", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	epicDir := fs.String("epic", "", "epic directory")
+	epicDir := epicFlag(fs, "", "epic directory")
 	yes := fs.Bool("yes", false, "execute (default is a dry run)")
 	force := fs.Bool("force", false, "remove unlanded worktrees")
 	storiesOnly := fs.Bool("stories-only", false, "skip epic backend and epic worktrees")

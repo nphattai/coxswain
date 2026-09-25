@@ -53,7 +53,7 @@ func cmdArena(args []string) int {
 func arenaCloseCmd(args []string) int {
 	fs := flag.NewFlagSet("arena close", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	epicDir := fs.String("epic", "", "epic directory")
+	epicDir := epicFlag(fs, "", "epic directory")
 	round := fs.Int("round", 0, "round being closed (recorded in the summary)")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -133,7 +133,7 @@ func openArenaWorktrees(epicDir string) bool {
 func arenaCheck(args []string) int {
 	fs := flag.NewFlagSet("arena check", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	epicDir := fs.String("epic", "", "epic directory")
+	epicDir := epicFlag(fs, "", "epic directory")
 	report := fs.String("report", "", "one report file; default checks reports/arena/round-<round>-*.md")
 	round := fs.Int("round", 1, "round to check when --report is omitted")
 	if err := fs.Parse(args); err != nil {
@@ -212,7 +212,7 @@ func printRound2(epicDir string) {
 func arenaCollect(args []string) int {
 	fs := flag.NewFlagSet("arena collect", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	epicDir := fs.String("epic", "", "epic directory")
+	epicDir := epicFlag(fs, "", "epic directory")
 	round := fs.Int("round", 1, "round to collect")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -241,7 +241,7 @@ func arenaCollect(args []string) int {
 func arenaVerify(args []string) int {
 	fs := flag.NewFlagSet("arena verify", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	epicDir := fs.String("epic", "", "epic directory")
+	epicDir := epicFlag(fs, "", "epic directory")
 	round := fs.Int("round", 1, "round to verify")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -273,7 +273,7 @@ func arenaVerify(args []string) int {
 func arenaSynth(args []string) int {
 	fs := flag.NewFlagSet("arena synth", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	epicDir := fs.String("epic", "", "epic directory")
+	epicDir := epicFlag(fs, "", "epic directory")
 	round := fs.Int("round", 1, "round to synthesize")
 	force := fs.Bool("force", false, "overwrite a synthesis that already carries adjudication")
 	htmlOut := fs.Bool("html", false, "render a review artifact under reports/visual/ instead of building the synthesis")
@@ -341,7 +341,7 @@ func arenaAnswer(args []string) int {
 func epicArena(args []string) int {
 	fs := flag.NewFlagSet("epic arena", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	epicDir := fs.String("epic", "", "epic directory")
+	epicDir := epicFlag(fs, "", "epic directory")
 	leader := fs.String("leader", "", "leader harness (default from policy harness.leader.default)")
 	model := fs.String("model", "", "model id or alias for every role story")
 	reason := fs.String("reason", "", "captain reason (forces a full arena and feeds the sensitive scan)")
@@ -491,7 +491,7 @@ func arenaTerminalRun(opts arena.Options, explicit bool) int {
 func epicDesign(args []string) int {
 	fs := flag.NewFlagSet("epic design", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	epicDir := fs.String("epic", "", "epic directory")
+	epicDir := epicFlag(fs, "", "epic directory")
 	sign := fs.Bool("sign", false, "record design_signed")
 	amend := fs.Bool("amend", false, "record design_amended (requires --reason)")
 	reason := fs.String("reason", "", "why (required for --amend)")

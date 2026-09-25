@@ -16,7 +16,7 @@ func cmdStatus(args []string) int {
 	phase, note, rest := twoPositionals(args)
 	fs := flag.NewFlagSet("status", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	epicDir := fs.String("epic", os.Getenv("COX_EPIC"), "epic directory")
+	epicDir := epicFlag(fs, os.Getenv("COX_EPIC"), "epic directory")
 	story := fs.String("story", os.Getenv("COX_STORY"), "story id")
 	if err := fs.Parse(rest); err != nil {
 		return 2
