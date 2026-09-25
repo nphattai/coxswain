@@ -719,6 +719,16 @@ func (w *Watcher) composerState(story string, sess backend.Session) string {
 	return cs
 }
 
+// onDialog reports whether the worker is waiting on a local harness dialog: the backend's DialogReader first, because a
+// claude/pi worker on a permission prompt keeps a busy record that composerState reports before the backend's own
+// verdict (same order as internal/protocol/control onDialog), else a "blocked" composer.
+func (w *Watcher) onDialog(story string, sess backend.Session) bool {
+	if d, ok := w.Backend.(backend.DialogReader); ok && d.Dialog(sess) {
+		return true
+	}
+	return w.composerState(story, sess) == backend.ComposerBlocked
+}
+
 // blockedPass raises one urgent stuck wake when a working story's worker has been continuously blocked on a local prompt
 // (an approval or input request it cannot answer itself) for longer than BlockedWait. Composer reports "blocked" from
 // the backend's structured agent state (Orca agents[] state "waiting"); the block start is stamped on first sight and
@@ -741,7 +751,7 @@ func (w *Watcher) blockedPass() (int, bool, error) {
 		if !ok {
 			continue
 		}
-		if w.composerState(s.ID, sess) != backend.ComposerBlocked {
+		if !w.onDialog(s.ID, sess) {
 			w.clearBlocked(s.ID) // no longer waiting: the interval ends, so a fresh block re-arms the wake
 			continue
 		}

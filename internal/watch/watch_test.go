@@ -1101,3 +1101,44 @@ func TestIdleNoDoneNoteNamesCIEvidenceAsRead(t *testing.T) {
 		}
 	}
 }
+
+// dialogBackend is a backend that reads a harness dialog (backend.DialogReader), as Orca does from agents[] "waiting".
+type dialogBackend struct {
+	*fake.Backend
+	dialog bool
+}
+
+func (d *dialogBackend) Dialog(backend.Session) bool { return d.dialog }
+
+// A claude/pi worker on a permission dialog keeps a busy record that says busy; blockedPass must still see the dialog
+// through the backend's DialogReader (as internal/protocol/control does) and raise the stuck wake after BlockedWait.
+func TestBlockedPassSeesDialogBehindBusyRecord(t *testing.T) {
+	epic := t.TempDir()
+	must(t, state.Append(epic, ev(epic, "s", 1, state.Submitted, state.Working)))
+	gen, err := busy.Arm(epic, "s", "claude", []string{"dispatch", "claude-hook", "recovery"})
+	must(t, err)
+	must(t, busy.Apply(epic, "s", busy.Busy, gen, "claude-hook", "UserPromptSubmit"))
+	now := time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC)
+	b := &dialogBackend{Backend: fake.New(), dialog: true}
+	w := &Watcher{EpicDir: epic, Backend: b, Sessions: map[string]backend.Session{"s": {ID: "ctx_1", Handle: "term_1"}},
+		BlockedWait: time.Minute, Now: func() time.Time { return now }}
+
+	if n, _, _ := w.blockedPass(); n != 0 {
+		t.Fatalf("first sight should record only, got %d", n)
+	}
+	now = now.Add(2 * time.Minute)
+	if n, urg, err := w.blockedPass(); err != nil || n != 1 || !urg {
+		t.Fatalf("a worker on a dialog behind a busy record: want 1 urgent stuck wake, got n=%d urg=%v err=%v", n, urg, err)
+	}
+
+	// No dialog: a busy worker is just busy.
+	b.dialog = false
+	now = now.Add(5 * time.Minute)
+	if n, _, _ := w.blockedPass(); n != 0 {
+		t.Fatalf("a busy worker with no dialog raised %d stuck wake(s)", n)
+	}
+	now = now.Add(5 * time.Minute)
+	if n, _, _ := w.blockedPass(); n != 0 {
+		t.Fatalf("a busy worker with no dialog raised %d stuck wake(s) after the window", n)
+	}
+}
