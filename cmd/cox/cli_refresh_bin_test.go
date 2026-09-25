@@ -243,3 +243,93 @@ func TestEpicFlagIsAbsoluteAtParse(t *testing.T) {
 		}
 	}
 }
+
+// doctorOn runs the real binary's `cox doctor` from inside workspace root (HOME and the scan roots pinned to temp dirs,
+// so only this workspace is inspected) and returns stdout+stderr.
+func doctorOn(t *testing.T, root string) string {
+	t.Helper()
+	so, se, _ := runCox(t, root, []string{"ORCA_WORKSPACES=", "COX_ROOTS="}, "doctor")
+	return so + se
+}
+
+// B-04 against the real binary: `cox epic design --sign --no-arena --reason <ruling>` signs a lite epic with no arena
+// synthesis (before: "cannot sign: no synthesis"), refuses without a ruling, and doctor then reports no signature
+// divergence for the signed Status.
+func TestEpicDesignBinarySignsNoArena(t *testing.T) {
+	root := t.TempDir()
+	coxInit(t, root, "--repo", "app="+t.TempDir()+":main")
+	epic := filepath.Join(root, "app", "epics", "lite")
+	mustWrite(t, filepath.Join(epic, "DESIGN.md"), "# lite\n\nStatus: active (signed 2026-09-25, no arena)\n")
+	if _, se, code := runCox(t, root, nil, "epic", "design", "--sign", "--no-arena", "--epic", epic); code == 0 || !strings.Contains(se, "--reason") {
+		t.Fatalf("no-arena sign without a ruling: exit %d %q, want a --reason refusal", code, se)
+	}
+	so, se, code := runCox(t, root, nil, "epic", "design", "--sign", "--no-arena", "--reason", "captain: lite, no arena", "--by", "captain", "--epic", epic)
+	if code != 0 || !strings.Contains(so, "design_signed recorded (no arena") {
+		t.Fatalf("no-arena sign: exit %d\n%s%s", code, so, se)
+	}
+	if out := doctorOn(t, root); strings.Contains(out, "signature lost") || strings.Contains(out, "ledger is signed but") {
+		t.Errorf("doctor reports a signature divergence after a no-arena sign:\n%s", out)
+	}
+}
+
+// B-46 against the real binary: an epic closed by hand before close wrote anything (Status "closed ... (previously:
+// active, signed ...)", no design_signed in the ledger, no .cox.closed - the second-machine shape) is not reported as
+// "signature lost".
+func TestDoctorBinaryHandClosedEpicIsNotSignatureLost(t *testing.T) {
+	root := t.TempDir()
+	coxInit(t, root, "--repo", "app="+t.TempDir()+":main")
+	epic := filepath.Join(root, "app", "epics", "old")
+	mustWrite(t, filepath.Join(epic, "DESIGN.md"), "# old\n\nStatus: closed 2026-09-20 (previously: active, signed 2026-09-10)\n")
+	if out := doctorOn(t, root); strings.Contains(out, "signature lost") {
+		t.Errorf("doctor flags a hand-closed epic's signature as lost:\n%s", out)
+	}
+}
+
+// B-06: a headless arena role that ran to its report folds to completed, not working (the turn-boundary guard and the
+// stop waiter count a working role as open).
+func TestCommitHeadlessCompletesTheRole(t *testing.T) {
+	epic := t.TempDir()
+	if err := commitHeadless(epic, "e", "arena-adversary", 1, "", map[string]any{"kind": "headless", "round": 1}); err != nil {
+		t.Fatal(err)
+	}
+	if snap := foldStoryState(t, epic, "arena-adversary"); snap != state.Completed {
+		t.Fatalf("headless role folded to %q, want completed", snap)
+	}
+}
+
+// B-06 against the real binary: `cox arena close` completes a headless role an earlier run left working, with no live
+// backend needed when no arena worktree is tracked.
+func TestArenaCloseBinaryCompletesStuckHeadlessRole(t *testing.T) {
+	epic := t.TempDir()
+	for _, e := range []state.Event{
+		{Story: "arena-adversary", Attempt: 1, From: state.Submitted, To: state.Working, Evidence: map[string]any{"kind": "headless", "round": 1}},
+		{Story: "arena-reviewer", Attempt: 1, From: state.Submitted, To: state.Working, Evidence: map[string]any{"kind": "terminal"}},
+	} {
+		e.Epic, e.Actor, e.ExternalConfirmed = "e", state.Leader, true
+		if err := state.Append(epic, e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	so, se, code := runCox(t, epic, []string{"ORCA_RUN_ID="}, "arena", "close", "--round", "1", "--epic", epic)
+	if code != 0 || !strings.Contains(so, "completed headless arena-adversary") {
+		t.Fatalf("arena close: exit %d\n%s%s", code, so, se)
+	}
+	if got := foldStoryState(t, epic, "arena-adversary"); got != state.Completed {
+		t.Errorf("stuck headless role folded to %q after close, want completed", got)
+	}
+	if got := foldStoryState(t, epic, "arena-reviewer"); got != state.Working {
+		t.Errorf("a terminal role was touched by close: %q", got)
+	}
+}
+
+func foldStoryState(t *testing.T, epic, story string) state.State {
+	t.Helper()
+	events, _, err := state.Load(epic)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s := state.Fold(events).Stories[story]; s != nil {
+		return s.State
+	}
+	return ""
+}

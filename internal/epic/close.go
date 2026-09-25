@@ -102,7 +102,7 @@ func Close(o CloseOptions) error {
 		return err
 	}
 	fmt.Fprintf(o.out(), "ok: archived .cox -> .cox.closed\n")
-	return nil
+	return o.recordClosed()
 }
 
 // closeNoRuntime handles an epic with no .cox/ runtime (B-38): steps 1-5 have nothing to act on, so it prints them as
@@ -125,7 +125,87 @@ func (o *CloseOptions) closeNoRuntime() error {
 		return err
 	}
 	fmt.Fprintf(o.out(), "ok: archived (no runtime) -> .cox.closed\n")
+	return o.recordClosed()
+}
+
+// recordClosed writes the close where git carries it (B-46): an epic_closed event in the tracked ledger.jsonl and the
+// DESIGN.md Status line rewritten to "closed <date> (previously: <old>)". .cox.closed is machine-local (gitignored), so
+// without these a second machine reads a closed epic as active and doctor flags its old signature as lost.
+func (o *CloseOptions) recordClosed() error {
+	prev, err := setDesignStatusClosed(o.EpicDir, time.Now().UTC().Format("2006-01-02"))
+	if err != nil {
+		return fmt.Errorf("record close in DESIGN.md: %w", err)
+	}
+	if err := state.AppendLedger(o.EpicDir, state.Event{
+		Type: state.EpicClosed, Epic: filepath.Base(o.EpicDir), Story: state.EpicStory,
+		Actor: state.Leader, Evidence: map[string]any{"previous_status": prev}, ExternalConfirmed: true,
+	}); err != nil {
+		return fmt.Errorf("record close in the ledger: %w", err)
+	}
+	fmt.Fprintf(o.out(), "ok: recorded the close in ledger.jsonl and DESIGN.md Status\n")
 	return nil
+}
+
+// setDesignStatusClosed rewrites the first "Status:" line of DESIGN.md to "Status: closed <date> (previously: <old>)"
+// and returns the old value. No DESIGN.md, no Status line, or a Status already closed is left as it is.
+func setDesignStatusClosed(epicDir, date string) (string, error) {
+	p := filepath.Join(epicDir, "DESIGN.md")
+	b, err := os.ReadFile(p)
+	if os.IsNotExist(err) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	lines := strings.Split(string(b), "\n")
+	for i, l := range lines {
+		old, ok := strings.CutPrefix(l, "Status:")
+		if !ok {
+			continue
+		}
+		old = strings.TrimSpace(old)
+		if statusClosed(old) {
+			return old, nil
+		}
+		lines[i] = fmt.Sprintf("Status: closed %s (previously: %s)", date, old)
+		return old, os.WriteFile(p, []byte(strings.Join(lines, "\n")), 0o644)
+	}
+	return "", nil
+}
+
+// statusClosed reads a DESIGN.md Status value as closed (closed or complete, the bearings rule).
+func statusClosed(st string) bool {
+	st = strings.ToLower(strings.TrimSpace(st))
+	return strings.HasPrefix(st, "closed") || strings.HasPrefix(st, "complete")
+}
+
+// Closed reports whether an epic is closed on any evidence a machine can see: an epic_closed event in the tracked
+// ledger, the local archive (.cox.closed without .cox), or a DESIGN.md Status that says closed/complete (an epic closed
+// by hand or before close wrote the ledger).
+func Closed(epicDir string) bool {
+	if pathExists(filepath.Join(epicDir, ".cox.closed")) && !pathExists(filepath.Join(epicDir, ".cox")) {
+		return true
+	}
+	if b, err := os.ReadFile(filepath.Join(epicDir, "DESIGN.md")); err == nil {
+		for _, l := range strings.Split(string(b), "\n") {
+			if st, ok := strings.CutPrefix(l, "Status:"); ok {
+				if statusClosed(st) {
+					return true
+				}
+				break
+			}
+		}
+	}
+	events, _, err := state.Load(epicDir)
+	if err != nil {
+		return false
+	}
+	for _, ev := range events {
+		if ev.Type == state.EpicClosed {
+			return true
+		}
+	}
+	return false
 }
 
 // leaderHandle reads the epic's recorded leader terminal handle from .cox/leader, or "" when unset/unreadable. It routes

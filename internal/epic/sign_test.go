@@ -258,3 +258,25 @@ func TestSignV3RefusesRoundOver3(t *testing.T) {
 		t.Fatalf("want round>3 refusal, got %v", err)
 	}
 }
+
+// B-04: a captain's no-arena ruling signs without a synthesis; the event carries no_arena and the ruling, a missing
+// ruling is refused, and a second sign is refused like any other.
+func TestSignNoArena(t *testing.T) {
+	epicDir := signEpic(t, "")
+	if err := SignNoArena(epicDir, "captain", "  "); err == nil || !strings.Contains(err.Error(), "--reason") {
+		t.Fatalf("no-arena sign without a ruling: err %v, want a --reason refusal", err)
+	}
+	if err := SignNoArena(epicDir, "captain", "lite epic, no arena"); err != nil {
+		t.Fatalf("no-arena sign: %v", err)
+	}
+	ev := lastSigned(t, epicDir)
+	if ev == nil || ev.Evidence["no_arena"] != true || ev.Evidence["reason"] != "lite epic, no arena" || ev.Evidence["by"] != "captain" || ev.Evidence["design_sha"] == nil {
+		t.Fatalf("design_signed evidence = %+v", ev)
+	}
+	if _, ok := ev.Evidence["synthesis_sha"]; ok {
+		t.Error("a no-arena signature carries a synthesis sha")
+	}
+	if err := SignNoArena(epicDir, "", "again"); err == nil || !strings.Contains(err.Error(), "already signed") {
+		t.Errorf("re-sign: err %v, want already signed", err)
+	}
+}

@@ -18,6 +18,7 @@ import (
 	"github.com/nphattai/coxswain/internal/adapter/harness/pi"
 	"github.com/nphattai/coxswain/internal/adapter/harness/registry"
 	"github.com/nphattai/coxswain/internal/doctor"
+	"github.com/nphattai/coxswain/internal/epic"
 	"github.com/nphattai/coxswain/internal/quota"
 	"github.com/nphattai/coxswain/internal/watch"
 	"github.com/nphattai/coxswain/internal/workspace"
@@ -388,7 +389,10 @@ var signedWordRe = regexp.MustCompile(`(?i)\bsigned\b`)
 // ledger is signed while the text does not say so. It returns "" when they agree. A closed epic is skipped (its Status:
 // text is historical and the archive is the truth).
 func signedDivergence(ep doctor.EpicReport) string {
-	if ep.Closed {
+	// Closed on any evidence git carries too (the ledger's epic_closed, a closed Status), not only the machine-local
+	// .cox.closed: a second machine, or an epic signed before ledgers existed and closed by hand, is not "signature
+	// lost" (B-46).
+	if ep.Closed || (ep.Path != "" && epic.Closed(ep.Path)) {
 		return ""
 	}
 	// Match the whole word "signed" so an honestly unsigned Status (e.g. "active (unsigned, arena pending)") is not read
