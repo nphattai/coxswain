@@ -157,3 +157,54 @@ func TestMergeForgeReadFailureUnknown(t *testing.T) {
 		t.Fatalf("a forge read failure must be unknown, got %s", rep.State)
 	}
 }
+
+// B-59: GitHub may report the PR open for a moment after the merge call; the bounded read-back absorbs it and the merge
+// is confirmed, not refused.
+func TestMergeReadBackLagIsAbsorbed(t *testing.T) {
+	old := ReadBackWait
+	ReadBackWait = 0
+	t.Cleanup(func() { ReadBackWait = old })
+	fx := greenPR()
+	fx.ReadBackLag = ReadBackTries - 1
+	rep := Merge(&fake.Forge{F: fx}, captainInput())
+	if rep.State != MergeDone || !rep.Merged {
+		t.Fatalf("a lag within the poll must confirm the merge: state=%s reasons=%v", rep.State, rep.Reasons)
+	}
+	fx.ReadBackLag = ReadBackTries
+	rep = Merge(&fake.Forge{F: fx}, captainInput())
+	if rep.State != MergeUndetermined || rep.Merged {
+		t.Fatalf("a merge never confirmed within the poll is unknown (exit 3), got %s: %v", rep.State, rep.Reasons)
+	}
+}
+
+// B-60: mergeable UNKNOWN (GitHub recomputing after a sibling merge) never merges, and with no definite refusal it is
+// unknown (exit 3, re-run), not refused like a conflict. A definite refusal still wins; CONFLICTING stays refused.
+// Firstmate refuses on it too (bin/fm-pr-merge.sh:648@a8572f6); the ruling keeps that and only makes it three-state.
+func TestMergeMergeableUnknownIsUndetermined(t *testing.T) {
+	fx := greenPR()
+	fx.PR.Mergeable, fx.PR.MergeableUnknown = false, true
+	f := &fake.Forge{F: fx}
+	rep := Merge(f, captainInput())
+	if rep.State != MergeUndetermined || !hasReason(rep.Reasons, "mergeable") {
+		t.Fatalf("UNKNOWN mergeable must be unknown naming mergeable: state=%s reasons=%v", rep.State, rep.Reasons)
+	}
+	if merged, _ := f.Merged(fx.PR); merged {
+		t.Error("UNKNOWN mergeable must never call Merge")
+	}
+	in := captainInput()
+	in.Check = true
+	if rep := Merge(&fake.Forge{F: fx}, in); rep.State != MergeUndetermined {
+		t.Errorf("--check with UNKNOWN mergeable must be unknown, got %s", rep.State)
+	}
+
+	fx.PR.Draft = true
+	if rep := Merge(&fake.Forge{F: fx}, captainInput()); rep.State != MergeRefused || !hasReason(rep.Reasons, "draft") {
+		t.Errorf("a definite refusal must win over UNKNOWN: state=%s reasons=%v", rep.State, rep.Reasons)
+	}
+
+	fx = greenPR()
+	fx.PR.Mergeable = false // CONFLICTING
+	if rep := Merge(&fake.Forge{F: fx}, captainInput()); rep.State != MergeRefused || !hasReason(rep.Reasons, "mergeable") {
+		t.Errorf("CONFLICTING must refuse naming mergeable: state=%s reasons=%v", rep.State, rep.Reasons)
+	}
+}

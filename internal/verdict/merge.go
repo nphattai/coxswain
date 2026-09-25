@@ -2,6 +2,7 @@ package verdict
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/nphattai/coxswain/internal/adapter/forge"
 )
@@ -45,9 +46,10 @@ type MergeReport struct {
 
 // Merge reads the PR live through the forge, gathers every reason it may not merge, and - unless Check - merges it with
 // the head pinned (the forge rejects a moved head) and reads the result back, accepting only a confirmed merged. A forge
-// read failure or pending CI is unknown, never a guessed pass (F12, P5). The order is: a forge read failure or pending CI
-// dominates only when there is no definite refusal; a definite refusal (authority, state, draft, mergeable, base, a
-// failed check) refuses; otherwise the merge runs (or, with Check, the verdict says it would).
+// read failure, pending CI or mergeable UNKNOWN is unknown, never a guessed pass (F12, P5). The order is: a forge read
+// failure, pending CI or mergeable UNKNOWN dominates only when there is no definite refusal; a definite refusal
+// (authority, state, draft, a conflict, base, a failed check) refuses; otherwise the merge runs (or, with Check, the
+// verdict says it would).
 func Merge(f forge.Forge, in MergeInput) MergeReport {
 	r := MergeReport{Method: in.Method, State: MergeRefused}
 
@@ -76,7 +78,14 @@ func Merge(f forge.Forge, in MergeInput) MergeReport {
 	if pr.Draft {
 		r.Reasons = append(r.Reasons, reason("draft", "PR is a draft; mark it ready before merging"))
 	}
-	if !pr.Mergeable {
+	// mergeable UNKNOWN never merges, but it is not a conflict: absent a definite refusal it is unknown (exit 3), like
+	// pending CI (B-60; firstmate refuses on it too, bin/fm-pr-merge.sh:648@a8572f6, so there is no bounded wait).
+	mergeableUnknown := false
+	switch {
+	case pr.Mergeable:
+	case pr.MergeableUnknown:
+		mergeableUnknown = true
+	default:
 		r.Reasons = append(r.Reasons, reason("mergeable", "the forge does not report the PR cleanly mergeable"))
 	}
 	if !baseAllowed(pr.Base, in.EpicBranch, in.Production) {
@@ -103,9 +112,14 @@ func Merge(f forge.Forge, in MergeInput) MergeReport {
 		r.State = MergeRefused
 		return r
 	}
+	if mergeableUnknown {
+		r.Reasons = append(r.Reasons, reason("mergeable", "the forge has not computed mergeability yet (UNKNOWN); re-run shortly"))
+	}
 	if ciPending {
-		r.State = MergeUndetermined
 		r.Reasons = append(r.Reasons, reason("ci", "pending or no checks at the live head; cannot confirm green"))
+	}
+	if mergeableUnknown || ciPending {
+		r.State = MergeUndetermined
 		return r
 	}
 	if in.Check {
@@ -118,20 +132,41 @@ func Merge(f forge.Forge, in MergeInput) MergeReport {
 		r.Reasons = append(r.Reasons, reason("merge", "the forge rejected the merge (head moved or not mergeable): "+err.Error()))
 		return r
 	}
-	merged, err := f.Merged(pr)
-	if err != nil {
-		r.State = MergeUndetermined
-		r.Reasons = append(r.Reasons, reason("read-back", "could not confirm the PR merged: "+err.Error()))
+	// The forge accepted the merge, so an outcome it does not report merged is unknown (exit 3), never a refusal: the PR
+	// may well have landed (B-59; firstmate keeps the merge poll armed). A re-run refuses a merged PR (state gate), so the
+	// reason says how to confirm instead of promising a re-run will.
+	var readErr error
+	for i := 0; i < ReadBackTries; i++ {
+		if i > 0 {
+			time.Sleep(ReadBackWait)
+		}
+		merged, err := f.Merged(pr)
+		if err == nil && merged {
+			r.State, r.Merged = MergeDone, true
+			return r
+		}
+		readErr = err
+	}
+	r.State = MergeUndetermined
+	confirm := fmt.Sprintf("; the merge may have landed: confirm with gh pr view %d (no ledger row was written)", pr.Number)
+	if readErr != nil {
+		r.Reasons = append(r.Reasons, reason("read-back", "the merge call succeeded but the outcome could not be read: "+readErr.Error()+confirm))
 		return r
 	}
-	if !merged {
-		r.State = MergeRefused
-		r.Reasons = append(r.Reasons, reason("read-back", "the forge did not report the PR merged after the merge call"))
-		return r
+	observed := "unreadable"
+	if now, err := f.PR(in.Selector); err == nil {
+		observed = orUnknownState(now.State)
 	}
-	r.State, r.Merged = MergeDone, true
+	r.Reasons = append(r.Reasons, reason("read-back", "the merge call succeeded but the PR reads "+observed+", not merged"+confirm))
 	return r
 }
+
+// ReadBackTries and ReadBackWait bound the post-merge read-back: `gh pr merge` is synchronous, so the first read almost
+// always confirms; the extra reads only absorb forge eventual consistency (4 s at most). Tests set ReadBackWait to 0.
+var (
+	ReadBackTries = 3
+	ReadBackWait  = 2 * time.Second
+)
 
 // baseAllowed reports whether a PR base branch is one a merge may land on: the epic branch, or (when set) production.
 func baseAllowed(base, epic, production string) bool {

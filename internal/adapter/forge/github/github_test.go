@@ -32,6 +32,48 @@ func TestPRErrorSurfaces(t *testing.T) {
 	}
 }
 
+// B-59: Merged reads the PR live by number; the passed struct (read before the merge, State "open") is never trusted.
+func TestMergedReadsLive(t *testing.T) {
+	c := New("/repo")
+	var got []string
+	c.run = func(dir string, args ...string) ([]byte, error) {
+		got = args
+		return []byte(`{"state":"MERGED"}`), nil
+	}
+	merged, err := c.Merged(forge.PR{Number: 7, State: "open"})
+	if err != nil || !merged {
+		t.Fatalf("a PR the forge reports MERGED must read merged: merged=%v err=%v", merged, err)
+	}
+	if strings.Join(got, " ") != "pr view 7 --json state" {
+		t.Errorf("Merged must re-read by number, ran gh %v", got)
+	}
+	c.run = func(dir string, args ...string) ([]byte, error) { return nil, errors.New("gh: 502") }
+	if _, err := c.Merged(forge.PR{Number: 7, State: "merged"}); err == nil {
+		t.Error("a failed read must surface, never fall back to the stale struct")
+	}
+}
+
+// B-60: mergeable is three-state. UNKNOWN (GitHub still computing) is not mergeable and flagged unknown; CONFLICTING is
+// a definite not-mergeable; MERGEABLE is clean.
+func TestPRMergeableThreeState(t *testing.T) {
+	for _, tc := range []struct {
+		gh               string
+		mergeable, unkwn bool
+	}{{"MERGEABLE", true, false}, {"CONFLICTING", false, false}, {"UNKNOWN", false, true}, {"", false, true}} {
+		c := New("/repo")
+		c.run = func(dir string, args ...string) ([]byte, error) {
+			return []byte(`{"number":42,"headRefOid":"deadbeef","state":"OPEN","mergeable":"` + tc.gh + `"}`), nil
+		}
+		pr, err := c.PR("story/x")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if pr.Mergeable != tc.mergeable || pr.MergeableUnknown != tc.unkwn {
+			t.Errorf("mergeable %q: got Mergeable=%v MergeableUnknown=%v, want %v %v", tc.gh, pr.Mergeable, pr.MergeableUnknown, tc.mergeable, tc.unkwn)
+		}
+	}
+}
+
 func TestChecksMapBuckets(t *testing.T) {
 	c := New("/repo")
 	c.run = func(dir string, args ...string) ([]byte, error) {

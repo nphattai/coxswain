@@ -20,6 +20,10 @@ type Fixture struct {
 	Merged    bool              `json:"merged"`
 	HeadMoved bool              `json:"head_moved"` // when true, Merge fails as if the head moved since the read (pinned-sha reject)
 	Errors    map[string]string `json:"errors"`     // method name ("pr","diff","checks","comments","merged","merge") -> error text
+
+	// ReadBackLag is how many Merged reads after a successful Merge still report the PR not merged (forge eventual
+	// consistency).
+	ReadBackLag int `json:"readback_lag"`
 }
 
 // Forge replays a Fixture. merged tracks a successful Merge call so a read-back (Merged) after Merge reflects it, the way
@@ -76,6 +80,10 @@ func (f *Forge) Comments(pr forge.PR) ([]forge.Comment, error) {
 func (f *Forge) Merged(pr forge.PR) (bool, error) {
 	if err := f.err("merged"); err != nil {
 		return false, err
+	}
+	if f.merged && f.F.ReadBackLag > 0 {
+		f.F.ReadBackLag--
+		return false, nil
 	}
 	return f.F.Merged || f.merged, nil
 }
