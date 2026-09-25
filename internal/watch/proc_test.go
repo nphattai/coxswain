@@ -213,3 +213,62 @@ func TestProcIdentityWaitsOutAnExecInProgress(t *testing.T) {
 		t.Fatal("a permanently empty cmdline was given an identity")
 	}
 }
+
+// fm: tests/fm-watcher-lock.test.sh:1064@a8572f6 (test_pid_identity_is_terminal_width_invariant, e1d6cf9): an identity
+// recorded from a wide shell must equal the one recomputed inside a narrow-COLUMNS hook, so the ps fallback pins a
+// wide COLUMNS (after LC_ALL=C) and carries the whole command.
+func TestProcIdentityPsFallbackIsTerminalWidthInvariant(t *testing.T) {
+	t.Run("FM/fm-watcher-lock/pid_identity_is_terminal_width_invariant", func(t *testing.T) {
+		oldRoot, oldRun := procRoot, psRun
+		procRoot = filepath.Join(t.TempDir(), "no-proc")
+		defer func() { procRoot, psRun = oldRoot, oldRun }()
+
+		// Stub leg: the env ps runs under ends with the wide pin, whatever the caller's COLUMNS.
+		var cols []string
+		psRun = func(env []string, args ...string) ([]byte, error) {
+			c := "<unset>"
+			for _, kv := range env {
+				if strings.HasPrefix(kv, "COLUMNS=") {
+					c = strings.TrimPrefix(kv, "COLUMNS=") // the last assignment wins, as in exec
+				}
+			}
+			cols = append(cols, c)
+			return []byte("Mon Jul 28 20:00:00 2026 sleep 300\n"), nil
+		}
+		t.Setenv("COLUMNS", "20")
+		if _, err := ProcIdentity(os.Getpid()); err != nil {
+			t.Fatal(err)
+		}
+		if len(cols) != 1 || cols[0] != "10000" {
+			t.Fatalf("ps ran without COLUMNS=10000 (saw %v)", cols)
+		}
+
+		// Real-ps leg (skipped where ps -o lstart= is unsupported): a long command reads identically narrow and wide.
+		psRun = oldRun
+		if _, err := exec.Command("ps", "-p", strconv.Itoa(os.Getpid()), "-o", "lstart=", "-o", "command=").Output(); err != nil {
+			t.Skip("ps -o lstart= unsupported here")
+		}
+		long := "300." + strings.Repeat("0", 100)
+		cmd := exec.Command("sleep", long)
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = cmd.Process.Kill(); _ = cmd.Wait() }()
+		t.Setenv("COLUMNS", "20")
+		narrow, err := ProcIdentity(cmd.Process.Pid)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("COLUMNS", "1000")
+		wide, err := ProcIdentity(cmd.Process.Pid)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(wide, "sleep "+long) {
+			t.Errorf("identity dropped the full command under a wide COLUMNS: %q", wide)
+		}
+		if narrow != wide {
+			t.Errorf("identity varied with COLUMNS: narrow %q, wide %q", narrow, wide)
+		}
+	})
+}
