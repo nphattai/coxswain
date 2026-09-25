@@ -1,6 +1,7 @@
 package workspace
 
 import (
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -255,5 +256,156 @@ func TestScaffoldRefreshesStaleSkills(t *testing.T) {
 	}
 	if len(rep.Updated) != 0 {
 		t.Errorf("current skills re-run reported Updated %q", rep.Updated)
+	}
+}
+
+// scaffoldedPolicy scaffolds a workspace and returns its root and cox/policy.json path.
+func scaffoldedPolicy(t *testing.T) (string, string) {
+	t.Helper()
+	root := t.TempDir()
+	if _, err := Scaffold(root, []Repo{{Alias: "app", Path: t.TempDir(), Production: "main"}}); err != nil {
+		t.Fatal(err)
+	}
+	return root, filepath.Join(root, "cox", "policy.json")
+}
+
+// topLevel decodes a policy file into its raw top-level sections.
+func topLevel(t *testing.T, path string) map[string]json.RawMessage {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatalf("%s is not valid JSON: %v\n%s", path, err, b)
+	}
+	return m
+}
+
+// dropSection rewrites the policy at path without the named top-level section, re-marshalled so the file is valid.
+func dropSection(t *testing.T, path, key string) {
+	t.Helper()
+	m := topLevel(t, path)
+	delete(m, key)
+	b, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(b, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// B-43 (captain ruling 2026-09-25): a workspace policy that predates a required section (merge, item 8) gets the
+// template default written into the file by the next Scaffold, which names the key; every existing section stays
+// byte-identical, the policy validates, and a second run adds nothing.
+func TestScaffoldWritesMissingRequiredPolicySection(t *testing.T) {
+	root, pol := scaffoldedPolicy(t)
+	dropSection(t, pol, "merge")
+	before := topLevel(t, pol)
+
+	rep, err := Scaffold(root, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := pol + " (+merge from template)"
+	if len(rep.Updated) != 1 || rep.Updated[0] != want {
+		t.Errorf("Updated = %q, want [%s]", rep.Updated, want)
+	}
+	after := topLevel(t, pol)
+	for k, v := range before {
+		if string(after[k]) != string(v) {
+			t.Errorf("section %s changed:\nbefore %s\nafter  %s", k, v, after[k])
+		}
+	}
+	tmpl, _ := templatePolicyRaw()
+	if _, ok := after["merge"]; !ok || tmpl["merge"] == nil {
+		t.Fatalf("merge not written: %s", after["merge"])
+	}
+	if _, err := LoadPolicy(root); err != nil {
+		t.Errorf("healed policy does not validate: %v", err)
+	}
+	rep, err = Scaffold(root, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.Updated) != 0 {
+		t.Errorf("second run updated %q", rep.Updated)
+	}
+}
+
+// An existing value is never overwritten: a present-but-invalid section stays exactly as written (Validate keeps naming
+// it for the captain), and nothing is added.
+func TestHealPolicyNeverOverwritesExistingSection(t *testing.T) {
+	_, pol := scaffoldedPolicy(t)
+	b, _ := os.ReadFile(pol)
+	broken := strings.Replace(string(b), `"yolo": false,`, `"yolo": false, "why": "",`, 1)
+	broken = strings.Replace(broken, `"why": "captain 2026-09-21 (item 8)`, `"old_why": "captain 2026-09-21 (item 8)`, 1)
+	if err := os.WriteFile(pol, []byte(broken), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	added, err := HealPolicy(pol)
+	if err != nil || len(added) != 0 {
+		t.Fatalf("HealPolicy = %q, %v; want nothing added", added, err)
+	}
+	if after, _ := os.ReadFile(pol); string(after) != broken {
+		t.Error("HealPolicy rewrote a policy whose required sections are all present")
+	}
+}
+
+// An empty object gains every required section in template order and stays valid JSON; a non-object is refused.
+func TestHealPolicyEmptyAndMalformed(t *testing.T) {
+	dir := t.TempDir()
+	pol := filepath.Join(dir, "policy.json")
+	if err := os.WriteFile(pol, []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	added, err := HealPolicy(pol)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"workers_per_repo", "waves", "context", "arena", "delivery", "harness", "merge"}
+	if strings.Join(added, ",") != strings.Join(want, ",") {
+		t.Errorf("added = %q, want %q", added, want)
+	}
+	if m := topLevel(t, pol); len(m) != len(want) {
+		t.Errorf("healed file has %d sections, want %d", len(m), len(want))
+	}
+	if _, err := LoadPolicyFile(pol); err != nil {
+		t.Errorf("healed empty policy does not validate: %v", err)
+	}
+	if err := os.WriteFile(pol, []byte("[1]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := HealPolicy(pol); err == nil || !strings.Contains(err.Error(), pol) {
+		t.Errorf("non-object policy: err = %v, want an error naming %s", err, pol)
+	}
+}
+
+// An unparseable policy does not stop the rest of the scaffold: skills are still refreshed, the file is left exactly as
+// it was, and the error names it once everything else is in place.
+func TestScaffoldFinishesDespiteUnparseablePolicy(t *testing.T) {
+	root, pol := scaffoldedPolicy(t)
+	bad := []byte("\xef\xbb\xbf{\"merge\": {}}\n") // a BOM makes it invalid JSON
+	if err := os.WriteFile(pol, bad, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	skill := filepath.Join(root, ".agents", "skills", "cox-epic", "SKILL.md")
+	if err := os.Remove(skill); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Scaffold(root, nil)
+	if err == nil || !strings.Contains(err.Error(), pol) {
+		t.Fatalf("err = %v, want an error naming %s", err, pol)
+	}
+	if !fileExists(skill) {
+		t.Error("skills were not scaffolded after the policy error")
+	}
+	if got, _ := os.ReadFile(pol); string(got) != string(bad) {
+		t.Error("an unparseable policy was rewritten")
+	}
+	if matches, _ := filepath.Glob(filepath.Join(root, "cox", ".policy.json.*")); len(matches) != 0 {
+		t.Errorf("temp files left behind: %v", matches)
 	}
 }

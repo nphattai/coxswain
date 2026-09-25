@@ -1,12 +1,14 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/nphattai/coxswain/internal/workspace"
 	"github.com/nphattai/coxswain/skills"
 )
 
@@ -42,5 +44,38 @@ func TestWorkspaceInitBinaryRefreshesSkills(t *testing.T) {
 	}
 	if out := coxInit(t, root); strings.Contains(out, "updated ") {
 		t.Errorf("a current workspace reported updates:\n%s", out)
+	}
+}
+
+// B-43 against the real binary: a workspace policy that predates the required `merge` section used to abort init with
+// `policy validation failed: merge` before the hooks step. Init now writes the template section into the file, names
+// the key on an `updated` line, and carries on to the hooks.
+func TestWorkspaceInitBinaryWritesMissingPolicySection(t *testing.T) {
+	root := t.TempDir()
+	coxInit(t, root, "--repo", "app="+t.TempDir()+":main")
+	pol := filepath.Join(root, "cox", "policy.json")
+	b, err := os.ReadFile(pol)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatal(err)
+	}
+	delete(m, "merge")
+	b, _ = json.MarshalIndent(m, "", "  ")
+	if err := os.WriteFile(pol, append(b, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out := coxInit(t, root)
+	if !strings.Contains(out, "updated "+pol+" (+merge from template)\n") {
+		t.Errorf("init did not name the added key:\n%s", out)
+	}
+	if !strings.Contains(out, "hooks: ") {
+		t.Errorf("init stopped before the hooks step:\n%s", out)
+	}
+	if _, err := workspace.LoadPolicy(root); err != nil {
+		t.Errorf("policy still invalid after init: %v", err)
 	}
 }

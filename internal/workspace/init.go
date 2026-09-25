@@ -100,6 +100,72 @@ func StaleOptionNotices(onDisk, tmpl *Policy) []string {
 	return notices
 }
 
+// HealPolicy writes into the policy file at path every REQUIRED section (the ones Validate checks) whose top-level key is
+// absent, using the embedded template's section verbatim, and returns the keys it added in template order (captain
+// ruling 2026-09-25, B-43: a workspace policy that predates a required section, such as merge, otherwise fails every
+// command). It inserts text before the closing brace rather than re-marshalling, so every existing byte, key order and
+// value stays as written; a present section is never touched, even when invalid (Validate keeps naming it). A file that
+// is not a JSON object is an error naming the path.
+func HealPolicy(path string) ([]string, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var disk map[string]json.RawMessage
+	if err := json.Unmarshal(b, &disk); err != nil {
+		return nil, fmt.Errorf("parse %s: %w", path, err)
+	}
+	if disk == nil {
+		return nil, fmt.Errorf("parse %s: not a JSON object", path)
+	}
+	tb, err := templates.File("policy.json")
+	if err != nil {
+		return nil, err
+	}
+	var tmpl map[string]json.RawMessage
+	if err := json.Unmarshal(tb, &tmpl); err != nil {
+		return nil, fmt.Errorf("parse template policy: %w", err)
+	}
+	var added []string
+	var ins strings.Builder
+	for _, s := range (&Policy{}).sections() {
+		if _, ok := disk[s.name]; ok {
+			continue
+		}
+		if len(disk) > 0 || len(added) > 0 {
+			ins.WriteString(",")
+		}
+		fmt.Fprintf(&ins, "\n  %q: %s", s.name, tmpl[s.name])
+		added = append(added, s.name)
+	}
+	if len(added) == 0 {
+		return nil, nil
+	}
+	body := bytes.TrimRight(b, " \t\r\n")
+	body = bytes.TrimRight(body[:len(body)-1], " \t\r\n") // drop the closing brace of the object
+	out := append(append([]byte{}, body...), ins.String()+"\n}\n"...)
+	// Replace atomically: a crash or a full disk mid-write must never leave the captain's policy truncated.
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".policy.json.*")
+	if err != nil {
+		return nil, err
+	}
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.Write(out); err != nil {
+		tmp.Close()
+		return nil, err
+	}
+	if err := tmp.Close(); err != nil {
+		return nil, err
+	}
+	if err := os.Chmod(tmp.Name(), 0o644); err != nil {
+		return nil, err
+	}
+	if err := os.Rename(tmp.Name(), path); err != nil {
+		return nil, err
+	}
+	return added, nil
+}
+
 // ScaffoldReport lists what a Scaffold run wrote (Created), rewrote in place (Updated) and found already current
 // (Present), so the CLI can name every file a run changed.
 type ScaffoldReport struct {
@@ -139,10 +205,22 @@ func Scaffold(wsRoot string, repos []Repo) (ScaffoldReport, error) {
 	for _, c := range created {
 		rep.created(c)
 	}
-	// Everything Init did not (re)create is already present.
-	for _, p := range []string{wsPath, filepath.Join(wsRoot, ControlDir, "policy.json")} {
-		if !contains(created, p) {
-			rep.present(p)
+	// Everything Init did not (re)create is already present. An existing policy first gains any required section it
+	// predates (B-43), each named on its own Updated line. A policy that cannot be healed (unparseable) does not stop the
+	// rest of the scaffold: its error is returned once everything else is in place.
+	var healErr error
+	if !contains(created, wsPath) {
+		rep.present(wsPath)
+	}
+	polPath := filepath.Join(wsRoot, ControlDir, "policy.json")
+	if !contains(created, polPath) {
+		added, err := HealPolicy(polPath)
+		healErr = err
+		for _, k := range added {
+			rep.updated(fmt.Sprintf("%s (+%s from template)", polPath, k))
+		}
+		if len(added) == 0 && err == nil {
+			rep.present(polPath)
 		}
 	}
 
@@ -159,7 +237,7 @@ func Scaffold(wsRoot string, repos []Repo) (ScaffoldReport, error) {
 	if err := ensureSkills(wsRoot, &rep); err != nil {
 		return rep, err
 	}
-	return rep, nil
+	return rep, healErr
 }
 
 // DetectProduction returns a git checkout's default branch: the short name of origin/HEAD (e.g. "main" from

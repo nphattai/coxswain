@@ -77,10 +77,8 @@ func cmdWorkspaceInit(args []string) int {
 		return usageErr("cox workspace init --root <dir> --repo alias=path[:production] ... [--from-repos-md <path>]")
 	}
 
+	// Print what Scaffold wrote even when it failed part-way, so every file it changed is named.
 	rep, err := workspace.Scaffold(wsRoot, repos)
-	if err != nil {
-		return fail("%v", err)
-	}
 	for _, c := range rep.Created {
 		fmt.Println("created", c)
 	}
@@ -90,6 +88,9 @@ func cmdWorkspaceInit(args []string) int {
 	for _, p := range rep.Present {
 		fmt.Println("present", p)
 	}
+	if err != nil {
+		return fail("%v", err)
+	}
 
 	// Leader hooks for every harness the policy allows as a leader (claude -> .claude/settings.json,
 	// codex -> .codex/hooks.json). A leader option with no hook target is skipped with a note.
@@ -98,8 +99,9 @@ func cmdWorkspaceInit(args []string) int {
 		return fail("%v", err)
 	}
 	// Stale-policy notice (DESIGN item 6): an existing cox/policy.json whose harness options lag the template (e.g. a
-	// pre-pi workspace) gets one notice per missing harness. init never rewrites the file, so the captain enables it by
-	// hand. On a fresh init the policy was just scaffolded from the template, so there is nothing to report.
+	// pre-pi workspace) gets one notice per missing harness. Scaffold adds only a missing required section (B-43, an
+	// `updated` line above) and never edits one that exists, so the captain enables a harness option by hand. On a fresh
+	// init the policy was just scaffolded from the template, so there is nothing to report.
 	if tmpl, terr := workspace.TemplatePolicy(); terr == nil {
 		for _, n := range workspace.StaleOptionNotices(pol, tmpl) {
 			fmt.Println("notice:", n)
