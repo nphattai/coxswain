@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nphattai/coxswain/internal/adapter/forge/github"
 	"github.com/nphattai/coxswain/internal/bearings"
 	"github.com/nphattai/coxswain/internal/protocol/checkpoint"
 	"github.com/nphattai/coxswain/internal/protocol/report"
@@ -490,5 +491,21 @@ func TestEpicNewBinaryRefusesUnregisteredRepo(t *testing.T) {
 	}
 	if out := doctorOn(t, root); !strings.Contains(out, "repo app ("+repo+") is not registered with Orca; run: orca repo add --path "+repo) {
 		t.Errorf("doctor does not report the unregistered repo with its fix:\n%s", out)
+	}
+}
+
+// #46 follow-up (leader-findings 16): cmd/cox wires the watcher a forge over the epic's repo checkout, so its turn-end
+// pass reads a story PR's pending CI instead of "CI state unknown"; an epic with no repos file keeps no forge.
+func TestWatchForgeIsTheEpicRepo(t *testing.T) {
+	root := t.TempDir()
+	coxInit(t, root, "--repo", "app="+t.TempDir()+":main")
+	epic := filepath.Join(root, "proj", "epics", "e1")
+	mustWrite(t, filepath.Join(epic, "repos"), "app\n")
+	f, ok := newWatchForge(epic).(*github.Client)
+	if !ok || f == nil || f.Dir != filepath.Join(epic, "app") {
+		t.Fatalf("watch forge = %#v, want a github client on %s", newWatchForge(epic), filepath.Join(epic, "app"))
+	}
+	if f := newWatchForge(t.TempDir()); f != nil {
+		t.Errorf("an epic outside any workspace got a forge: %#v", f)
 	}
 }

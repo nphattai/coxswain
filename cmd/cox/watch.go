@@ -13,6 +13,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/nphattai/coxswain/internal/adapter/forge"
+	"github.com/nphattai/coxswain/internal/adapter/forge/github"
 	"github.com/nphattai/coxswain/internal/boundexec"
 	"github.com/nphattai/coxswain/internal/supervision"
 	"github.com/nphattai/coxswain/internal/wake"
@@ -345,6 +347,7 @@ func cmdWatch(args []string) int {
 		Quota:        newQuotaProbe(*epicDir),
 		AlarmChannel: pol.AlertsChannel(),
 		BusyTurnMax:  time.Duration(pol.BusyTurnMaxMinutes()) * time.Minute, // 0 => watcher default (DefaultBusyTurnMax)
+		Forge:        newWatchForge(*epicDir),
 	}
 	if *once {
 		n, err := w.Tick()
@@ -452,3 +455,15 @@ func signalName(s os.Signal) string {
 
 // watcherStopGrace bounds how long a signalled watcher lets its in-flight pass finish before it exits anyway.
 var watcherStopGrace = 2 * time.Second
+
+// newWatchForge is the forge the watcher's turn-end pass reads a story PR's CI through, so pending checks read as CI
+// running instead of "CI state unknown" (leader-findings 16). It is the epic's first repo checkout, as `cox ship merge`
+// uses; nil (no repos file, no workspace) keeps today's unknown. A var so a test can see what cmdWatch wires.
+// ponytail: one repo per epic; a multi-repo epic's other repos read unknown until a story-to-repo forge router exists.
+var newWatchForge = func(epicDir string) forge.Forge {
+	targets, err := shipTargets(epicDir)
+	if err != nil || len(targets) == 0 {
+		return nil
+	}
+	return github.New(targets[0].Dir)
+}

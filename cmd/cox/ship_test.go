@@ -82,3 +82,39 @@ func TestShipMergePendingUnknownExit(t *testing.T) {
 		t.Fatalf("pending PR rc=%d, want 3 (unknown)", rc)
 	}
 }
+
+// #45 follow-up (a): the first run merges but cannot read the merge back (exit 3, no ledger row); the re-run finds the
+// PR merged, is refused only by the state gate, and records the missing `merged` row once (exit 0). A third run is a
+// plain refusal: the row is never duplicated.
+func TestShipMergeRerunRecordsALandedMerge(t *testing.T) {
+	epic := t.TempDir()
+	f := greenForge()
+	f.F.ReadBackLag = 99 // the forge never confirms inside this run
+	if rc := runShipMerge(epic, greenInput(), f); rc != 3 {
+		t.Fatalf("first run rc=%d, want 3 (unknown read-back)", rc)
+	}
+	if _, err := os.Stat(state.LedgerPath(epic)); !os.IsNotExist(err) {
+		t.Fatal("an unconfirmed merge wrote a ledger row")
+	}
+	f.F.PR.State = "merged" // GitHub now reports it
+	if rc := runShipMerge(epic, greenInput(), f); rc != 0 {
+		t.Fatalf("re-run on the landed merge rc=%d, want 0 (recorded)", rc)
+	}
+	if rc := runShipMerge(epic, greenInput(), f); rc != 1 {
+		t.Fatalf("third run rc=%d, want 1 (already recorded)", rc)
+	}
+	b, _ := os.ReadFile(state.LedgerPath(epic))
+	if n := strings.Count(string(b), `"type":"merged"`); n != 1 || !strings.Contains(string(b), `"pr":9`) {
+		t.Fatalf("ledger has %d merged row(s), want exactly 1 for PR 9:\n%s", n, b)
+	}
+	// A worker may not record it either.
+	epic2 := t.TempDir()
+	in := greenInput()
+	in.Worker = true
+	if rc := runShipMerge(epic2, in, f); rc != 1 {
+		t.Errorf("a worker re-run rc=%d, want 1", rc)
+	}
+	if _, err := os.Stat(state.LedgerPath(epic2)); !os.IsNotExist(err) {
+		t.Error("a worker re-run wrote a ledger row")
+	}
+}

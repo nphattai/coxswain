@@ -336,8 +336,9 @@ func (o *forgeObserver) observe(epicDir string, s *state.StorySnap) state.Observ
 	return obs
 }
 
-// probe runs PR -> Checks -> Merged and builds the observation. Any error (gh missing, no PR, rate limit) yields the
-// three-state unknown with the reason, never a fabricated pass.
+// probe runs PR -> Checks and builds the observation; merged is the state that same PR read carries, so `cox state` and
+// bearings pay no second gh call (a separate Merged read, #45 follow-up). Any error (gh missing, no PR, rate limit)
+// yields the three-state unknown with the reason, never a fabricated pass.
 func (o *forgeObserver) probe(dir, head, at string) state.Observation {
 	f := o.newForge(dir)
 	pr, err := f.PR(head)
@@ -351,8 +352,8 @@ func (o *forgeObserver) probe(dir, head, at string) state.Observation {
 		val.Checks = string(verdict.CI(checks))
 		val.ChecksCount = len(checks)
 	}
-	if merged, err := f.Merged(pr); err == nil {
-		val.Merged = strconv.FormatBool(merged)
+	if pr.State != "" {
+		val.Merged = strconv.FormatBool(pr.State == "merged")
 	}
 	return state.Observation{Value: val, Source: "forge", ObservedAt: at}
 }
