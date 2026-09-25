@@ -179,9 +179,23 @@ func (c *Client) Comments(pr forge.PR) ([]forge.Comment, error) {
 	return out2, nil
 }
 
-// Merged reports whether the PR is merged.
+// Merged reads the PR's state live by number (`gh pr view <n> --json state`). The passed struct is never trusted: it was
+// read before the merge, so its State is stale (B-59). A failed read is an error, never a guessed answer.
 func (c *Client) Merged(pr forge.PR) (bool, error) {
-	return pr.State == "merged", nil
+	out, err := c.run(c.Dir, "pr", "view", strconv.Itoa(pr.Number), "--json", "state")
+	if err != nil {
+		return false, err
+	}
+	var r struct {
+		State string `json:"state"`
+	}
+	if err := json.Unmarshal(out, &r); err != nil {
+		return false, fmt.Errorf("parse pr state: %w", err)
+	}
+	if r.State == "" {
+		return false, fmt.Errorf("pr view %d: no state", pr.Number)
+	}
+	return strings.EqualFold(r.State, "MERGED"), nil
 }
 
 // Merge merges the PR through `gh pr merge`, pinning the head with --match-head-commit so gh (and GitHub) reject the

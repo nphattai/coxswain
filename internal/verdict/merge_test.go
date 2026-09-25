@@ -157,3 +157,22 @@ func TestMergeForgeReadFailureUnknown(t *testing.T) {
 		t.Fatalf("a forge read failure must be unknown, got %s", rep.State)
 	}
 }
+
+// B-59: GitHub may report the PR open for a moment after the merge call; the bounded read-back absorbs it and the merge
+// is confirmed, not refused.
+func TestMergeReadBackLagIsAbsorbed(t *testing.T) {
+	old := ReadBackWait
+	ReadBackWait = 0
+	t.Cleanup(func() { ReadBackWait = old })
+	fx := greenPR()
+	fx.ReadBackLag = ReadBackTries - 1
+	rep := Merge(&fake.Forge{F: fx}, captainInput())
+	if rep.State != MergeDone || !rep.Merged {
+		t.Fatalf("a lag within the poll must confirm the merge: state=%s reasons=%v", rep.State, rep.Reasons)
+	}
+	fx.ReadBackLag = ReadBackTries
+	rep = Merge(&fake.Forge{F: fx}, captainInput())
+	if rep.State != MergeUndetermined || rep.Merged {
+		t.Fatalf("a merge never confirmed within the poll is unknown (exit 3), got %s: %v", rep.State, rep.Reasons)
+	}
+}

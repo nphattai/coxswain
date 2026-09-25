@@ -47,7 +47,8 @@ type Forge interface {
 	Checks(pr PR) ([]Check, error)
 	// Comments returns the PR's review comments and threads.
 	Comments(pr PR) ([]Comment, error)
-	// Merged reports whether the PR is merged.
+	// Merged reports whether the PR is merged, read live from the forge (never from the passed struct, which may predate a
+	// merge).
 	Merged(pr PR) (bool, error)
 	// Merge merges the PR with its head sha pinned (the equivalent of --match-head-commit), so a push between the read and
 	// the merge is rejected by the forge rather than silently merging a different head. method is "squash"|"merge"|"rebase".

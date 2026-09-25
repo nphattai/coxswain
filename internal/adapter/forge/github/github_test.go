@@ -32,6 +32,27 @@ func TestPRErrorSurfaces(t *testing.T) {
 	}
 }
 
+// B-59: Merged reads the PR live by number; the passed struct (read before the merge, State "open") is never trusted.
+func TestMergedReadsLive(t *testing.T) {
+	c := New("/repo")
+	var got []string
+	c.run = func(dir string, args ...string) ([]byte, error) {
+		got = args
+		return []byte(`{"state":"MERGED"}`), nil
+	}
+	merged, err := c.Merged(forge.PR{Number: 7, State: "open"})
+	if err != nil || !merged {
+		t.Fatalf("a PR the forge reports MERGED must read merged: merged=%v err=%v", merged, err)
+	}
+	if strings.Join(got, " ") != "pr view 7 --json state" {
+		t.Errorf("Merged must re-read by number, ran gh %v", got)
+	}
+	c.run = func(dir string, args ...string) ([]byte, error) { return nil, errors.New("gh: 502") }
+	if _, err := c.Merged(forge.PR{Number: 7, State: "merged"}); err == nil {
+		t.Error("a failed read must surface, never fall back to the stale struct")
+	}
+}
+
 func TestChecksMapBuckets(t *testing.T) {
 	c := New("/repo")
 	c.run = func(dir string, args ...string) ([]byte, error) {
