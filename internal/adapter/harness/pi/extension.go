@@ -80,7 +80,7 @@ func hashSources(src map[string][]byte) string {
 
 // InstallExtension writes the embedded extension sources into <root>/.pi/extensions/coxswain/ (the entry as index.ts), a
 // hash marker, and (when epic is non-empty) an epic-binding marker the extension reads when COX_EPIC is absent (a bound
-// leader install). It returns the absolute entry path (index.ts) pi loads. It never touches user-level Pi config.
+// leader install); an unbound install (epic "") removes a marker an earlier bound install left. It returns the absolute entry path (index.ts) pi loads. It never touches user-level Pi config.
 // Idempotent: a re-run rewrites the same bytes and markers.
 func InstallExtension(root, epic string) (entryPath string, err error) {
 	dir := filepath.Join(root, ExtensionRelDir)
@@ -100,12 +100,33 @@ func InstallExtension(root, epic string) (entryPath string, err error) {
 		if err := os.WriteFile(filepath.Join(dir, extensionEpic), []byte(epic+"\n"), 0o644); err != nil {
 			return "", fmt.Errorf("pi InstallExtension: write epic marker: %w", err)
 		}
+	} else if err := os.Remove(filepath.Join(dir, extensionEpic)); err != nil && !os.IsNotExist(err) {
+		// An unbound install is unbound: a marker left by an earlier bound install would keep the leader on one epic.
+		return "", fmt.Errorf("pi InstallExtension: remove stale epic marker: %w", err)
 	}
 	abs, err := filepath.Abs(filepath.Join(dir, ExtensionEntry))
 	if err != nil {
 		return "", fmt.Errorf("pi InstallExtension: resolve entry: %w", err)
 	}
 	return abs, nil
+}
+
+// ExtensionCurrent reports whether <root> already holds exactly what InstallExtension(root, epic) would write: verified
+// sources, the current hash marker, and the same binding (the epic marker for a bound install, none for an unbound
+// one). Init uses it to say "already current" instead of re-reporting an install on every run (B-55a).
+func ExtensionCurrent(root, epic string) bool {
+	if _, ok := VerifyExtension(root); !ok {
+		return false
+	}
+	dir := filepath.Join(root, ExtensionRelDir)
+	if b, err := os.ReadFile(filepath.Join(dir, extensionMarker)); err != nil || string(b) != ExtensionHash()+"\n" {
+		return false
+	}
+	b, err := os.ReadFile(filepath.Join(dir, extensionEpic))
+	if epic == "" {
+		return os.IsNotExist(err) // unbound: no epic marker
+	}
+	return err == nil && string(b) == epic+"\n"
 }
 
 // activationPath is the runtime activation marker the extension writes when Pi loads it at session_start.

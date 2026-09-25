@@ -75,10 +75,9 @@ story's harness it raises:
 
 - `quota_low` **urgent** on `exhausted_now` or a known percent below `quota.low_percent` (a manual low fires here too);
   **routine** on `projected_exhaustion` with a usable runway under `quota.min_runway_hours`. Once per `(harness, resetsAt)`.
-- `quota_health` **routine**, after the automatic source is unknown for two consecutive polls, including when the first
-  observation is unknown. It fires at most once per harness within `quota.health_debounce_minutes` (default 60). A
-  Known reading resets the consecutive-unknown count but does not bypass the debounce if the source flaps back to
-  unknown.
+- Nothing for an unknown reading: as in firstmate (`fm-procevent-quota.sh`), only a threshold or `exhausted_now` wakes
+  the leader. `cox quota` shows an unknown source. (The earlier `quota_health` wake and its
+  `quota.health_debounce_minutes` knob are retired; an old policy that still carries the key keeps loading.)
 
 ## Dispatch gate
 
@@ -109,7 +108,6 @@ future valve must never target the leader harness unless it is `through_reset`.
 "quota": {
   "binary": "", "npx": null,
   "low_percent": 10, "ok_percent": 25, "min_runway_hours": 24, "poll_minutes": 5,
-  "health_debounce_minutes": 60,
   "why": "...", "review_when": "after one month of readings"
 }
 ```

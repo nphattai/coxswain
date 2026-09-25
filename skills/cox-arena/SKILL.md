@@ -21,7 +21,7 @@ extracts the report from a fenced ```report block in the JSON and writes `report
 - **full** (3+ repos, a sensitive keyword - migration/money/auth/identity/pii - in DESIGN.md, or a `--reason`): adversary
   + reviewer, plus a domain role for a sensitive trigger.
 - **lite**: one adversary. `--lite` forces this even when the trigger is full.
-- **none**: nothing to review.
+- **none**: nothing to review; sign the captain's ruling with `cox epic design --sign --no-arena --reason "<ruling>" --epic <dir>`.
 
 Harness is never hard-coded: the adversary is **not-leader**, the reviewer is **same-as-leader, new session** (from
 `cox/policy.json harness.arena`). `--terminal` runs each role on its own read-only worktree+terminal instead; cox switches

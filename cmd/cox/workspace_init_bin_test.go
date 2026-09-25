@@ -79,3 +79,20 @@ func TestWorkspaceInitBinaryWritesMissingPolicySection(t *testing.T) {
 		t.Errorf("policy still invalid after init: %v", err)
 	}
 }
+
+// B-55a against the real binary: the second init reports the Pi leader extension as already current, and no line tells
+// the captain to "load with -e" (the workspace-level extension is auto-discovered by pi).
+func TestWorkspaceInitBinaryPiExtensionAlreadyCurrent(t *testing.T) {
+	root := t.TempDir()
+	first := coxInit(t, root, "--repo", "app="+t.TempDir()+":main")
+	if !strings.Contains(first, "installed cox pi extension") {
+		t.Fatalf("first init did not install the pi extension:\n%s", first)
+	}
+	second := coxInit(t, root)
+	if strings.Contains(second, "installed cox pi extension") || !strings.Contains(second, "already current (pi leader, unbound)") {
+		t.Errorf("second init re-reported the pi install instead of already current:\n%s", second)
+	}
+	if strings.Contains(first+second, "load with -e") {
+		t.Errorf("init told the captain to load an auto-discovered leader extension with -e:\n%s%s", first, second)
+	}
+}

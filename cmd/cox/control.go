@@ -61,7 +61,7 @@ func cmdControl(args []string) int {
 	verb, rest := onePositional(rest)
 	fs := flag.NewFlagSet("control", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	epicDir := fs.String("epic", "", "epic directory")
+	epicDir := epicFlag(fs, "", "epic directory")
 	note := fs.String("note", "", "progress note (relaunch)")
 	allowUnsandboxed := fs.Bool("allow-unsandboxed", false, "authorize relaunching an unsandboxed harness (not a sandbox)")
 	if err := fs.Parse(rest); err != nil {

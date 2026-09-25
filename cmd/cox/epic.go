@@ -96,6 +96,17 @@ func epicNew(args []string) int {
 	if err != nil {
 		return fail("%v", err)
 	}
+	// Refuse early, before any branch or worktree exists, on a checkout Orca does not know (B-34b); never register it
+	// silently here (leader ruling q001: only add-repo registers). An unknown answer proceeds as before.
+	var epicRepos []workspace.Repo
+	for _, a := range aliases {
+		if r, ok := ws.Repo(a); ok {
+			epicRepos = append(epicRepos, r)
+		}
+	}
+	if missing := unregisteredOrcaRepos(epicRepos); len(missing) > 0 {
+		return fail("cannot create epic %s: %s", slug, strings.Join(missing, "; "))
+	}
 	rt := orca.New(os.Getenv("ORCA_RUN_ID"))
 	epicDir, err := epic.New(epic.NewOptions{
 		Runtime: rt, Workspace: ws, WsRoot: wsRoot, Project: project, Slug: slug,
@@ -114,7 +125,7 @@ func epicNew(args []string) int {
 func epicAttach(args []string) int {
 	fs := flag.NewFlagSet("epic attach", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	epicDir := fs.String("epic", "", "epic directory to re-attach")
+	epicDir := epicFlag(fs, "", "epic directory to re-attach")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -158,7 +169,7 @@ func resolveRepoAliases(ws *workspace.Workspace, repos repoList) ([]string, erro
 func epicStories(args []string) int {
 	fs := flag.NewFlagSet("epic stories", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	epicDir := fs.String("epic", "", "epic directory")
+	epicDir := epicFlag(fs, "", "epic directory")
 	var storyFlags repoList
 	fs.Var(&storyFlags, "story", "story as id=repo (repeatable); default is one per repo")
 	if err := fs.Parse(args); err != nil {
@@ -225,7 +236,7 @@ func storySpecs(epicDir string, storyFlags repoList) ([]epic.StorySpec, error) {
 func epicClose(args []string) int {
 	fs := flag.NewFlagSet("epic close", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	epicDir := fs.String("epic", "", "epic directory")
+	epicDir := epicFlag(fs, "", "epic directory")
 	yes := fs.Bool("yes", false, "execute (default is a dry run)")
 	force := fs.Bool("force", false, "remove unlanded worktrees")
 	storiesOnly := fs.Bool("stories-only", false, "skip epic backend and epic worktrees")

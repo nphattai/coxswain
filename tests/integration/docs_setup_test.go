@@ -194,7 +194,8 @@ func TestNavStartsWithSetUp(t *testing.T) {
 }
 
 // TestInstallPluginNote guards DESIGN item 4 (backlog B-26): the install page must say the Claude plugin is optional and
-// must not be installed alongside a workspace that already has cox-written hooks, or every leader hook fires twice.
+// skills-only (workspace .claude/settings.json hooks are the one hook source), and that an older plugin that still ships
+// hooks makes every leader hook fire twice.
 func TestInstallPluginNote(t *testing.T) {
 	install := readFile(t, "../../docs/getting-started/install.md")
 	for _, want := range []string{"optional", ".claude/settings.json", "fires twice"} {

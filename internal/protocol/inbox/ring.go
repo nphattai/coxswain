@@ -11,16 +11,12 @@ import (
 
 // The ring state records how many times an unhandled steer has been re-rung and when, so the watcher's re-ring ladder
 // (v1 watch.sh) is durable across watcher restarts. Rows are tab-separated `key<TAB>count<TAB>ts`; a numeric count row
-// is a ring, the special count `escalated` marks a steer whose ladder is exhausted, and the reserved key `*story*`
-// with count `interrupted` records the last runaway interrupt so it fires at most once per window.
+// is a ring and the special count `escalated` marks a steer whose ladder is exhausted. (A legacy `*story*` row with
+// count `interrupted`, from the retired runaway interrupt, is non-numeric and ignored.)
 const ringFile = ".ring-state"
 
-// ringEscalated and ringInterrupted are the non-numeric row markers.
-const (
-	ringEscalated   = "escalated"
-	ringInterrupted = "interrupted"
-	storyKey        = "*story*"
-)
+// ringEscalated is the non-numeric row marker.
+const ringEscalated = "escalated"
 
 // RingStatus is the current ladder state for one record key.
 type RingStatus struct {
@@ -65,26 +61,6 @@ func BumpRing(inboxDir, key string, ts int64) (int, error) {
 // MarkEscalated writes the escalated row for a key (idempotent: a caller checks RingStatus.Escalated first).
 func MarkEscalated(inboxDir, key string, ts int64) error {
 	return appendRow(inboxDir, key, ringEscalated, ts)
-}
-
-// LastInterrupt returns the ts of the last runaway interrupt recorded for this story inbox (0 if none).
-func LastInterrupt(inboxDir string) (int64, error) {
-	rows, err := ringRows(inboxDir)
-	if err != nil {
-		return 0, err
-	}
-	var last int64
-	for _, r := range rows {
-		if r.key == storyKey && r.val == ringInterrupted {
-			last = r.ts
-		}
-	}
-	return last, nil
-}
-
-// MarkInterrupt records a runaway interrupt at ts.
-func MarkInterrupt(inboxDir string, ts int64) error {
-	return appendRow(inboxDir, storyKey, ringInterrupted, ts)
 }
 
 type ringRow struct {

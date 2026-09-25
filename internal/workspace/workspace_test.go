@@ -75,15 +75,15 @@ func TestQuotaPolicyDefaultsAndTemplate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load policy: %v", err)
 	}
-	if pol.QuotaLowPercent() != 10 || pol.QuotaOKPercent() != 25 || pol.QuotaMinRunwayHours() != 24 || pol.QuotaPollMinutes() != 5 || pol.QuotaHealthDebounceMinutes() != 60 {
-		t.Fatalf("template quota values: low=%d ok=%d min=%d poll=%d health_debounce=%d", pol.QuotaLowPercent(), pol.QuotaOKPercent(), pol.QuotaMinRunwayHours(), pol.QuotaPollMinutes(), pol.QuotaHealthDebounceMinutes())
+	if pol.QuotaLowPercent() != 10 || pol.QuotaOKPercent() != 25 || pol.QuotaMinRunwayHours() != 24 || pol.QuotaPollMinutes() != 5 {
+		t.Fatalf("template quota values: low=%d ok=%d min=%d poll=%d", pol.QuotaLowPercent(), pol.QuotaOKPercent(), pol.QuotaMinRunwayHours(), pol.QuotaPollMinutes())
 	}
 	if pol.Quota.NPX != nil {
 		t.Fatalf("template npx should be null, got %+v", pol.Quota.NPX)
 	}
 	// A nil policy still yields the code defaults.
 	var nilPol *Policy
-	if nilPol.QuotaLowPercent() != DefaultQuotaLowPercent || nilPol.QuotaPollMinutes() != DefaultQuotaPollMinutes || nilPol.QuotaHealthDebounceMinutes() != DefaultQuotaHealthDebounce {
+	if nilPol.QuotaLowPercent() != DefaultQuotaLowPercent || nilPol.QuotaPollMinutes() != DefaultQuotaPollMinutes {
 		t.Fatalf("nil policy must return defaults")
 	}
 }

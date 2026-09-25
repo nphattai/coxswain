@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/nphattai/coxswain/internal/adapter/backend"
@@ -53,13 +54,25 @@ func cmdArena(args []string) int {
 func arenaCloseCmd(args []string) int {
 	fs := flag.NewFlagSet("arena close", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	epicDir := fs.String("epic", "", "epic directory")
+	epicDir := epicFlag(fs, "", "epic directory")
 	round := fs.Int("round", 0, "round being closed (recorded in the summary)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 	if *epicDir == "" || *round == 0 {
 		return usageErr("cox arena close --round <n> --epic <dir>")
+	}
+	// Headless roles have no worktree or session: completing them needs no backend (B-06).
+	done, err := completeHeadlessRoles(*epicDir)
+	if err != nil {
+		return fail("%v", err)
+	}
+	for _, story := range done {
+		fmt.Printf("completed headless %s (left working by an earlier run)\n", story)
+	}
+	if !openArenaWorktrees(*epicDir) {
+		fmt.Printf("closed 0 arena worktree(s) for round %d (none tracked)\n", *round)
+		return 0
 	}
 	b, _ := newBackend(*epicDir)
 	if b == nil {
@@ -133,7 +146,7 @@ func openArenaWorktrees(epicDir string) bool {
 func arenaCheck(args []string) int {
 	fs := flag.NewFlagSet("arena check", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	epicDir := fs.String("epic", "", "epic directory")
+	epicDir := epicFlag(fs, "", "epic directory")
 	report := fs.String("report", "", "one report file; default checks reports/arena/round-<round>-*.md")
 	round := fs.Int("round", 1, "round to check when --report is omitted")
 	if err := fs.Parse(args); err != nil {
@@ -212,7 +225,7 @@ func printRound2(epicDir string) {
 func arenaCollect(args []string) int {
 	fs := flag.NewFlagSet("arena collect", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	epicDir := fs.String("epic", "", "epic directory")
+	epicDir := epicFlag(fs, "", "epic directory")
 	round := fs.Int("round", 1, "round to collect")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -241,7 +254,7 @@ func arenaCollect(args []string) int {
 func arenaVerify(args []string) int {
 	fs := flag.NewFlagSet("arena verify", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	epicDir := fs.String("epic", "", "epic directory")
+	epicDir := epicFlag(fs, "", "epic directory")
 	round := fs.Int("round", 1, "round to verify")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -273,7 +286,7 @@ func arenaVerify(args []string) int {
 func arenaSynth(args []string) int {
 	fs := flag.NewFlagSet("arena synth", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	epicDir := fs.String("epic", "", "epic directory")
+	epicDir := epicFlag(fs, "", "epic directory")
 	round := fs.Int("round", 1, "round to synthesize")
 	force := fs.Bool("force", false, "overwrite a synthesis that already carries adjudication")
 	htmlOut := fs.Bool("html", false, "render a review artifact under reports/visual/ instead of building the synthesis")
@@ -341,7 +354,7 @@ func arenaAnswer(args []string) int {
 func epicArena(args []string) int {
 	fs := flag.NewFlagSet("epic arena", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	epicDir := fs.String("epic", "", "epic directory")
+	epicDir := epicFlag(fs, "", "epic directory")
 	leader := fs.String("leader", "", "leader harness (default from policy harness.leader.default)")
 	model := fs.String("model", "", "model id or alias for every role story")
 	reason := fs.String("reason", "", "captain reason (forces a full arena and feeds the sensitive scan)")
@@ -487,21 +500,23 @@ func arenaTerminalRun(opts arena.Options, explicit bool) int {
 
 // epicDesign implements `cox epic design --sign|--amend`. Signing records design_signed with the DESIGN.md and synthesis
 // shas (the synthesis must have every verdict and every captain-agrees cell filled, and no round-2 trigger); --by records
-// who signed. An already-signed design is never re-signed; amending records design_amended and requires --reason.
+// who signed. --sign --no-arena --reason <ruling> signs on the captain's no-arena ruling without a synthesis (B-04). An
+// already-signed design is never re-signed; amending records design_amended and requires --reason.
 func epicDesign(args []string) int {
 	fs := flag.NewFlagSet("epic design", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	epicDir := fs.String("epic", "", "epic directory")
+	epicDir := epicFlag(fs, "", "epic directory")
 	sign := fs.Bool("sign", false, "record design_signed")
 	amend := fs.Bool("amend", false, "record design_amended (requires --reason)")
-	reason := fs.String("reason", "", "why (required for --amend)")
+	reason := fs.String("reason", "", "why (required for --amend, and for --sign --no-arena: the captain's ruling)")
+	noArena := fs.Bool("no-arena", false, "with --sign: sign without an arena synthesis on the captain's ruling (requires --reason)")
 	by := fs.String("by", "", "who signed (recorded in the design_signed evidence)")
 	htmlOut := fs.Bool("html", false, "render a review artifact under reports/visual/design.html (no sign)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 	if *epicDir == "" || (!*sign && !*amend && !*htmlOut) {
-		return usageErr("cox epic design --html | --sign [--by <name>] | --amend --reason <why> --epic <dir>")
+		return usageErr("cox epic design --html | --sign [--no-arena --reason <ruling>] [--by <name>] | --amend --reason <why> --epic <dir>")
 	}
 	if *htmlOut {
 		return designHTML(*epicDir)
@@ -516,8 +531,21 @@ func epicDesign(args []string) int {
 		fmt.Println("design_amended recorded")
 		return 0
 	}
-	if err := epic.Sign(*epicDir, *by); err != nil {
-		return fail("%v", err)
+	if *noArena && !*sign {
+		return fail("--no-arena applies to --sign only")
+	}
+	signErr := error(nil)
+	if *noArena {
+		signErr = epic.SignNoArena(*epicDir, *by, *reason)
+	} else {
+		signErr = epic.Sign(*epicDir, *by)
+	}
+	if signErr != nil {
+		return fail("%v", signErr)
+	}
+	if *noArena {
+		fmt.Println("design_signed recorded (no arena: captain ruling)")
+		return 0
 	}
 	fmt.Println("design_signed recorded")
 	return 0
@@ -597,17 +625,56 @@ func gitDirtyOutside(dir, ignoreDir string) bool {
 	return false
 }
 
-// commitHeadless records a headless arena role event: submitted/prev -> working, with the arena role, round, kind, and
-// the leader-checkout sha as evidence. The role ran locally and produced its report, so the event is externally
-// confirmed (there is no separate session to reconcile).
+// commitHeadless records a headless arena role run: submitted/prev -> working, then working -> completed, with the arena
+// role, round, kind, and the leader-checkout sha as evidence. The role ran locally to its end and produced its report,
+// so both events are externally confirmed (there is no separate session to reconcile). Before B-06 it stopped at
+// working, so a finished headless role stayed open forever and the turn-boundary guard and stop-rewake kept counting it.
 func commitHeadless(epicDir, slug, story string, attempt int, from state.State, evidence map[string]any) error {
 	if from == "" {
 		from = state.Submitted
 	}
-	return state.Append(epicDir, state.Event{
+	if err := state.Append(epicDir, state.Event{
 		Epic: slug, Story: story, Attempt: attempt, Actor: state.Leader,
 		From: from, To: state.Working, Evidence: evidence, ExternalConfirmed: true,
+	}); err != nil {
+		return err
+	}
+	return state.Append(epicDir, state.Event{
+		Epic: slug, Story: story, Attempt: attempt, Actor: state.Leader,
+		From: state.Working, To: state.Completed, Evidence: evidence, ExternalConfirmed: true,
 	})
+}
+
+// completeHeadlessRoles completes every arena role left working by a headless run from before B-06 (its last event is
+// a headless working event): the run was synchronous, so the role is not running. `cox arena close` calls it, so an
+// epic whose headless roles are stuck at working is cleaned up by the command that closes the round. It returns the
+// roles it completed.
+func completeHeadlessRoles(epicDir string) ([]string, error) {
+	events, _, err := state.Load(epicDir)
+	if err != nil {
+		return nil, err
+	}
+	last := map[string]state.Event{}
+	for _, ev := range events {
+		if ev.Type == "" && strings.HasPrefix(ev.Story, "arena-") {
+			last[ev.Story] = ev
+		}
+	}
+	var done []string
+	for story, ev := range last {
+		if ev.To != state.Working || ev.Evidence["kind"] != "headless" {
+			continue
+		}
+		if err := state.Append(epicDir, state.Event{
+			Epic: ev.Epic, Story: story, Attempt: ev.Attempt, Actor: state.Leader,
+			From: state.Working, To: state.Completed, Evidence: ev.Evidence, ExternalConfirmed: true,
+		}); err != nil {
+			return done, err
+		}
+		done = append(done, story)
+	}
+	sort.Strings(done)
+	return done, nil
 }
 
 // isDepthError reports whether a dispatch failure is the Orca "sub-worker dispatch is not permitted" depth ceiling.

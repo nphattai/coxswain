@@ -4,14 +4,17 @@
 package github
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os/exec"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/nphattai/coxswain/internal/adapter/forge"
+	"github.com/nphattai/coxswain/internal/boundexec"
 )
 
 // Client runs gh in a repo working directory (the story worktree).
@@ -23,30 +26,41 @@ type Client struct {
 // New returns a Client that shells out to gh in dir.
 func New(dir string) *Client { return &Client{Dir: dir, run: runGH} }
 
+// ghBound bounds every gh call: a hung gh (network stall, an auth prompt) must not hang the watcher tick that reads a
+// story PR's CI, nor `cox state`/bearings (firstmate ac2ed3b: every external call is bounded). A merge is one API call,
+// so a minute is generous. A var so a test can shorten it.
+var ghBound = 60 * time.Second
+
+// runGH runs gh in dir through the one bounded exec (internal/boundexec) and returns stdout. A failure keeps gh's first
+// stderr line; without it a failure collapses to a bare "exit status 1" and the reason (e.g. "no pull requests found
+// for branch", "not logged into any GitHub hosts") is lost, so cox state cannot classify it (M8 A0).
 func runGH(dir string, args ...string) ([]byte, error) {
+	var out, errb bytes.Buffer
 	cmd := exec.Command("gh", args...)
 	cmd.Dir = dir
-	out, err := cmd.Output()
-	if err != nil {
-		return out, fmt.Errorf("gh %s: %w%s", strings.Join(args, " "), err, stderrTail(err))
+	cmd.Stdout, cmd.Stderr = &out, &errb
+	code, err := boundexec.Run(context.Background(), ghBound, cmd)
+	switch {
+	case err != nil:
+		return out.Bytes(), fmt.Errorf("gh %s: %w", strings.Join(args, " "), err)
+	case boundexec.TimedOut(code):
+		return out.Bytes(), fmt.Errorf("gh %s: timed out after %s", strings.Join(args, " "), ghBound)
+	case code != 0:
+		return out.Bytes(), fmt.Errorf("gh %s: exit status %d%s", strings.Join(args, " "), code, firstLine(errb.String()))
 	}
-	return out, nil
+	return out.Bytes(), nil
 }
 
-// stderrTail returns gh's first stderr line as ": <line>", or "" when there is none. Output() populates
-// ExitError.Stderr; without it a gh failure collapses to a bare "exit status 1" and the reason (e.g. "no pull requests
-// found for branch", "not logged into any GitHub hosts") is lost, so cox state cannot classify it (M8 A0).
-func stderrTail(err error) string {
-	var ee *exec.ExitError
-	if errors.As(err, &ee) {
-		if line := strings.TrimSpace(string(ee.Stderr)); line != "" {
-			if i := strings.IndexByte(line, '\n'); i >= 0 {
-				line = line[:i]
-			}
-			return ": " + line
-		}
+// firstLine returns the first non-empty stderr line as ": <line>", or "" when there is none.
+func firstLine(stderr string) string {
+	line := strings.TrimSpace(stderr)
+	if line == "" {
+		return ""
 	}
-	return ""
+	if i := strings.IndexByte(line, '\n'); i >= 0 {
+		line = line[:i]
+	}
+	return ": " + line
 }
 
 // PR resolves the PR for a head branch via `gh pr view <head> --json ...`. A head with no PR is an error.

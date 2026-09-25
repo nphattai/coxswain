@@ -3,6 +3,8 @@ package wake
 import (
 	"fmt"
 	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -213,4 +215,28 @@ func TestAckReportsANoOpWithTheCurrentWake(t *testing.T) {
 		!strings.Contains(r.Notice(epic), "run cox wake ack-through 3 --epic") {
 		t.Fatalf("stale ack = %+v %q %v", r, r.Notice(epic), err)
 	}
+}
+
+// The queue lock records its holder ("pid=N", the form the bearings deferred worker's failed record reads, 5842d42)
+// while it is held; a busy tryLock never overwrites it.
+func TestLockRecordsHolderPid(t *testing.T) {
+	epic := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(epic, ControlDir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	unlock, err := lock(epic)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "pid=" + strconv.Itoa(os.Getpid()) + "\n"
+	if b, _ := os.ReadFile(LockPath(epic)); string(b) != want {
+		t.Fatalf("held lock records %q, want %q", b, want)
+	}
+	if _, err := tryLock(epic); err == nil {
+		t.Fatal("tryLock took a held lock")
+	}
+	if b, _ := os.ReadFile(LockPath(epic)); string(b) != want {
+		t.Errorf("a refused tryLock rewrote the holder: %q", b)
+	}
+	unlock()
 }

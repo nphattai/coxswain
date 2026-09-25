@@ -40,7 +40,7 @@ func cmdInbox(args []string) int {
 func inboxInterruptWait(args []string) int {
 	fs := flag.NewFlagSet("inbox interrupt-wait", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	epicDir := fs.String("epic", os.Getenv("COX_EPIC"), "epic directory")
+	epicDir := epicFlag(fs, os.Getenv("COX_EPIC"), "epic directory")
 	story := fs.String("story", os.Getenv("COX_STORY"), "story id")
 	max := fs.Duration("max", time.Hour, "max wait before timing out (exit 3)")
 	poll := fs.Duration("poll", 500*time.Millisecond, "poll interval")

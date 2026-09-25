@@ -26,13 +26,19 @@ func replyFile(args []string) int {
 	story, qid, answer, rest := threePositionals(args)
 	fs := flag.NewFlagSet("reply", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	epicDir := fs.String("epic", "", "epic directory")
+	epicDir := epicFlag(fs, "", "epic directory")
 	again := fs.Bool("again", false, "add another reply to an already-answered question")
 	if err := fs.Parse(rest); err != nil {
 		return 2
 	}
 	if *epicDir == "" || story == "" || qid == "" || answer == "" {
 		return usageErr("cox reply <story> qNNN \"<answer>\" --epic <dir> [--again]")
+	}
+	// Echo the canonical id everywhere below: the watcher reads "answer to qNNN:" case-sensitively (replyAnswerRe), so a
+	// raw `Q001` record was never marked consumed.
+	qid, err := question.CanonID(qid)
+	if err != nil {
+		return fail("%v", err)
 	}
 	if _, err := question.Answer(*epicDir, story, qid, answer, *again); err != nil {
 		return fail("%v", err)
@@ -58,7 +64,7 @@ func replyMailbox(args []string) int {
 	msgID, text, rest := twoPositionals(args)
 	fs := flag.NewFlagSet("reply", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	epicDir := fs.String("epic", "", "epic directory")
+	epicDir := epicFlag(fs, "", "epic directory")
 	if err := fs.Parse(rest); err != nil {
 		return 2
 	}

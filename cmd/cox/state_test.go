@@ -53,7 +53,7 @@ func TestForgeObserver(t *testing.T) {
 
 	// A PR with two green checks, not merged.
 	green := &forgefake.Forge{F: forgefake.Fixture{
-		PR:     forge.PR{Number: 12, Head: "abc"},
+		PR:     forge.PR{Number: 12, Head: "abc", State: "open"},
 		Checks: []forge.Check{{Status: "completed", Conclusion: "success"}, {Status: "completed", Conclusion: "success"}},
 		Merged: false,
 	}}
@@ -118,7 +118,7 @@ func TestForgeSummaryClassifies(t *testing.T) {
 		f    forgefake.Fixture
 		want string
 	}{
-		{"pr-found", forgefake.Fixture{PR: forge.PR{Number: 12}, Checks: []forge.Check{{Status: "completed", Conclusion: "success"}}}, "PR #12 checks=pass merged=false"},
+		{"pr-found", forgefake.Fixture{PR: forge.PR{Number: 12, State: "open"}, Checks: []forge.Check{{Status: "completed", Conclusion: "success"}}}, "PR #12 checks=pass merged=false"},
 		{"no-pr", forgefake.Fixture{Errors: map[string]string{"pr": `gh pr view story/m4: exit status 1: no pull requests found for branch "story/m4"`}}, "no-pr"},
 		{"logged-out", forgefake.Fixture{Errors: map[string]string{"pr": "gh pr view story/m4: exit status 4: not logged into any GitHub hosts"}}, "unknown: gh unavailable"},
 		{"other", forgefake.Fixture{Errors: map[string]string{"pr": "gh pr view story/m4: exit status 1: HTTP 502"}}, "unknown: gh pr view story/m4: exit status 1: HTTP 502"},
@@ -199,5 +199,29 @@ func TestProbeComposer(t *testing.T) {
 	// A working story with no saved session stays unknown.
 	if got := probeComposer(b, epic, &state.StorySnap{ID: "other", State: state.Working}); got != backend.ComposerUnknown {
 		t.Fatalf("no session = %q, want unknown", got)
+	}
+}
+
+// mergedCounter counts Merged calls on a fake forge.
+type mergedCounter struct {
+	*forgefake.Forge
+	merged int
+}
+
+func (m *mergedCounter) Merged(pr forge.PR) (bool, error) { m.merged++; return m.Forge.Merged(pr) }
+
+// #45 follow-up (b): the observation reads merged from the one PR read (its state), never a second Merged call; a PR the
+// forge reports merged reads "true", and a PR read with no state stays unknown.
+func TestForgeObserverReadsMergedFromThePRRead(t *testing.T) {
+	for _, c := range []struct{ state, want string }{{"merged", "true"}, {"open", "false"}, {"", "unknown"}} {
+		f := &mergedCounter{Forge: &forgefake.Forge{F: forgefake.Fixture{PR: forge.PR{Number: 7, State: c.state}, Merged: c.state == "merged"}}}
+		fo := &forgeObserver{now: time.Now().UTC(), cache: map[string]state.Observation{}, newForge: func(string) forge.Forge { return f }}
+		v, _ := fo.observe(t.TempDir(), &state.StorySnap{ID: "s1", State: state.Working}).Value.(forgeVal)
+		if v.Merged != c.want {
+			t.Errorf("PR state %q: merged = %q, want %q", c.state, v.Merged, c.want)
+		}
+		if f.merged != 0 {
+			t.Errorf("PR state %q: %d extra Merged call(s), want the one PR read only", c.state, f.merged)
+		}
 	}
 }

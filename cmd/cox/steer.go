@@ -18,7 +18,7 @@ import (
 func cmdSteer(args []string) int {
 	fs := flag.NewFlagSet("steer", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	epicDir := fs.String("epic", "", "epic directory")
+	epicDir := epicFlag(fs, "", "epic directory")
 	fyi := fs.Bool("fyi", false, "send as fyi (does not count against the budget, never interrupts)")
 	override := fs.String("override", "", "reason to override the steer budget")
 	ring := fs.Bool("ring", false, "only re-ring the doorbell for unhandled inbox (no new record, no budget)")

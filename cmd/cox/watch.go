@@ -13,6 +13,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/nphattai/coxswain/internal/adapter/forge"
+	"github.com/nphattai/coxswain/internal/adapter/forge/github"
+	"github.com/nphattai/coxswain/internal/boundexec"
 	"github.com/nphattai/coxswain/internal/supervision"
 	"github.com/nphattai/coxswain/internal/wake"
 	"github.com/nphattai/coxswain/internal/watch"
@@ -323,7 +326,7 @@ func cmdWatch(args []string) int {
 	}
 	fs := flag.NewFlagSet("watch", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	epicDir := fs.String("epic", "", "epic directory")
+	epicDir := epicFlag(fs, "", "epic directory")
 	once := fs.Bool("once", false, "run a single watch pass and exit")
 	replace := fs.Bool("replace", false, "kill an already-running watcher and take over the pidfile")
 	if err := fs.Parse(args); err != nil {
@@ -344,6 +347,7 @@ func cmdWatch(args []string) int {
 		Quota:        newQuotaProbe(*epicDir),
 		AlarmChannel: pol.AlertsChannel(),
 		BusyTurnMax:  time.Duration(pol.BusyTurnMaxMinutes()) * time.Minute, // 0 => watcher default (DefaultBusyTurnMax)
+		Forge:        newWatchForge(*epicDir),
 	}
 	if *once {
 		n, err := w.Tick()
@@ -395,6 +399,7 @@ func cmdWatch(args []string) int {
 		// short grace to finish, then release the pidfile and exit without waiting for it.
 		time.Sleep(watcherStopGrace)
 		release()
+		boundexec.KillLive() // a bounded probe in flight (quota-axi) must not outlive the watcher
 		os.Exit(0)
 	}()
 	w.Run(stop, 5*time.Second)
@@ -410,7 +415,7 @@ func watchCheck(args []string) int {
 	id, rest := onePositional(rest)
 	fs := flag.NewFlagSet("watch check", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	epicDir := fs.String("epic", "", "epic directory")
+	epicDir := epicFlag(fs, "", "epic directory")
 	if err := fs.Parse(rest); err != nil {
 		return 2
 	}
@@ -450,3 +455,15 @@ func signalName(s os.Signal) string {
 
 // watcherStopGrace bounds how long a signalled watcher lets its in-flight pass finish before it exits anyway.
 var watcherStopGrace = 2 * time.Second
+
+// newWatchForge is the forge the watcher's turn-end pass reads a story PR's CI through, so pending checks read as CI
+// running instead of "CI state unknown" (leader-findings 16). It is the epic's first repo checkout, as `cox ship merge`
+// uses; nil (no repos file, no workspace) keeps today's unknown. A var so a test can see what cmdWatch wires.
+// ponytail: one repo per epic; a multi-repo epic's other repos read unknown until a story-to-repo forge router exists.
+var newWatchForge = func(epicDir string) forge.Forge {
+	targets, err := shipTargets(epicDir)
+	if err != nil || len(targets) == 0 {
+		return nil
+	}
+	return github.New(targets[0].Dir)
+}

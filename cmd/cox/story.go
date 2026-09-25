@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/nphattai/coxswain/internal/adapter/backend"
+	"github.com/nphattai/coxswain/internal/adapter/backend/orca"
 	"github.com/nphattai/coxswain/internal/adapter/harness"
 	"github.com/nphattai/coxswain/internal/adapter/harness/registry"
 	"github.com/nphattai/coxswain/internal/arena/cite"
@@ -19,6 +20,7 @@ import (
 	"github.com/nphattai/coxswain/internal/protocol/control"
 	"github.com/nphattai/coxswain/internal/routing"
 	"github.com/nphattai/coxswain/internal/state"
+	"github.com/nphattai/coxswain/internal/wake"
 	"github.com/nphattai/coxswain/internal/workspace"
 	"github.com/nphattai/coxswain/internal/worktree"
 )
@@ -60,7 +62,7 @@ func storyDispatch(args []string) int {
 	story, rest := onePositional(args)
 	fs := flag.NewFlagSet("story dispatch", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	epicDir := fs.String("epic", "", "epic directory")
+	epicDir := epicFlag(fs, "", "epic directory")
 	harnessFlag := fs.String("harness", "", "harness ("+harnessOptions()+"); default from the story frontmatter")
 	model := fs.String("model", "", "model id or alias (opus -> the policy claude worker model)")
 	forceModel := fs.Bool("force-model", false, "allow a model whose vendor does not match the harness")
@@ -321,7 +323,7 @@ func storyDone(args []string) int {
 	story, rest := onePositional(args)
 	fs := flag.NewFlagSet("story done", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	epicDir := fs.String("epic", "", "epic directory")
+	epicDir := epicFlag(fs, "", "epic directory")
 	merge := fs.String("merge", "", "merge commit sha to record as evidence")
 	closeWt := fs.Bool("close-worktree", false, "detach and remove the story worktree (branch kept)")
 	force := fs.Bool("force", false, "complete even when the worker composer is busy (worker still running)")
@@ -430,7 +432,7 @@ func storyPromote(args []string) int {
 	story, rest := onePositional(args)
 	fs := flag.NewFlagSet("story promote", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	epicDir := fs.String("epic", "", "epic directory")
+	epicDir := epicFlag(fs, "", "epic directory")
 	mode := fs.String("mode", "", "delivery mode for the promoted ship story (no-mistakes|direct-PR|local-only)")
 	if err := fs.Parse(rest); err != nil {
 		return 2
@@ -514,7 +516,7 @@ func storyTerminate(to state.State, args []string) int {
 	story, rest := onePositional(args)
 	fs := flag.NewFlagSet("story "+verb, flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	epicDir := fs.String("epic", "", "epic directory")
+	epicDir := epicFlag(fs, "", "epic directory")
 	reason := fs.String("reason", "", "why (recorded as evidence.reason; required)")
 	closeWt := fs.Bool("close-worktree", false, "detach and remove the story worktree (branch kept)")
 	force := fs.Bool("force", false, "proceed even when the worker composer is busy (worker still running)")
@@ -581,6 +583,14 @@ func releaseStory(epicDir, story string, snap *state.StorySnap, to state.State, 
 			fmt.Fprintf(os.Stderr, "cox: note: busy retire for %s: %v\n", story, err)
 		}
 	}
+	// A released story's queued supervision rows (stale, probe, idle, status, check) describe a worker that no longer
+	// exists; prune them so the leader is not woken for it (firstmate 7e0e60a fm_wake_queue_prune_task at teardown).
+	// Best-effort: the story is already terminal.
+	if n, err := wake.PruneStory(epicDir, story); err != nil {
+		fmt.Fprintf(os.Stderr, "cox: note: wake prune for %s: %v\n", story, err)
+	} else if n > 0 {
+		fmt.Printf("pruned %d queued supervision wake(s) for %s\n", n, story)
+	}
 	if closeWt {
 		if wtPath := readWorktree(epicDir, story); wtPath != "" {
 			if b == nil {
@@ -609,7 +619,7 @@ func storyControl(verb string, args []string) int {
 	story, rest := onePositional(args)
 	fs := flag.NewFlagSet("story "+verb, flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	epicDir := fs.String("epic", "", "epic directory")
+	epicDir := epicFlag(fs, "", "epic directory")
 	note := fs.String("note", "resume", "progress note (resume)")
 	// resume only: reroute the next attempt onto a different harness (M11 leader reroute). The checkpoint is
 	// harness-neutral, so nothing else changes; the model must fit the new harness (M10c).
@@ -735,9 +745,6 @@ func ensureRun(epicDir, slug string) (string, error) {
 		return r, nil
 	}
 	out, err := exec.Command("orca", "orchestration", "run-create", "--objective", "epic "+slug, "--json").Output()
-	if err != nil {
-		return "", fmt.Errorf("orca run-create: %w", err)
-	}
 	var env struct {
 		OK     bool `json:"ok"`
 		Result struct {
@@ -745,8 +752,21 @@ func ensureRun(epicDir, slug string) (string, error) {
 				ID string `json:"id"`
 			} `json:"run"`
 		} `json:"result"`
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
 	}
-	if err := json.Unmarshal(out, &env); err != nil || env.Result.Run.ID == "" {
+	perr := json.Unmarshal(out, &env)
+	if err != nil {
+		// Orca exits non-zero on an ok=false envelope and still prints it: report its code and message, never a bare
+		// exit status (B-34a shape, as the orca client's call does).
+		if perr == nil && !env.OK && (env.Error.Code != "" || env.Error.Message != "") {
+			return "", &orca.Error{Cmd: "orchestration run-create", Code: env.Error.Code, Message: env.Error.Message}
+		}
+		return "", fmt.Errorf("orca run-create: %w", err)
+	}
+	if perr != nil || env.Result.Run.ID == "" {
 		return "", fmt.Errorf("orca run-create: could not read run id from %s", strings.TrimSpace(string(out)))
 	}
 	if err := writeCoxFile(epicDir, "run", env.Result.Run.ID); err != nil {

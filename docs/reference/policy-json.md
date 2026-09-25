@@ -144,7 +144,6 @@ Observe-only; `cox` never reroutes automatically.
 | `ok_percent` | int | The percentage at which a harness is considered healthy again. |
 | `min_runway_hours` | int | Minimum runway before a low-quota wake. |
 | `poll_minutes` | int | How often quota is polled. |
-| `health_debounce_minutes` | int | Debounce window for health wakes. |
 
 ### `review`
 

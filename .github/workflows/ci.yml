@@ -1,7 +1,16 @@
 name: ci
 on:
+  # A story branch runs through its PR; push runs only the integration branches (B-76: every story push used to queue
+  # the push and pull_request matrices both).
   push:
+    branches: [main, 'epic/**']
   pull_request:
+
+# One run per ref: a new push to a PR or epic branch cancels the superseded run instead of queueing behind it on macOS.
+# main keeps every run, so each merge there still gets its own result.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   # v2 core: build and test the Go skeleton, and syntax-check the v1 scripts, on both platforms.

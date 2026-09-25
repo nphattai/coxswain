@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/nphattai/coxswain/internal/epic"
 	"github.com/nphattai/coxswain/internal/protocol/question"
 	"github.com/nphattai/coxswain/internal/state"
 	"github.com/nphattai/coxswain/internal/wake"
@@ -44,22 +45,9 @@ func isDir(p string) bool {
 	return err == nil && fi.IsDir()
 }
 
-func epicClosed(ep string) bool {
-	if _, err := os.Stat(filepath.Join(ep, ".cox.closed")); err == nil && !isDir(filepath.Join(ep, ".cox")) {
-		return true
-	}
-	b, err := os.ReadFile(filepath.Join(ep, "DESIGN.md"))
-	if err != nil {
-		return false
-	}
-	for _, l := range strings.Split(string(b), "\n") {
-		if st, ok := strings.CutPrefix(l, "Status:"); ok {
-			st = strings.ToLower(strings.TrimSpace(st))
-			return strings.HasPrefix(st, "closed") || strings.HasPrefix(st, "complete")
-		}
-	}
-	return false
-}
+// epicClosed is epic.Closed: the one definition doctor and bearings share (the ledger's epic_closed, the local archive,
+// or a closed/complete DESIGN Status).
+func epicClosed(ep string) bool { return epic.Closed(ep) }
 
 // storyFiles are the ids with a stories/<id>.md file.
 func storyFiles(epicDir string) map[string]bool {

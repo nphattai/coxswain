@@ -191,3 +191,20 @@ func groups() []int {
 	}
 	return ids
 }
+
+// KillLive ends every live bounded command group now: TERM, Grace, then KILL. A process that owns its own exit path (a
+// signal handler that calls os.Exit, a hard backstop) calls it first, so a bounded command it started never outlives it
+// when os.Exit wins the race with the signal forwarder (#47: a <=60s quota-axi orphaned by `cox watch` on TERM).
+func KillLive() {
+	ids := groups()
+	if len(ids) == 0 {
+		return
+	}
+	for _, id := range ids {
+		_ = syscall.Kill(-id, syscall.SIGTERM)
+	}
+	time.Sleep(Grace)
+	for _, id := range ids {
+		_ = syscall.Kill(-id, syscall.SIGKILL)
+	}
+}

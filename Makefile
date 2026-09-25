@@ -26,6 +26,6 @@ lint:
 	@test -z "$$(gofmt -l .)" || { echo "gofmt needed on:"; gofmt -l .; exit 1; }
 	go vet ./...
 
-# release-dry builds the full release locally without publishing: four binaries plus archives with hooks/templates/skills.
+# release-dry builds the full release locally without publishing: four binaries plus archives with templates/skills.
 release-dry:
 	goreleaser release --snapshot --clean

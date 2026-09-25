@@ -3,6 +3,7 @@ package epic
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/nphattai/coxswain/internal/adapter/backend"
 	"github.com/nphattai/coxswain/internal/env"
+	"github.com/nphattai/coxswain/internal/state"
 )
 
 // closeFixture builds an epic dir with one session, one resources entry, and one real story worktree wired to .cox/wt.
@@ -591,5 +593,74 @@ func TestCloseMalformedWorktreeRecordFails(t *testing.T) {
 	}
 	if len(rt.removed) != 0 || !fileExists(wtPath) {
 		t.Errorf("no worktree may be removed when a record is malformed, removed=%q", rt.removed)
+	}
+}
+
+// B-46: close writes the close where git carries it - an epic_closed event in the tracked ledger and the DESIGN.md
+// Status line - on the full path and the no-runtime path, so Closed reads it with no .cox.closed (a second machine).
+func TestCloseRecordsTrackedClose(t *testing.T) {
+	check := func(t *testing.T, epicDir string) {
+		t.Helper()
+		b, _ := os.ReadFile(filepath.Join(epicDir, "DESIGN.md"))
+		if !strings.Contains(string(b), "(previously: active - signed 2026-09-01)") || !strings.HasPrefix(strings.Split(string(b), "\n")[2], "Status: closed ") {
+			t.Fatalf("DESIGN.md Status not rewritten to closed:\n%s", b)
+		}
+		events, _, err := state.Load(epicDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		n := 0
+		for _, ev := range events {
+			if ev.Type == state.EpicClosed && ev.Evidence["previous_status"] == "active - signed 2026-09-01" {
+				n++
+			}
+		}
+		if n != 1 {
+			t.Fatalf("ledger carries %d epic_closed events, want 1: %+v", n, events)
+		}
+		// The machine-local archive is gitignored: another machine has only the tracked files.
+		if err := os.RemoveAll(filepath.Join(epicDir, ".cox.closed")); err != nil {
+			t.Fatal(err)
+		}
+		if !Closed(epicDir) {
+			t.Error("Closed is false with the tracked close and no .cox.closed")
+		}
+	}
+	design := "# e\n\nStatus: active - signed 2026-09-01\n\nbody\n"
+	t.Run("full", func(t *testing.T) {
+		epicDir, rt, _ := closeFixture(t, false)
+		mustWriteFile(t, filepath.Join(epicDir, "DESIGN.md"), design)
+		if err := Close(CloseOptions{EpicDir: epicDir, Runtime: rt, Alloc: &env.Allocator{EpicDir: epicDir, Ops: env.RealOps()}, Yes: true, Force: true, Out: io.Discard}); err != nil {
+			t.Fatal(err)
+		}
+		check(t, epicDir)
+	})
+	t.Run("no_runtime", func(t *testing.T) {
+		epicDir := t.TempDir()
+		mustWriteFile(t, filepath.Join(epicDir, "DESIGN.md"), design)
+		if err := Close(CloseOptions{EpicDir: epicDir, Yes: true, Out: io.Discard}); err != nil {
+			t.Fatal(err)
+		}
+		check(t, epicDir)
+	})
+}
+
+// Closed reads a hand-closed Status (the 7 henrylab epics closed before close wrote anything) and an active epic.
+func TestClosedReadsStatus(t *testing.T) {
+	epicDir := t.TempDir()
+	mustWriteFile(t, filepath.Join(epicDir, "DESIGN.md"), "Status: active (signed)\n")
+	if Closed(epicDir) {
+		t.Error("an active epic reads closed")
+	}
+	mustWriteFile(t, filepath.Join(epicDir, "DESIGN.md"), "Status: complete 2026-09-20\n")
+	if !Closed(epicDir) {
+		t.Error("a complete Status does not read closed")
+	}
+}
+
+func mustWriteFile(t *testing.T, p, s string) {
+	t.Helper()
+	if err := os.WriteFile(p, []byte(s), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }

@@ -26,11 +26,10 @@ var v3Sections = []string{"Adopted decision", "Decisive evidence", "Rejected alt
 // keeps its P7 gate (a captain-agrees cell on every row). The event carries the DESIGN.md and synthesis content shas, and
 // `by` when given. An already-signed design is never re-signed: record a post-signature change with `--amend --reason`.
 func Sign(epicDir, by string) error {
-	designPath := filepath.Join(epicDir, "DESIGN.md")
 	synthPath := filepath.Join(epicDir, "reports", "arena", "synthesis.md")
 
 	if _, err := os.Stat(synthPath); err != nil {
-		return fmt.Errorf("cannot sign: no synthesis at %s (run cox arena synth first)", synthPath)
+		return fmt.Errorf("cannot sign: no synthesis at %s (run cox arena synth first, or sign the captain's no-arena ruling with --no-arena --reason)", synthPath)
 	}
 	synthContent, err := os.ReadFile(synthPath)
 	if err != nil {
@@ -54,6 +53,26 @@ func Sign(epicDir, by string) error {
 		return fmt.Errorf("cannot sign: round 2 required (epic-blocking claim(s) unresolved): %s", strings.Join(reasons, "; "))
 	}
 
+	synthSha, err := fileSha(synthPath)
+	if err != nil {
+		return err
+	}
+	return appendSigned(epicDir, by, map[string]any{"synthesis_sha": synthSha})
+}
+
+// SignNoArena records a design_signed event on the captain's ruling that the epic needs no arena (B-04: a lite epic,
+// arena level `none`), so no synthesis is required. The ruling is the reason and is mandatory; the event carries
+// no_arena and the reason in place of the synthesis sha. Readers that only look at the event type (board, doctor) treat
+// it as any other signature.
+func SignNoArena(epicDir, by, reason string) error {
+	if strings.TrimSpace(reason) == "" {
+		return fmt.Errorf("cannot sign without an arena: --reason is required (the captain's no-arena ruling)")
+	}
+	return appendSigned(epicDir, by, map[string]any{"no_arena": true, "reason": strings.TrimSpace(reason)})
+}
+
+// appendSigned refuses an already-signed design, then appends design_signed with the DESIGN.md sha plus evidence.
+func appendSigned(epicDir, by string, evidence map[string]any) error {
 	alreadySigned, err := isSigned(epicDir)
 	if err != nil {
 		return err
@@ -61,16 +80,11 @@ func Sign(epicDir, by string) error {
 	if alreadySigned {
 		return fmt.Errorf("DESIGN.md is already signed; use cox epic design --amend --reason to record a change")
 	}
-
-	designSha, err := fileSha(designPath)
+	designSha, err := fileSha(filepath.Join(epicDir, "DESIGN.md"))
 	if err != nil {
 		return err
 	}
-	synthSha, err := fileSha(synthPath)
-	if err != nil {
-		return err
-	}
-	evidence := map[string]any{"design_sha": designSha, "synthesis_sha": synthSha}
+	evidence["design_sha"] = designSha
 	if strings.TrimSpace(by) != "" {
 		evidence["by"] = strings.TrimSpace(by)
 	}

@@ -3230,7 +3230,7 @@ func TestPortStuckCrewmateRecovery(t *testing.T) {
 		for i := 0; i < 3; i++ {
 			r.advance(31 * time.Minute)
 			for _, w := range r.tick() {
-				if w.Kind == wake.KindRunaway {
+				if w.Kind == "runaway" { // the retired runaway kind (B-03)
 					t.Errorf("the watcher raised a runaway (interrupt) wake: %s", w.Note)
 				}
 			}

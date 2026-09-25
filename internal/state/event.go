@@ -40,6 +40,7 @@ const (
 	DesignAmended  = "design_amended"   // DESIGN.md changed after a signature, with a reason
 	QuotaManualSet = "quota_manual_set" // leader set or cleared a captain-declared quota reading (M11)
 	Merged         = "merged"           // cox ship merge merged a PR at its live head (item 8): evidence {pr, head, method, by}
+	EpicClosed     = "epic_closed"      // cox epic close archived the epic (B-46): evidence {previous_status}
 )
 
 // EpicStory is the reserved story id for epic-scoped, non-lifecycle events (design_signed / design_amended).

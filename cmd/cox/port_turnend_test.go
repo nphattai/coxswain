@@ -226,6 +226,8 @@ func TestFM(t *testing.T) {
 	t.Run("fm-watch-checkpoint", fmWatchCheckpoint)
 	t.Run("fm-watcher-lock", fmWatcherLock)
 	t.Run("fm-watch-arm", fmWatchArm)
+	t.Run("fm-wake-queue", fmWakeQueueRecovery)
+	t.Run("fm-claude-stop-autoarm", fmClaudeStopAutoarm)
 	t.Run("doc-turnend-guard", fmDocTurnendGuard)
 	t.Run("doc-watcher-continuity", fmDocWatcherContinuity)
 }
@@ -1234,9 +1236,11 @@ func fmTurnendGuard(t *testing.T) {
 	// fm: tests/fm-turnend-guard.test.sh:1911
 	t.Run("hook_claude_mode_waits_for_late_claim", func(t *testing.T) {
 		// A bounded wait for the late claim instead of forcing a continuation: the real launchWatcher waits for the
-		// restarted watcher's first tick (a stub that ticks after 0.4s inside a 3s window).
+		// restarted watcher's first tick (a stub that ticks after 0.4s). Firstmate's 3s window is its sync-wait knob,
+		// not the contract; under a loaded full-suite run the stub's own exec took 6s and read as "no claim", so the
+		// window is 30s: a healthy run still returns at the 0.4s claim, only a real miss waits it out.
 		epic := fmEpic(t, "s1")
-		stubWatcher(t, 3*time.Second, `sleep 0.4; mkdir -p "$3/.cox/watch" && date > "$3/.cox/watch/lasttick" && exec sleep 30`)
+		stubWatcher(t, 30*time.Second, `sleep 0.4; mkdir -p "$3/.cox/watch" && date > "$3/.cox/watch/lasttick" && exec sleep 30`)
 		r := fmGuard(t, epic, launchWatcher)
 		if r.blocked() || r.code != 0 || r.out != "" {
 			t.Fatalf("a late but confirmed restart must end the Stop silently (no forced continuation, no output), got %+v", r)
@@ -2714,22 +2718,29 @@ func fmDocTurnendGuard(t *testing.T) {
 
 	// fm: docs/turnend-guard.md:192
 	t.Run("no_shell_ampersand_supervision", func(t *testing.T) {
-		// No harness adapter manufactures supervision by backgrounding with a shell ampersand.
-		shims, _ := filepath.Glob(filepath.Join("..", "..", "hooks", "*.sh"))
-		if len(shims) == 0 {
-			t.Fatal("no hook shims found under hooks/")
-		}
-		for _, p := range shims {
-			b, err := os.ReadFile(p)
+		// No harness adapter manufactures supervision by backgrounding with a shell ampersand. The leader hooks are the
+		// `cox hook <name>` commands init writes from hooks/leader.json (B-26 removed the plugin's shell shims).
+		n := 0
+		for _, h := range []string{"claude", "codex"} {
+			groups, err := coxHookGroups(h)
 			if err != nil {
 				t.Fatal(err)
 			}
-			for _, line := range strings.Split(string(b), "\n") {
-				code := strings.TrimSpace(strings.SplitN(line, "#", 2)[0])
-				if strings.HasSuffix(code, "&") && !strings.HasSuffix(code, "&&") {
-					t.Errorf("%s backgrounds a process with a shell ampersand: %q", p, line)
+			for event, gs := range groups {
+				for _, g := range gs {
+					hl, _ := g.(map[string]any)["hooks"].([]any)
+					for _, x := range hl {
+						cmd, _ := x.(map[string]any)["command"].(string)
+						n++
+						if c := strings.TrimSpace(cmd); strings.HasSuffix(c, "&") && !strings.HasSuffix(c, "&&") {
+							t.Errorf("%s %s hook backgrounds a process with a shell ampersand: %q", h, event, cmd)
+						}
+					}
 				}
 			}
+		}
+		if n == 0 {
+			t.Fatal("no leader hook commands found in hooks/leader.json")
 		}
 	})
 }
@@ -2822,4 +2833,84 @@ func fmDocWatcherContinuity(t *testing.T) {
 			}
 		}
 	})
+}
+
+// fmWakeQueueRecovery ports the fm-wake-queue drain cases whose mechanism is the recovery marker (cmd/cox recovery.go);
+// the queue-only cases live in internal/wake/port_queue_test.go.
+func fmWakeQueueRecovery(t *testing.T) {
+	// fm: tests/fm-wake-queue.test.sh:1889@a8572f6 (test_stale_ack_that_consumes_nothing_names_the_current_wake: the
+	// second drain after a retired episode prints its OWN generation, and following it verbatim retires the episode).
+	// Leader-findings 19: after the ack, every cox drain kept printing the retired generation.
+	t.Run("stale_ack_that_consumes_nothing_names_the_current_wake", func(t *testing.T) {
+		epic := fmEpic(t, "s1")
+		_, _ = wake.Append(epic, wake.Wake{Epic: filepath.Base(epic), Story: "first", Kind: wake.KindWorkerDone, Note: "done: first wake"})
+		if err := publishRecoveryDowntime(epic); err != nil {
+			t.Fatal(err)
+		}
+		firstSeq, firstGen, out := fmDrain(t, epic)
+		if firstGen == "" {
+			t.Fatalf("first drain printed no acknowledgement command: %q", out)
+		}
+		if code, out := fmAck(t, epic, firstSeq, firstGen); code != 0 {
+			t.Fatalf("first acknowledgement failed: %q", out)
+		}
+		// The retired episode is not presented again: an empty drain asks for no acknowledgement.
+		if _, gen, out := fmDrain(t, epic); gen != "" || strings.Contains(out, "WAKE_ACK_REQUIRED") {
+			t.Fatalf("an empty drain re-presented the retired recovery generation %q: %q", firstGen, out)
+		}
+		_, _ = wake.Append(epic, wake.Wake{Epic: filepath.Base(epic), Story: "second", Kind: wake.KindCheck, Note: "check: second wake"})
+		secondSeq, secondGen, out := fmDrain(t, epic)
+		if secondSeq == "" || secondSeq == firstSeq {
+			t.Fatalf("second drain did not present the newer row: %q", out)
+		}
+		if secondGen == firstGen {
+			t.Fatalf("second drain reprinted the retired generation %q instead of its own: %q", firstGen, out)
+		}
+		// Following the printed command, verbatim, closes the wake and the episode.
+		if code, out := fmAck(t, epic, secondSeq, secondGen); code != 0 || strings.Contains(out, "newer recovery episode") {
+			t.Fatalf("the printed remedy failed: %d %q", code, out)
+		}
+		if w, _ := wake.Drain(epic, true); len(w) != 0 {
+			t.Fatalf("the printed remedy left the current wake queued: %+v", w)
+		}
+		if tok := fmMarker(epic); !strings.HasPrefix(tok, "acked:") {
+			t.Fatalf("the printed remedy did not retire the recovery episode: %q", tok)
+		}
+	})
+}
+
+// fmClaudeStopAutoarm pins the firstmate 31c47af cases (the handling turn stays covered after an actionable close). Cox
+// has no arm+watcher cycle to hand over: the Stop waiter only reads the queue, and `cox watch` is one persistent process
+// (watch.Run returns only on eviction or stop), so the case translates to "the watcher outlives the waiter's exit-2
+// delivery and the close is recorded as attached-delivered-wake".
+func fmClaudeStopAutoarm(t *testing.T) {
+	// fm: tests/fm-claude-stop-autoarm.test.sh:465@a8572f6 (test_attached_cycle_end_starts_handling_successor)
+	t.Run("attached_cycle_end_starts_handling_successor", func(t *testing.T) {
+		epic := fmEpic(t, "s1")
+		watcher, done := fmRealWatcher(t, epic)
+		fmBeacon(t, epic, 0)
+		code, out := fmWait(t, epic, 10, func(i int) {
+			if i == 1 {
+				seedWake(t, epic, wake.KindWorkerDone)
+			}
+		})
+		if code != 2 || strings.Count(out, "Watcher wake while idle") != 1 {
+			t.Fatalf("an attached cycle's delivered wake must rewake once, got %d %q", code, out)
+		}
+		if b, _ := os.ReadFile(cycleLogPath(epic)); !strings.Contains(string(b), "reason=attached-delivered-wake") {
+			t.Fatalf("the delivered-wake close was not recorded: %q", b)
+		}
+		select {
+		case <-done:
+			t.Fatal("the watcher did not outlive the waiter's exit-2 rewake: the handling turn is uncovered")
+		case <-time.After(300 * time.Millisecond):
+		}
+		if readPid(watchPidPath(epic)) != watcher.Process.Pid {
+			t.Fatal("the watcher lost watch.pid across the rewake")
+		}
+	})
+
+	// n/a: unconfirmed_handling_successor_still_rewakes (fm: tests/fm-claude-stop-autoarm.test.sh:498@a8572f6) - by
+	// construction: cox launches no successor on delivery (the persistent watcher already covers the turn), so there is
+	// no unconfirmed start to report.
 }

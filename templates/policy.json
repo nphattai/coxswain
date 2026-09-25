@@ -64,7 +64,6 @@
     "ok_percent": 25,
     "min_runway_hours": 24,
     "poll_minutes": 5,
-    "health_debounce_minutes": 60,
     "why": "M11 (captain 2026-09-16, option a): observe-only quota. quota-axi (installed binary; npx only via an explicit opt-in with version+integrity) fills coxswain.quota.v1; the leader reroutes by hand. Thresholds are first guesses.",
     "review_when": "after one month of readings"
   },

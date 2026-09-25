@@ -23,7 +23,7 @@ import (
 func cmdRoute(args []string) int {
 	fs := flag.NewFlagSet("route", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	epicDir := fs.String("epic", "", "epic directory")
+	epicDir := epicFlag(fs, "", "epic directory")
 	story := fs.String("story", "", "story id")
 	brief := fs.String("brief", "", "resolve a rule match for a story brief file via the opt-in typed path (Jev)")
 	candidates := fs.String("candidates", "", "comma-separated harness:model list; print the first quota-eligible one (or none, exit 1)")
