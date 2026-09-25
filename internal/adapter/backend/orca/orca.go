@@ -9,6 +9,7 @@ package orca
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os/exec"
 	"regexp"
@@ -53,27 +54,49 @@ type envelope struct {
 	OK     bool            `json:"ok"`
 	Result json.RawMessage `json:"result"`
 	Error  struct {
+		Code    string `json:"code"`
 		Message string `json:"message"`
 	} `json:"error"`
 }
 
-// call runs an orca command and returns its result payload, or an error if the process failed, the output was not
-// valid JSON, or Orca reported ok=false. The raw JSON is never assumed valid; a parse failure is a real error.
-func (c *Client) call(args ...string) (json.RawMessage, error) {
-	out, err := c.run(args...)
-	if err != nil {
-		return nil, fmt.Errorf("orca %s: %w", strings.Join(args, " "), err)
+// Error is an Orca ok=false envelope: Code is Orca's machine error code (e.g. repo_not_found), empty when it sent none.
+type Error struct {
+	Cmd     string
+	Code    string
+	Message string
+}
+
+func (e *Error) Error() string {
+	if e.Code != "" {
+		return fmt.Sprintf("orca %s: %s (%s)", e.Cmd, e.Message, e.Code)
 	}
+	return fmt.Sprintf("orca %s: %s", e.Cmd, e.Message)
+}
+
+// call runs an orca command and returns its result payload, or an error if the process failed, the output was not
+// valid JSON, or Orca reported ok=false. The raw JSON is never assumed valid; a parse failure is a real error. Orca
+// exits non-zero on an ok=false envelope and still prints it on stdout, so a failed process whose stdout is an ok=false
+// envelope reports Orca's own code and message (an *Error), never a bare exit status (B-34a).
+func (c *Client) call(args ...string) (json.RawMessage, error) {
+	cmd := strings.Join(args, " ")
+	out, err := c.run(args...)
 	var env envelope
-	if err := json.Unmarshal(out, &env); err != nil {
-		return nil, fmt.Errorf("orca %s: invalid JSON: %w", strings.Join(args, " "), err)
+	perr := json.Unmarshal(out, &env)
+	if err != nil {
+		if perr == nil && !env.OK && (env.Error.Code != "" || env.Error.Message != "") {
+			return nil, &Error{Cmd: cmd, Code: env.Error.Code, Message: env.Error.Message}
+		}
+		return nil, fmt.Errorf("orca %s: %w", cmd, err)
+	}
+	if perr != nil {
+		return nil, fmt.Errorf("orca %s: invalid JSON: %w", cmd, perr)
 	}
 	if !env.OK {
 		msg := env.Error.Message
 		if msg == "" {
 			msg = "ok=false with no error message"
 		}
-		return nil, fmt.Errorf("orca %s: %s", strings.Join(args, " "), msg)
+		return nil, &Error{Cmd: cmd, Code: env.Error.Code, Message: msg}
 	}
 	return env.Result, nil
 }
@@ -151,6 +174,14 @@ func (c *Client) WorktreeCreate(repo, branch, base string) (backend.Worktree, er
 		"--base-branch", base,
 		"--no-parent", "--json")
 	if err != nil {
+		var oe *Error
+		if errors.As(err, &oe) && oe.Code == "repo_not_found" {
+			path := repo
+			if !strings.HasPrefix(path, "/") {
+				path = "<checkout of " + repo + ">"
+			}
+			return backend.Worktree{}, fmt.Errorf("%w; the repo is not registered with Orca - register it with `orca repo add --path %s`, then retry", err, path)
+		}
 		return backend.Worktree{}, err
 	}
 	var r struct {
