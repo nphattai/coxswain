@@ -644,7 +644,7 @@ func TestPortWakeDrainUnreadStatus(t *testing.T) {
 		b := fake.New()
 		b.Liveness = backend.Alive
 		clock := time.Now().Add(2 * time.Hour)
-		w := &watch.Watcher{EpicDir: epic, Backend: b, InboxGrace: time.Second, RunawayMin: time.Minute, Now: func() time.Time { return clock }}
+		w := &watch.Watcher{EpicDir: epic, Backend: b, InboxGrace: time.Second, Now: func() time.Time { return clock }}
 		_, _ = w.Tick()
 		for _, wk := range drain(t, epic) {
 			if wk.Kind == wake.KindRunaway {
