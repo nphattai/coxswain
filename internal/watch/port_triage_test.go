@@ -1831,6 +1831,21 @@ func TestPortTriageB(t *testing.T) {
 		pBLadder(t, r, 3, "an undeclared working lane keeps the ladder")
 	})
 
+	t.Run(s+"wedge_threshold_keeps_a_wait_past_a_default_key_answer", func(t *testing.T) {
+		// fm: tests/fm-watch-triage.test.sh:2899@a8572f6
+		// cox: mechWedge (stalePass) over declaredWaitLine; the leader answers a keyless decision with a stated
+		// `resolved [key=default]` (the drain's steer text, internal/wake/present.go), which must not end the pause.
+		r := pBWedgeFixture(t, "working", "needs-decision: which color", "paused: waiting on the vendor release",
+			"resolved [key=default]: answered: blue")
+		pBAbsorbRounds(t, r, 3, "a default-key answer put a waiting lane on the wedge ladder")
+		if _, err := os.Stat(r.w.spath("esc", portStory)); err == nil {
+			t.Errorf("a default-key answer let a waiting lane count a wedge escalation")
+		}
+
+		r = pBWedgeFixture(t, "working", "paused: waiting on the vendor release", "resolved: the vendor shipped")
+		pBWantNote(t, pBRound(r, pBPoll), "possible wedge, escalation 1", "a worker's own keyless resolved line retracts its wait")
+	})
+
 	t.Run(s+"wedge_threshold_recheck_names_the_captain_for_a_held_lane", func(t *testing.T) {
 		// fm: tests/fm-watch-triage.test.sh:2899
 		// cox: mechWedge (stalePass); firstmate mechanism: mechDeclWait
