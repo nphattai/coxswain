@@ -15,7 +15,7 @@ in the skills.
 
 Run `cox wake drain --epic <dir>` at the start of every turn, handle each wake, then `cox wake ack-through <gen> --epic
 <dir>` through the highest generation you handled. A wake is the watcher telling you something changed without spending
-a turn to poll; the kinds are `question`, `input_required`, `pr_ready`, `worker_done`, `stuck`, `runaway`, `stale`,
+a turn to poll; the kinds are `question`, `input_required`, `pr_ready`, `worker_done`, `stuck`, `stale`,
 `unknown_probe`, `status`.
 
 A plain `status` wake is progress only: it never means a worker is finished. A worker signals completion with a

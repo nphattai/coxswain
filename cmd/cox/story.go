@@ -20,6 +20,7 @@ import (
 	"github.com/nphattai/coxswain/internal/protocol/control"
 	"github.com/nphattai/coxswain/internal/routing"
 	"github.com/nphattai/coxswain/internal/state"
+	"github.com/nphattai/coxswain/internal/wake"
 	"github.com/nphattai/coxswain/internal/workspace"
 	"github.com/nphattai/coxswain/internal/worktree"
 )
@@ -581,6 +582,14 @@ func releaseStory(epicDir, story string, snap *state.StorySnap, to state.State, 
 		if err := busy.Retire(epicDir, story, rec.Gen); err != nil {
 			fmt.Fprintf(os.Stderr, "cox: note: busy retire for %s: %v\n", story, err)
 		}
+	}
+	// A released story's queued supervision rows (stale, probe, idle, status, check) describe a worker that no longer
+	// exists; prune them so the leader is not woken for it (firstmate 7e0e60a fm_wake_queue_prune_task at teardown).
+	// Best-effort: the story is already terminal.
+	if n, err := wake.PruneStory(epicDir, story); err != nil {
+		fmt.Fprintf(os.Stderr, "cox: note: wake prune for %s: %v\n", story, err)
+	} else if n > 0 {
+		fmt.Printf("pruned %d queued supervision wake(s) for %s\n", n, story)
 	}
 	if closeWt {
 		if wtPath := readWorktree(epicDir, story); wtPath != "" {

@@ -33,7 +33,11 @@ type Wake struct {
 
 func queuePath(epicDir string) string { return filepath.Join(epicDir, ControlDir, "wake.jsonl") }
 func ackPath(epicDir string) string   { return filepath.Join(epicDir, ControlDir, "wake.ack") }
-func lockPath(epicDir string) string  { return filepath.Join(epicDir, ControlDir, "wake.lock") }
+func hwmPath(epicDir string) string   { return filepath.Join(epicDir, ControlDir, "wake.hwm") }
+
+// LockPath is the queue lock file, <epic>/.cox/wake.lock. Whoever holds it has written its pid there ("pid=N"), so a
+// waiter that gives up can name the holder (the bearings deferred worker's failed record, firstmate 5842d42).
+func LockPath(epicDir string) string { return filepath.Join(epicDir, ControlDir, "wake.lock") }
 
 // Append assigns the next generation (last gen + 1, read under an exclusive lock) and writes the wake as one line to
 // <epic>/.cox/wake.jsonl. It fsyncs before releasing the lock so a concurrent Append never reuses a gen. Schema and TS
@@ -396,14 +400,19 @@ func Wait(epicDir string, max, poll time.Duration) (wakes []Wake, timedOut bool,
 	}
 }
 
-// maxGen returns the highest gen of any usable row, whatever its schema, so a gen is never reused (0 if empty).
-// Caller holds the lock.
+// maxGen returns the highest gen ever assigned: of any usable row, whatever its schema, or recorded by a prune that
+// removed the newest rows (wake.hwm), so a gen is never reused (0 if empty). Caller holds the lock.
 func maxGen(epicDir string) (int, error) {
 	rows, err := scan(epicDir)
 	if err != nil {
 		return 0, err
 	}
 	max := 0
+	if b, err := os.ReadFile(hwmPath(epicDir)); err == nil {
+		if n, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil {
+			max = n
+		}
+	}
 	for _, r := range rows {
 		if r.usable && r.wake.Gen > max {
 			max = r.wake.Gen
@@ -418,7 +427,7 @@ func lock(epicDir string) (func(), error) { return flock(epicDir, syscall.LOCK_E
 func tryLock(epicDir string) (func(), error) { return flock(epicDir, syscall.LOCK_EX|syscall.LOCK_NB) }
 
 func flock(epicDir string, how int) (func(), error) {
-	f, err := os.OpenFile(lockPath(epicDir), os.O_CREATE|os.O_RDWR, 0o644)
+	f, err := os.OpenFile(LockPath(epicDir), os.O_CREATE|os.O_RDWR, 0o644)
 	if err != nil {
 		return nil, fmt.Errorf("open wake lock: %w", err)
 	}
@@ -426,8 +435,66 @@ func flock(epicDir string, how int) (func(), error) {
 		f.Close()
 		return nil, fmt.Errorf("acquire wake lock: %w", err)
 	}
+	// Record the holder while the lock is held (best effort: the flock, not this text, is the lock). A stale pid left by
+	// a released holder is harmless: a reader only trusts it while the flock is busy.
+	if err := f.Truncate(0); err == nil {
+		_, _ = f.WriteAt([]byte("pid="+strconv.Itoa(os.Getpid())+"\n"), 0)
+	}
 	return func() {
 		syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
 		f.Close()
 	}, nil
+}
+
+// storyScopedKinds are the supervision rows that exist only because a story is live: its stale and probe escalations,
+// its turn-end idle, its status and blocker reports, and its check output. A released story's rows of these kinds are
+// noise (firstmate fm_wake_queue_prune_task drops the task's stale, signal and check rows at teardown, 7e0e60a). The
+// leader's decision rows - question, input_required, pr_ready, worker_done - are never pruned.
+var storyScopedKinds = map[Kind]bool{
+	KindStale: true, KindUnknownProbe: true, KindIdleNoDone: true, KindStatus: true, KindStuck: true, KindCheck: true,
+}
+
+// PruneStory removes, under the queue lock, the unacked story-scoped rows (storyScopedKinds) of story, leaving every
+// other story's rows and every decision row. Generations never move: the removed rows' highest gen is kept as the
+// high-water mark, so a later Append never reuses a gen a drain already printed. It returns how many rows it removed.
+func PruneStory(epicDir, story string) (int, error) {
+	if story == "" {
+		return 0, nil
+	}
+	unlock, err := lock(epicDir)
+	if err != nil {
+		return 0, err
+	}
+	defer unlock()
+	acked, err := Acked(epicDir)
+	if err != nil {
+		return 0, err
+	}
+	rows, err := scan(epicDir)
+	if err != nil {
+		return 0, err
+	}
+	high, err := maxGen(epicDir)
+	if err != nil {
+		return 0, err
+	}
+	var keep strings.Builder
+	removed := 0
+	for _, r := range rows {
+		if r.usable && r.wake.Story == story && r.wake.Gen > acked && storyScopedKinds[r.wake.Kind] {
+			removed++
+			continue
+		}
+		keep.WriteString(r.raw + "\n")
+	}
+	if removed == 0 {
+		return 0, nil
+	}
+	if err := state.AtomicWrite(hwmPath(epicDir), []byte(strconv.Itoa(high)+"\n"), 0o644); err != nil {
+		return 0, fmt.Errorf("write wake high-water mark: %w", err)
+	}
+	if err := state.AtomicWrite(queuePath(epicDir), []byte(keep.String()), 0o644); err != nil {
+		return 0, fmt.Errorf("write pruned wake queue: %w", err)
+	}
+	return removed, nil
 }

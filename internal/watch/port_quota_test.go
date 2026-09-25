@@ -63,7 +63,7 @@ func pollQuota(t *testing.T, q *seqQuota, n int) []int {
 		if _, _, err := w.quotaPass(); err != nil {
 			t.Fatal(err)
 		}
-		out = append(out, countWakes(t, w.EpicDir, wake.KindQuotaLow)+countWakes(t, w.EpicDir, wake.KindQuotaHealth))
+		out = append(out, countWakes(t, w.EpicDir, wake.KindQuotaLow)+countWakes(t, w.EpicDir, "quota_health")) // the retired kind (B-19)
 		now = now.Add(6 * time.Minute)
 	}
 	return out

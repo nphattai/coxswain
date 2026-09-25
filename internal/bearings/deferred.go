@@ -197,7 +197,7 @@ func (d *deferredRun) append(ep string, w wake.Wake) {
 		}
 		d.raced = d.raced || raced
 	}
-	lock := filepath.Join(ep, wake.ControlDir, "wake.lock") // internal/wake's queue lock (queue.go lockPath)
+	lock := wake.LockPath(ep)
 	if held, err := waitFree(lock, d.deadline); err == nil && held {
 		miss(lockHolder(lock), false)
 		return

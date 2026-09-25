@@ -271,16 +271,15 @@ type QuotaNPX struct {
 // Quota is the observe-only quota policy (M11). Like routing and backend it carries why/review_when for the record but is
 // not a mandatory justified section (an epic policy without it keeps working on the code defaults), so adding this field
 // never invalidates an existing policy. Binary overrides the PATH lookup for quota-axi; NPX is the opt-in fallback;
-// low_percent/ok_percent/min_runway_hours/poll_minutes/health_debounce_minutes are the wake and gate thresholds.
+// low_percent/ok_percent/min_runway_hours/poll_minutes are the wake and gate thresholds.
 type Quota struct {
 	Meta
-	Binary                string    `json:"binary"`
-	NPX                   *QuotaNPX `json:"npx"`
-	LowPercent            int       `json:"low_percent"`
-	OKPercent             int       `json:"ok_percent"`
-	MinRunwayHours        int       `json:"min_runway_hours"`
-	PollMinutes           int       `json:"poll_minutes"`
-	HealthDebounceMinutes int       `json:"health_debounce_minutes"`
+	Binary         string    `json:"binary"`
+	NPX            *QuotaNPX `json:"npx"`
+	LowPercent     int       `json:"low_percent"`
+	OKPercent      int       `json:"ok_percent"`
+	MinRunwayHours int       `json:"min_runway_hours"`
+	PollMinutes    int       `json:"poll_minutes"`
 }
 
 // Quota defaults, applied when policy declares none (or is nil).
@@ -289,7 +288,6 @@ const (
 	DefaultQuotaOKPercent      = 25
 	DefaultQuotaMinRunwayHours = 24
 	DefaultQuotaPollMinutes    = 5
-	DefaultQuotaHealthDebounce = 60
 )
 
 // Orca plane values (ADR 0012, decision 4).
@@ -440,13 +438,6 @@ func (p *Policy) QuotaPollMinutes() int {
 		return p.Quota.PollMinutes
 	}
 	return DefaultQuotaPollMinutes
-}
-
-func (p *Policy) QuotaHealthDebounceMinutes() int {
-	if p != nil && p.Quota.HealthDebounceMinutes > 0 {
-		return p.Quota.HealthDebounceMinutes
-	}
-	return DefaultQuotaHealthDebounce
 }
 
 // DefaultWorkerModel is the captain ruling for a dispatched claude worker with no pinned model: Opus 5.5 (captain

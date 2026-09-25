@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nphattai/coxswain/internal/bearings"
 	"github.com/nphattai/coxswain/internal/protocol/checkpoint"
 	"github.com/nphattai/coxswain/internal/protocol/report"
 	"github.com/nphattai/coxswain/internal/state"
@@ -332,4 +333,53 @@ func foldStoryState(t *testing.T, epic, story string) state.State {
 		return s.State
 	}
 	return ""
+}
+
+// Delta B (firstmate 7e0e60a) against the real binary: `cox story cancel` prunes the released story's queued
+// supervision rows and leaves its decision rows and every other story's rows.
+func TestStoryCancelBinaryPrunesItsWakes(t *testing.T) {
+	epic := t.TempDir()
+	for _, st := range []string{"s1", "s2"} {
+		if err := state.Append(epic, state.Event{Epic: "e", Story: st, Attempt: 1, Actor: state.Leader, From: state.Submitted, To: state.Working, ExternalConfirmed: true}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, w := range []wake.Wake{
+		{Story: "s1", Kind: wake.KindStale, Note: "stale: s1"},
+		{Story: "s1", Kind: wake.KindIdleNoDone, Note: "idle: s1"},
+		{Story: "s1", Kind: wake.KindQuestion, Note: "question: s1"},
+		{Story: "s2", Kind: wake.KindStale, Note: "stale: s2"},
+	} {
+		w.Epic = "e"
+		if _, err := wake.Append(epic, w); err != nil {
+			t.Fatal(err)
+		}
+	}
+	so, se, code := runCox(t, epic, []string{"ORCA_RUN_ID="}, "story", "cancel", "s1", "--reason", "superseded", "--epic", epic)
+	if code != 0 {
+		t.Fatalf("cancel exit %d\n%s%s", code, so, se)
+	}
+	ws, _ := wake.Drain(epic, true)
+	var got []string
+	for _, w := range ws {
+		got = append(got, w.Note)
+	}
+	if strings.Join(got, "|") != "question: s1|stale: s2" {
+		t.Errorf("after cancel the queue holds %v, want the s1 question and the s2 stale row only", got)
+	}
+}
+
+// Delta F cmd half (firstmate 5842d42): the deferred worker's hard backstop leaves a failed record the next digest reads
+// (why, and the rerun command) instead of exiting silently.
+func TestDeferredBackstopWritesFailedRecord(t *testing.T) {
+	ws := t.TempDir()
+	if err := writeDeferredBackstop(ws, 630*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Join(bearings.DeferredFailed(ws), "\n")
+	for _, want := range []string{"hard bound (10m30s)", "rerun: cox bearings deferred --root " + ws} {
+		if !strings.Contains(lines, want) {
+			t.Errorf("failed record lacks %q:\n%s", want, lines)
+		}
+	}
 }

@@ -508,7 +508,52 @@ func TestPortWakeQueue(t *testing.T) {
 		}
 	})
 
-	// n/a malformed_presentation_lock_reports_acquire_failure fm:tests/fm-wake-queue.test.sh:2324 - cox has no presentation lock file (flock on an fd, no pid payload to malform)
+	// fm: tests/fm-wake-queue.test.sh:1615@a8572f6 (main legs only; the branch grant legs are per-actor grants, n/a)
+	t.Run("FM/fm-wake-queue/main_ack_leaves_a_row_that_arrived_after_its_drain_unclaimed", func(t *testing.T) {
+		epic := newEpic(t)
+		g := appendN(t, epic, wake.KindStatus, "presented")
+		if ws := drain(t, epic); len(ws) != 1 || ws[0].Gen != g[0] {
+			t.Fatalf("drain presented %v, want the one row", notes(ws))
+		}
+		late := appendN(t, epic, wake.KindStuck, "arrived after the drain")
+		must(t, wake.AckThrough(epic, g[0]))
+		ws := drain(t, epic)
+		if len(ws) != 1 || ws[0].Gen != late[0] {
+			red(t, "wake.ack", "an acknowledgement through the presented row swallowed a row that arrived after the drain: %v", notes(ws))
+		}
+	})
+
+	// fm: tests/fm-wake-queue.test.sh:2708@a8572f6 (teardown prunes only the torn-down task's stale, signal and check
+	// rows; cox's release of a story prunes its story-scoped supervision rows and keeps every decision row)
+	t.Run("FM/fm-wake-queue/prune_task", func(t *testing.T) {
+		epic := newEpic(t)
+		add := func(st string, k wake.Kind, note string) int {
+			g, err := wake.Append(epic, wake.Wake{Epic: filepath.Base(epic), Story: st, Kind: k, Note: note})
+			must(t, err)
+			return g
+		}
+		add("task-a", wake.KindStale, "stale: task-a")
+		add("task-a", wake.KindStatus, "signal: task-a status")
+		add("task-a", wake.KindIdleNoDone, "idle: task-a turn ended")
+		add("task-a", wake.KindCheck, "check: task-a merged")
+		add("task-a", wake.KindWorkerDone, "done: task-a")
+		add("task-b", wake.KindStale, "stale: task-b")
+		add("task-b", wake.KindStatus, "signal: task-b status")
+		top := add("task-a", wake.KindUnknownProbe, "probe: task-a")
+		n, err := wake.PruneStory(epic, "task-a")
+		must(t, err)
+		got := notes(drain(t, epic))
+		want := []string{"done: task-a", "stale: task-b", "signal: task-b status"}
+		if n != 5 || strings.Join(got, "|") != strings.Join(want, "|") {
+			red(t, "wake.prune", "prune removed %d row(s), left %v; want 5 removed and %v", n, got, want)
+		}
+		// Generations never move: the pruned newest gen is not reused, so an ack a drain already printed stays exact.
+		if g := add("task-b", wake.KindCheck, "check: task-b"); g <= top {
+			red(t, "wake.prune", "the next append reused gen %d after a prune removed gen %d", g, top)
+		}
+	})
+
+	// n/a malformed_presentation_lock_reports_acquire_failure fm:tests/fm-wake-queue.test.sh:2324 - cox has no presentation lock file (flock on an fd; its "pid=N" payload is informational, never parsed as the lock)
 	// n/a owned_growth_still_annotates_turn_ended fm:tests/fm-wake-queue.test.sh:2354 - owned-append ledger and turn-ended annotation over status files, firstmate-only
 	// n/a historical_annotation_skips_announced_status fm:tests/fm-wake-queue.test.sh:2396 - status-file historical annotation, firstmate-only
 }
@@ -519,19 +564,23 @@ func staleEnqueueBeforeSuppressor(t *testing.T, probeErr error) {
 	t.Helper()
 	epic := newEpic(t)
 	hb := filepath.Join(epic, state.ControlDir, "watch", "hb", "ctx_"+story)
-	must(t, os.MkdirAll(filepath.Dir(hb), 0o755))
-	must(t, os.WriteFile(hb, nil, 0o644))
-	old := time.Now().Add(-time.Hour)
-	must(t, os.Chtimes(hb, old, old))
-	// fm primes .hash-$key to the pane's current hash (fm-wake-queue.test.sh:105,137): the quiet interval is already
-	// running. cox's analog is the story's activity signature (no busy record, no activity: "-|").
-	sig := filepath.Join(epic, state.ControlDir, "watch", "sig", story)
-	must(t, os.MkdirAll(filepath.Dir(sig), 0o755))
-	must(t, os.WriteFile(sig, []byte("-|"), 0o644))
 	stale := filepath.Join(epic, state.ControlDir, "watch", "stale", story) // fm .stale-$key, the stale suppressor
 	b := fake.New()
 	b.Liveness = backend.Unknown
 	w := &watch.Watcher{EpicDir: epic, Backend: b, StaleMin: time.Minute}
+	// fm primes .hash-$key to the pane's current hash (fm-wake-queue.test.sh:105,137): the quiet interval is already
+	// running. cox's analog is the story's activity signature, recorded by a first watcher tick (never written by hand:
+	// its encoding is the watch package's), after which the quiet clock is aged past StaleMin.
+	_, _ = w.Tick()
+	if ws := drain(t, epic); len(ws) != 0 {
+		t.Fatalf("the priming tick raised %d wake(s), want none: %v", len(ws), notes(ws))
+	}
+	old := time.Now().Add(-time.Hour)
+	must(t, os.MkdirAll(filepath.Dir(hb), 0o755))
+	if _, err := os.Stat(hb); os.IsNotExist(err) {
+		must(t, os.WriteFile(hb, nil, 0o644))
+	}
+	must(t, os.Chtimes(hb, old, old))
 	must(t, os.Mkdir(queuePath(epic), 0o755)) // enqueue fails
 	if probeErr != nil {
 		b.FailNext("Probe", probeErr)
@@ -647,7 +696,7 @@ func TestPortWakeDrainUnreadStatus(t *testing.T) {
 		w := &watch.Watcher{EpicDir: epic, Backend: b, InboxGrace: time.Second, Now: func() time.Time { return clock }}
 		_, _ = w.Tick()
 		for _, wk := range drain(t, epic) {
-			if wk.Kind == wake.KindRunaway {
+			if wk.Kind == "runaway" { // the retired runaway kind (B-03)
 				red(t, "watch.runaway-consumed-reply", "B-53: a reply already consumed by `cox question wait` counted as unread and raised a runaway (%s)", wk.Note)
 			}
 		}

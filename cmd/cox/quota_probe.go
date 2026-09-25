@@ -9,10 +9,9 @@ import (
 
 // quotaSettings are the resolved quota thresholds for the watcher pass and the dispatch gate.
 type quotaSettings struct {
-	LowPercent            int
-	MinRunwayHours        int
-	PollMinutes           int
-	HealthDebounceMinutes int
+	LowPercent     int
+	MinRunwayHours int
+	PollMinutes    int
 }
 
 // quotaSettingsFor resolves the quota thresholds for an epic from its policy quota section, falling back to the code
@@ -20,10 +19,9 @@ type quotaSettings struct {
 func quotaSettingsFor(epicDir string) quotaSettings {
 	pol := loadPolicyQuiet(epicDir)
 	return quotaSettings{
-		LowPercent:            pol.QuotaLowPercent(),
-		MinRunwayHours:        pol.QuotaMinRunwayHours(),
-		PollMinutes:           pol.QuotaPollMinutes(),
-		HealthDebounceMinutes: pol.QuotaHealthDebounceMinutes(),
+		LowPercent:     pol.QuotaLowPercent(),
+		MinRunwayHours: pol.QuotaMinRunwayHours(),
+		PollMinutes:    pol.QuotaPollMinutes(),
 	}
 }
 
@@ -67,7 +65,4 @@ func (p *quotaProbe) LowPercent() int         { return p.settings.LowPercent }
 func (p *quotaProbe) MinRunwaySeconds() int64 { return int64(p.settings.MinRunwayHours) * 3600 }
 func (p *quotaProbe) PollInterval() time.Duration {
 	return time.Duration(p.settings.PollMinutes) * time.Minute
-}
-func (p *quotaProbe) HealthDebounce() time.Duration {
-	return time.Duration(p.settings.HealthDebounceMinutes) * time.Minute
 }
