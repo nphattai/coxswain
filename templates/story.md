@@ -51,6 +51,8 @@ not, the PR body shows the new test failing on the base sha as evidence.
 
 ## Shared files
 - <path> - owned by story `<id>`; if not merged yet, cut your branch from `story/<id>` instead of `epic/{{.Slug}}`.
+- The ownership unit is the directory, not the file: for Go, two stories that touch different files of one package still
+  collide (test helper names share the package), so a package has one owning story at a time.
 
 ## Defaults (decide these yourself, note them in the PR body, do not ask)
 - Technical constants (timeouts, page sizes, retries) are yours; the PR body carries the value and the reason.
@@ -119,3 +121,16 @@ not, the PR body shows the new test failing on the base sha as evidence.
     (orchestration plane: `orca orchestration ask`). NEVER ask through a harness dialog - AskUserQuestion, a permission
     prompt, `/ask` - it is invisible to cox: the watcher cannot see it, the leader never receives it, and your turn
     stalls on a dialog no one can answer. If a tool tries to open one, cancel it and report the question through cox.
+12. NEVER ADMINISTER THE SHARED WORKTREE POOL. Your worktree came from the worktree pool that Orca owns and every
+    live story shares, together with the one repository behind it.
+    Never create, remove, return, prune, move, or reassign a worktree or pool slot, and never write into a
+    sibling slot's directory (another story's worktree). Rule 1 and "Files touched" do not cover this: removing a
+    worktree is administration, not an edit, and it lands on stories that are running right now. The act is the rule
+    and commands are only examples of it - `git worktree add|remove|move|prune`, `orca worktree ...`, `ak-worktree`, or the
+    equivalent on any other worktree provider. If you genuinely need a second checkout, stop and report it:
+    `cox story report stuck --note "need a second checkout: <why>"` (orchestration plane:
+    `orca orchestration send --type status --subject "blocked: <what you need>"`).
+13. DECLARE A BACKGROUND WAIT. Before you end a turn that waits on your own background subagents or workflows, post
+    `cox story report status --note "paused: waiting on N background agents"` (orchestration plane: a `status` whose
+    subject is that line). The watcher reads a `paused:` status as a declared wait rather than an idle or stale worker;
+    report progress or completion as usual once they return.
