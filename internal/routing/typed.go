@@ -3,9 +3,9 @@ package routing
 // Typed resolution is the opt-in path that lets typesafe.ai's System One model (Jev) make the rule MATCH from a story
 // brief, in one short tool turn, while Go keeps every mechanical decision (DESIGN wave-4 item 10, ported from firstmate
 // bin/fm-dispatch-resolve.sh). The model is shown only the brief and each rule's natural-language `when` as one Choice
-// question; it never sees quota, catalogs, approvals, or profiles. In code we then apply the confidence floor, validate
-// the probabilities, and run the matched rule's profile array through the SAME three gates and spendPriority ranking as
-// the leader path (resolveProfiles). The key never reaches argv, a log, or stdout: the caller reads it, passes it here,
+// question; it never sees quota, catalogs, approvals, confidence floors, or profiles. In code we then validate the
+// probabilities, apply the confidence floors, and run the matched rule's profile array through the SAME three gates and
+// spendPriority ranking as the leader path (resolveProfiles). The key never reaches argv, a log, or stdout: the caller reads it, passes it here,
 // and it is used only as a request header.
 
 import (
@@ -100,6 +100,7 @@ type TypedResult struct {
 	Probabilities map[string]float64
 	Rule          string // "rule_<n>" | "default"
 	RuleWhen      string
+	Fallback      string // the runner-up taken when the picked rule missed its own floor ("" when none was taken)
 	Reason        string
 	Choice        *Choice
 }
@@ -132,7 +133,7 @@ type typedResponse struct {
 	} `json:"usage"`
 }
 
-// ResolveTyped runs the opt-in typed match for a brief and applies the mechanical gates in code. apiKey is used only as
+// ResolveTyped runs the opt-in typed match for a brief (the caller passes TaskText, not the whole story) and applies the mechanical gates in code. apiKey is used only as
 // the Authorization header (never logged or returned). With no rules it escalates without a network call. Every outcome
 // returns a TypedResult and a nil error; err is non-nil only for a usage/config fault the caller should exit 2 on (none
 // arise here today, but the signature reserves it). Network, HTTP, and response faults are TypedError outcomes, not
@@ -201,13 +202,15 @@ func ResolveTyped(ctx context.Context, cfg TypedConfig, apiKey, project, briefTe
 		res.OutputTokens = tr.Usage.OutputTokens
 	}
 
-	choice := tr.Answers.Rule.Choice
-	res.RuleWhen = ruleWhenForChoice(rules, choice)
-	if tr.Answers.Rule.Confidence < TypedConfidenceFloor {
+	picked := tr.Answers.Rule.Choice
+	res.RuleWhen = ruleWhenForChoice(rules, picked)
+	choice, fallback, reason := applyConfidenceFloors(rules, picked, tr.Answers.Rule.Confidence, tr.Answers.Rule.Probabilities)
+	if reason != "" {
 		res.Status = TypedAmbiguous
-		res.Reason = fmt.Sprintf("confidence %.3g below floor %.3g", tr.Answers.Rule.Confidence, TypedConfidenceFloor)
+		res.Reason = reason
 		return res
 	}
+	res.Fallback = fallback
 
 	// Apply the matched rule (or the default array) through the same gates + ranking as the leader path.
 	var ch Choice
@@ -228,6 +231,55 @@ func ResolveTyped(ctx context.Context, cfg TypedConfig, apiKey, project, briefTe
 		res.Reason = ch.EscalateReason
 	}
 	return res
+}
+
+// confidenceFloor is an option's floor: its rule's declared min_confidence, else the global TypedConfidenceFloor.
+func confidenceFloor(rules []workspace.RoutingRule, choice string) (float64, bool) {
+	if idx, ok := ruleIndexForChoice(choice, len(rules)); ok && rules[idx].MinConfidence != nil {
+		return *rules[idx].MinConfidence, true
+	}
+	return TypedConfidenceFloor, false
+}
+
+// applyConfidenceFloors is firstmate 795e4b5's floor pass (bin/fm-dispatch-resolve.sh @a8572f6). A picked rule with no
+// declared floor keeps the single global floor on the answer confidence exactly. A declared floor is checked against
+// that option's probability, whether it is the pick or a runner-up, so a runner-up never needs weaker support than it
+// would as the pick; below it, the most probable other option that clears its own floor is taken (the fallback line
+// names both floors), and none clearing or a tie between the top two runner-ups is ambiguous. It returns the option to
+// resolve, the fallback line, and a non-empty ambiguous reason when nothing may be applied.
+func applyConfidenceFloors(rules []workspace.RoutingRule, picked string, confidence float64, probs map[string]float64) (choice, fallback, reason string) {
+	floor, declared := confidenceFloor(rules, picked)
+	if !declared {
+		if confidence < floor {
+			return "", "", fmt.Sprintf("confidence %.3g below floor %.3g", confidence, floor)
+		}
+		return picked, "", ""
+	}
+	if probs[picked] >= floor {
+		return picked, "", ""
+	}
+	type opt struct {
+		key string
+		p   float64
+	}
+	var ok []opt
+	for k, p := range probs {
+		if f, _ := confidenceFloor(rules, k); k != picked && p >= f {
+			ok = append(ok, opt{k, p})
+		}
+	}
+	sort.Slice(ok, func(i, j int) bool { return ok[i].p > ok[j].p || (ok[i].p == ok[j].p && ok[i].key < ok[j].key) })
+	below := fmt.Sprintf("%s probability %.3g below its floor %.3g", picked, probs[picked], floor)
+	switch {
+	case len(ok) == 0:
+		return "", "", below + "; no other option clears its own floor"
+	case len(ok) > 1 && ok[1].p == ok[0].p:
+		return "", "", below + "; runner-up tie"
+	}
+	to := ok[0]
+	toFloor, _ := confidenceFloor(rules, to.key)
+	return to.key, fmt.Sprintf("%s (%s) probability %.3g clears its floor %.3g; %s probability %.3g is below its floor %.3g",
+		to.key, ruleWhenForChoice(rules, to.key), to.p, toFloor, picked, probs[picked], floor), ""
 }
 
 // validateTypedResponse mirrors the firstmate jq guard: choice a string, confidence a number in [0,1], probabilities a

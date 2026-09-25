@@ -183,11 +183,14 @@ type RoutingProfile struct {
 // RoutingRule is one captain-authored routing rule (DESIGN wave-4 item 10). When is the natural-language match condition
 // a model's judgment resolves (the leader at decomposition, or Jev's opt-in typed path); code never matches it. Profiles
 // is the non-empty candidate array applied after the match. Approval "captain" makes a matched rule escalate to the
-// captain before dispatch instead of routing; "" or "none" dispatches on the ranked candidate.
+// captain before dispatch instead of routing; "" or "none" dispatches on the ranked candidate. MinConfidence, when
+// declared, replaces the typed path's global 0.6 floor for this rule and is checked against the rule's own probability
+// (firstmate 795e4b5 `min_confidence`); the model never sees it.
 type RoutingRule struct {
-	When     string           `json:"when"`
-	Profiles []RoutingProfile `json:"profiles"`
-	Approval string           `json:"approval,omitempty"` // "" | "none" | "captain"
+	When          string           `json:"when"`
+	Profiles      []RoutingProfile `json:"profiles"`
+	Approval      string           `json:"approval,omitempty"`       // "" | "none" | "captain"
+	MinConfidence *float64         `json:"min_confidence,omitempty"` // nil: the global floor on the answer confidence
 }
 
 // Routing is the worker-routing posture (ADR 0011 baseline default + DESIGN wave-4 item 10 rules). It stays a review_when
@@ -608,6 +611,9 @@ func (p *Policy) routingProblems() []string {
 		case "", "none", "captain":
 		default:
 			problems = append(problems, fmt.Sprintf("%s (invalid approval %q; want none|captain)", where, r.Approval))
+		}
+		if mc := r.MinConfidence; mc != nil && (*mc < 0 || *mc > 1) {
+			problems = append(problems, where+" (min_confidence must be a number from 0 through 1 when present)")
 		}
 		problems = append(problems, profileArrayProblems(where+".profiles", r.Profiles, true)...)
 	}
