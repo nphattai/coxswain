@@ -36,7 +36,7 @@ func notImplementedLC(t *testing.T, mechanism string) {
 	t.Fatalf("cox gap: %s", mechanism)
 }
 
-// lcEpic makes a temp epic dir with a .cox control tree.
+// lcEpic makes a temp epic dir with a .cox control tree (the watcher never creates .cox itself, mkdirControl).
 func lcEpic(t *testing.T) string {
 	t.Helper()
 	epic := t.TempDir()

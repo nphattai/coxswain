@@ -197,7 +197,7 @@ func containsCall(calls []string, want string) bool {
 }
 
 func TestHeartbeatIsNotAWake(t *testing.T) {
-	epic := t.TempDir()
+	epic := lcEpic(t) // a real epic always has its .cox control tree
 	b := fake.New()
 	mb := b.Mail().(*fake.Mailbox)
 	mb.Queue = []backend.Message{{
@@ -717,26 +717,53 @@ func TestEvictReason(t *testing.T) {
 	}
 }
 
-// The Run loop exits within one tick once the .cox control tree is renamed away, and releases so the process can end.
+// The Run loop exits once the .cox control tree is renamed away, and releases so the process can end. The rename may
+// land mid-Tick, where a later write in the same pass recreates .cox (the flake: 1 in ~40 under parallel load); the
+// loop still stands down because the recreated tree is not the one it started on.
 func TestRunEvictsWhenControlTreeGone(t *testing.T) {
 	epic := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(epic, state.ControlDir), 0o755); err != nil {
+	cox := filepath.Join(epic, state.ControlDir)
+	if err := os.MkdirAll(cox, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	w := &Watcher{EpicDir: epic, Backend: fake.New(), Now: fixedNow()}
 	done := make(chan struct{})
 	go func() { w.Run(make(chan struct{}), 5*time.Millisecond); close(done) }()
-	// Let it tick at least once, then rename .cox away.
-	time.Sleep(20 * time.Millisecond)
-	if err := os.Rename(filepath.Join(epic, state.ControlDir), filepath.Join(epic, "gone")); err != nil {
+	// Wait for the first tick's beacon (not a wall-clock sleep), then rename .cox away.
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(time.Millisecond) {
+		if _, err := os.Stat(filepath.Join(cox, "watch", "lasttick")); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("Run never completed a first tick")
+		}
+	}
+	if err := os.Rename(cox, filepath.Join(epic, "gone")); err != nil {
 		t.Fatal(err)
 	}
 	select {
 	case <-done:
-	// The loop stands down one tick after the rename (markTick no longer resurrects .cox); a generous ceiling absorbs
-	// CI scheduler jitter under -race without measuring the tick.
-	case <-time.After(5 * time.Second):
-		t.Fatal("Run did not exit within one tick after .cox was renamed away")
+	// A hang guard only: eviction is decided by the loop-top check, independent of load.
+	case <-time.After(10 * time.Second):
+		t.Fatal("Run did not exit after .cox was renamed away")
+	}
+}
+
+// A control tree removed and recreated (a teardown racing a write that re-creates .cox) is not the tree the watcher
+// started on, so it evicts instead of polling the replacement forever.
+func TestEvictsWhenControlTreeRecreated(t *testing.T) {
+	epic := t.TempDir()
+	cox := filepath.Join(epic, state.ControlDir)
+	must(t, os.MkdirAll(cox, 0o755))
+	w := &Watcher{EpicDir: epic, Backend: fake.New(), Now: fixedNow()}
+	w.controlID, _ = os.Stat(cox)
+	if r := w.evictReason(); r != "" {
+		t.Fatalf("the original control tree must not evict, got %q", r)
+	}
+	must(t, os.Rename(cox, filepath.Join(epic, "gone")))
+	must(t, os.MkdirAll(filepath.Join(cox, "watch"), 0o755)) // a mid-Tick write resurrects .cox
+	if r := w.evictReason(); !strings.Contains(r, "recreated") {
+		t.Fatalf("a recreated control tree must evict, got %q", r)
 	}
 }
 
@@ -1140,5 +1167,28 @@ func TestBlockedPassSeesDialogBehindBusyRecord(t *testing.T) {
 	now = now.Add(5 * time.Minute)
 	if n, _, _ := w.blockedPass(); n != 0 {
 		t.Fatalf("a busy worker with no dialog raised %d stuck wake(s) after the window", n)
+	}
+}
+
+// mkdirControl never creates the .cox control tree itself, so a teardown mid-Tick is not undone by a later write.
+func TestMkdirControlNeverCreatesTheControlTree(t *testing.T) {
+	epic := t.TempDir()
+	dir := filepath.Join(epic, state.ControlDir, "watch", "hb")
+	if err := mkdirControl(dir); err == nil {
+		t.Errorf("mkdirControl created %s with no .cox", dir)
+	}
+	if _, err := os.Stat(filepath.Join(epic, state.ControlDir)); err == nil {
+		t.Fatalf("mkdirControl resurrected .cox")
+	}
+	must(t, os.Mkdir(filepath.Join(epic, state.ControlDir), 0o755))
+	if err := mkdirControl(dir); err != nil {
+		t.Fatalf("mkdirControl under a present .cox: %v", err)
+	}
+	if err := mkdirControl(dir); err != nil {
+		t.Fatalf("mkdirControl is not idempotent: %v", err)
+	}
+	outside := filepath.Join(epic, "a", "b")
+	if err := mkdirControl(outside); err != nil {
+		t.Fatalf("a dir outside .cox: %v", err)
 	}
 }

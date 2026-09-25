@@ -142,7 +142,7 @@ func (w *Watcher) recordStatus(story, line string) {
 		return
 	}
 	p := w.spath("statuslog", story)
-	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+	if err := mkdirControl(filepath.Dir(p)); err != nil {
 		return
 	}
 	if f, err := os.OpenFile(p, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644); err == nil {
@@ -1134,7 +1134,7 @@ func (w *Watcher) markSurfaced(ids ...string) {
 	if len(ids) == 0 || !w.controlTreePresent() {
 		return
 	}
-	_ = os.MkdirAll(w.watchDir(), 0o755)
+	_ = mkdirControl(w.watchDir())
 	f, err := os.OpenFile(filepath.Join(w.watchDir(), "surfaced"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
 		return
