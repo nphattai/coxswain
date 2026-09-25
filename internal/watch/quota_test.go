@@ -79,7 +79,7 @@ func TestQuotaLowDedup(t *testing.T) {
 
 // The cadence gate schedules the next poll and refuses a second poll until it passes; backoff pushes it further out.
 func TestQuotaCadence(t *testing.T) {
-	w := &Watcher{EpicDir: t.TempDir(), Quota: fakeQuota{}}
+	w := &Watcher{EpicDir: lcEpic(t), Quota: fakeQuota{}}
 	now := time.Now()
 	if !w.quotaDue(now) {
 		t.Fatalf("first poll must be due")

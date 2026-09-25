@@ -163,7 +163,7 @@ func (w *Watcher) quotaDir() string { return filepath.Join(w.watchDir(), "quota"
 // quotaLock takes a non-blocking cross-process exclusive lock so only one watcher polls quota per tick. ok=false means
 // another process holds it (this watcher skips the pass this tick).
 func (w *Watcher) quotaLock() (func(), bool) {
-	if err := os.MkdirAll(w.quotaDir(), 0o755); err != nil {
+	if err := mkdirControl(w.quotaDir()); err != nil {
 		return nil, false
 	}
 	f, err := os.OpenFile(filepath.Join(w.quotaDir(), "lock"), os.O_CREATE|os.O_RDWR, 0o644)
@@ -252,7 +252,7 @@ func (w *Watcher) readWatch(sub, key string) string {
 }
 
 func (w *Watcher) writeWatch(sub, key, val string) {
-	if err := os.MkdirAll(w.quotaDir(), 0o755); err != nil {
+	if err := mkdirControl(w.quotaDir()); err != nil {
 		return
 	}
 	_ = os.WriteFile(filepath.Join(w.quotaDir(), sub+"-"+key), []byte(val), 0o644)

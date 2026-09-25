@@ -114,6 +114,7 @@ type Watcher struct {
 	probes     map[string]probeResult
 	waitDecl   string
 	stop       <-chan struct{} // Run's stop channel; a running custom check is cancelled when it closes
+	controlID  os.FileInfo     // the .cox control tree Run started on, so a recreated one reads as gone
 }
 
 func (w *Watcher) now() time.Time {
@@ -317,7 +318,7 @@ func (w *Watcher) recordDoorbellFailure(handle string, cause error) {
 // doorbell that never reached its terminal is visible instead of discarded. Best-effort.
 func (w *Watcher) logLeaderDoorbellFailure(handle string, cause error) {
 	dir := w.watchDir()
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := mkdirControl(dir); err != nil {
 		return
 	}
 	f, err := os.OpenFile(filepath.Join(dir, "log"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
@@ -386,6 +387,7 @@ func (w *Watcher) Run(stop <-chan struct{}, poll time.Duration) {
 		poll = DefaultPoll
 	}
 	w.stop = stop
+	w.controlID, _ = os.Stat(filepath.Join(w.EpicDir, state.ControlDir))
 	for {
 		// Self-eviction (item 2, B-37): a watcher whose epic dir, .cox control tree, or own binary has vanished, or whose
 		// epic has been closed (.cox.closed), keeps polling a temp root forever otherwise. Check before Tick so the pass
@@ -421,8 +423,14 @@ var watcherExecutable = os.Executable
 // epic has been closed (a .cox.closed marker exists), or its own binary no longer stats (B-37: disposable dogfood
 // worktrees were removed but their watchers kept polling for hours). "" means keep running.
 func (w *Watcher) evictReason() string {
-	if _, err := os.Stat(filepath.Join(w.EpicDir, state.ControlDir)); err != nil {
+	fi, err := os.Stat(filepath.Join(w.EpicDir, state.ControlDir))
+	if err != nil {
 		return "control tree " + state.ControlDir + " is gone"
+	}
+	// A teardown that lands mid-Tick can have a later write in the same pass recreate .cox (every MkdirAll under it
+	// would), which would hide the teardown forever; a control tree that is not the one Run started on is gone too.
+	if w.controlID != nil && !os.SameFile(fi, w.controlID) {
+		return "control tree " + state.ControlDir + " was removed and recreated"
 	}
 	if _, err := os.Stat(filepath.Join(w.EpicDir, state.ControlDir+".closed")); err == nil {
 		return "epic closed (" + state.ControlDir + ".closed present)"
@@ -445,7 +453,7 @@ func (w *Watcher) evictReason() string {
 // vanished cannot hold a log, so the write is best-effort and its failure is ignored).
 func (w *Watcher) logEviction(reason string) {
 	dir := w.watchDir()
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := mkdirControl(dir); err != nil {
 		return
 	}
 	f, err := os.OpenFile(filepath.Join(dir, "log"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
@@ -719,6 +727,16 @@ func (w *Watcher) composerState(story string, sess backend.Session) string {
 	return cs
 }
 
+// onDialog reports whether the worker is waiting on a local harness dialog: the backend's DialogReader first, because a
+// claude/pi worker on a permission prompt keeps a busy record that composerState reports before the backend's own
+// verdict (same order as internal/protocol/control onDialog), else a "blocked" composer.
+func (w *Watcher) onDialog(story string, sess backend.Session) bool {
+	if d, ok := w.Backend.(backend.DialogReader); ok && d.Dialog(sess) {
+		return true
+	}
+	return w.composerState(story, sess) == backend.ComposerBlocked
+}
+
 // blockedPass raises one urgent stuck wake when a working story's worker has been continuously blocked on a local prompt
 // (an approval or input request it cannot answer itself) for longer than BlockedWait. Composer reports "blocked" from
 // the backend's structured agent state (Orca agents[] state "waiting"); the block start is stamped on first sight and
@@ -741,7 +759,7 @@ func (w *Watcher) blockedPass() (int, bool, error) {
 		if !ok {
 			continue
 		}
-		if w.composerState(s.ID, sess) != backend.ComposerBlocked {
+		if !w.onDialog(s.ID, sess) {
 			w.clearBlocked(s.ID) // no longer waiting: the interval ends, so a fresh block re-arms the wake
 			continue
 		}
@@ -910,7 +928,7 @@ func (w *Watcher) watchDir() string { return filepath.Join(w.EpicDir, state.Cont
 // unreachability rather than silently never alarming.
 func (w *Watcher) bumpDoorbellFail(handle string) int {
 	dir := filepath.Join(w.watchDir(), "doorbell-fail")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := mkdirControl(dir); err != nil {
 		return DoorbellFailAlarm
 	}
 	path := filepath.Join(dir, handle)
@@ -972,7 +990,7 @@ func (w *Watcher) readNudged() (gen int, ts time.Time) {
 // recordNudge stamps the backlog gen and time the leader was just nudged for, so an unchanged backlog is not re-nudged
 // within NudgeWindow (B-33).
 func (w *Watcher) recordNudge(gen int, ts time.Time) {
-	if err := os.MkdirAll(w.watchDir(), 0o755); err != nil {
+	if err := mkdirControl(w.watchDir()); err != nil {
 		return
 	}
 	_ = os.WriteFile(filepath.Join(w.watchDir(), "nudged"), []byte(fmt.Sprintf("%d %s", gen, ts.UTC().Format(time.RFC3339))), 0o644)
@@ -989,7 +1007,7 @@ func (w *Watcher) readAlarmLast() time.Time {
 }
 
 func (w *Watcher) recordAlarmLast(ts time.Time) {
-	if err := os.MkdirAll(w.watchDir(), 0o755); err != nil {
+	if err := mkdirControl(w.watchDir()); err != nil {
 		return
 	}
 	_ = os.WriteFile(filepath.Join(w.watchDir(), "alarm-last"), []byte(ts.UTC().Format(time.RFC3339)), 0o644)
@@ -1066,7 +1084,7 @@ func (w *Watcher) blockedSince(story string) time.Time {
 // recordBlocked stamps the start of a waiting interval.
 func (w *Watcher) recordBlocked(story string, since time.Time) {
 	dir := filepath.Join(w.watchDir(), "blocked")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := mkdirControl(dir); err != nil {
 		return
 	}
 	_ = os.WriteFile(filepath.Join(dir, story), []byte(strconv.FormatInt(since.Unix(), 10)), 0o644)
@@ -1081,7 +1099,7 @@ func (w *Watcher) blockedFired(story string) bool {
 // markBlockedFired records that a stuck wake fired for the current waiting interval, so it fires at most once per interval.
 func (w *Watcher) markBlockedFired(story string) {
 	dir := filepath.Join(w.watchDir(), "blockedfired")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := mkdirControl(dir); err != nil {
 		return
 	}
 	if f, err := os.OpenFile(filepath.Join(dir, story), os.O_CREATE|os.O_WRONLY, 0o644); err == nil {
@@ -1095,38 +1113,12 @@ func (w *Watcher) clearBlocked(story string) {
 	_ = os.Remove(filepath.Join(w.watchDir(), "blockedfired", story))
 }
 
-// touchWatchFile stamps <watch>/<sub>/<key> with the current time (creating it), for last-seen tracking.
-func (w *Watcher) touchWatchFile(sub, key string) {
-	if key == "" {
-		return
-	}
-	dir := filepath.Join(w.watchDir(), sub)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return
-	}
-	p := filepath.Join(dir, key)
-	if f, err := os.OpenFile(p, os.O_CREATE|os.O_WRONLY, 0o644); err == nil {
-		f.Close()
-	}
-	now := w.now()
-	_ = os.Chtimes(p, now, now)
-}
-
-// watchFileMtime returns the mtime of <watch>/<sub>/<key>, or the zero time when it does not exist.
-func (w *Watcher) watchFileMtime(sub, key string) time.Time {
-	info, err := os.Stat(filepath.Join(w.watchDir(), sub, key))
-	if err != nil {
-		return time.Time{}
-	}
-	return info.ModTime()
-}
-
 func (w *Watcher) bumpHeartbeat(disp string) {
 	if disp == "" {
 		return
 	}
 	dir := filepath.Join(w.watchDir(), "hb")
-	_ = os.MkdirAll(dir, 0o755)
+	_ = mkdirControl(dir)
 	path := filepath.Join(dir, disp)
 	now := w.now()
 	if f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY, 0o644); err == nil {
@@ -1156,7 +1148,7 @@ func (w *Watcher) markSeen(id string) {
 	if id == "" {
 		return
 	}
-	_ = os.MkdirAll(w.watchDir(), 0o755)
+	_ = mkdirControl(w.watchDir())
 	f, err := os.OpenFile(filepath.Join(w.watchDir(), "seen"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
 		return
@@ -1182,23 +1174,6 @@ func (w *Watcher) dispatchStoryMap() (map[string]string, error) {
 		}
 	}
 	return m, nil
-}
-
-// dispatchStoryReverse finds the story whose session id or handle equals disp (so stalePass can pick the session).
-func dispatchStoryReverse(sessions map[string]backend.Session, disp string) string {
-	for story, s := range sessions {
-		if s.ID == disp || s.Handle == disp {
-			return story
-		}
-	}
-	return disp
-}
-
-func storyForDisp(sessions map[string]backend.Session, disp string) string {
-	if s := dispatchStoryReverse(sessions, disp); s != "" {
-		return s
-	}
-	return disp
 }
 
 // payloadFields extracts dispatchId and phase from an Orca message payload (a JSON string).

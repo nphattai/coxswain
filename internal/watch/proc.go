@@ -1,7 +1,9 @@
 package watch
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -155,12 +157,41 @@ func Healthy(epicDir string, now time.Time, grace time.Duration) bool {
 	return now.Sub(info.ModTime()) < orDur(grace, DefaultGrace)
 }
 
+// mkdirControl creates dir like os.MkdirAll, except that it never creates the epic's .cox control tree itself: every
+// directory below .cox is made one level at a time with os.Mkdir, so a teardown that removes .cox mid-Tick makes the
+// write fail instead of resurrecting the tree (which would hide the teardown from evictReason and litter a closed
+// epic). A dir outside any .cox is created as MkdirAll would.
+func mkdirControl(dir string) error {
+	parts := strings.Split(filepath.Clean(dir), string(filepath.Separator))
+	i := len(parts) - 1
+	for i >= 0 && parts[i] != state.ControlDir {
+		i--
+	}
+	if i < 0 {
+		return os.MkdirAll(dir, 0o755)
+	}
+	cur := strings.Join(parts[:i+1], string(filepath.Separator))
+	if cur == "" {
+		cur = string(filepath.Separator)
+	}
+	if _, err := os.Stat(cur); err != nil {
+		return err
+	}
+	for _, p := range parts[i+1:] {
+		cur = filepath.Join(cur, p)
+		if err := os.Mkdir(cur, 0o755); err != nil && !errors.Is(err, fs.ErrExist) {
+			return err
+		}
+	}
+	return nil
+}
+
 // writeAtomic publishes data at path through a temp file in the same directory and a rename, so a symlink planted at
 // path is replaced rather than followed and a reader never sees a torn write (firstmate
-// fm-watch-arm.test.sh:860). The directory is created when missing.
+// fm-watch-arm.test.sh:860). The directory is created when missing, never the .cox control tree (mkdirControl).
 func writeAtomic(path string, data []byte) error {
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := mkdirControl(dir); err != nil {
 		return err
 	}
 	f, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp*")

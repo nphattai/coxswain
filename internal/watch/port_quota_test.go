@@ -57,7 +57,7 @@ func pollQuota(t *testing.T, q *seqQuota, n int) []int {
 		q.targets = []QuotaTarget{{Harness: "codex", Role: "worker", Story: "s1"}}
 	}
 	now := time.Date(2026, 9, 25, 0, 0, 0, 0, time.UTC)
-	w := &Watcher{EpicDir: t.TempDir(), Quota: q, Now: func() time.Time { return now }}
+	w := &Watcher{EpicDir: lcEpic(t), Quota: q, Now: func() time.Time { return now }}
 	var out []int
 	for i := 0; i < n; i++ {
 		if _, _, err := w.quotaPass(); err != nil {
