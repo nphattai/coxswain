@@ -1113,32 +1113,6 @@ func (w *Watcher) clearBlocked(story string) {
 	_ = os.Remove(filepath.Join(w.watchDir(), "blockedfired", story))
 }
 
-// touchWatchFile stamps <watch>/<sub>/<key> with the current time (creating it), for last-seen tracking.
-func (w *Watcher) touchWatchFile(sub, key string) {
-	if key == "" {
-		return
-	}
-	dir := filepath.Join(w.watchDir(), sub)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return
-	}
-	p := filepath.Join(dir, key)
-	if f, err := os.OpenFile(p, os.O_CREATE|os.O_WRONLY, 0o644); err == nil {
-		f.Close()
-	}
-	now := w.now()
-	_ = os.Chtimes(p, now, now)
-}
-
-// watchFileMtime returns the mtime of <watch>/<sub>/<key>, or the zero time when it does not exist.
-func (w *Watcher) watchFileMtime(sub, key string) time.Time {
-	info, err := os.Stat(filepath.Join(w.watchDir(), sub, key))
-	if err != nil {
-		return time.Time{}
-	}
-	return info.ModTime()
-}
-
 func (w *Watcher) bumpHeartbeat(disp string) {
 	if disp == "" {
 		return
@@ -1200,23 +1174,6 @@ func (w *Watcher) dispatchStoryMap() (map[string]string, error) {
 		}
 	}
 	return m, nil
-}
-
-// dispatchStoryReverse finds the story whose session id or handle equals disp (so stalePass can pick the session).
-func dispatchStoryReverse(sessions map[string]backend.Session, disp string) string {
-	for story, s := range sessions {
-		if s.ID == disp || s.Handle == disp {
-			return story
-		}
-	}
-	return disp
-}
-
-func storyForDisp(sessions map[string]backend.Session, disp string) string {
-	if s := dispatchStoryReverse(sessions, disp); s != "" {
-		return s
-	}
-	return disp
 }
 
 // payloadFields extracts dispatchId and phase from an Orca message payload (a JSON string).

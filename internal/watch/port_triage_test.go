@@ -2591,17 +2591,6 @@ func pDSeen(r *portRig, id, line string) {
 	r.tick()
 }
 
-// pDStaleWorker puts the story into firstmate's "quiet pane past the escalation threshold" shape: a heartbeat that
-// aged `age` past a StaleMin of `threshold`, a live worker, and an idle busy record.
-func pDStaleWorker(r *portRig, threshold, age time.Duration) {
-	r.w.StaleMin = threshold
-	r.liveness(backend.Alive)
-	r.busySet(busy.Idle)
-	r.heartbeat("hb1")
-	r.tick()
-	r.advance(age)
-}
-
 // pDWedgeRig is a working lane (active run-step, live agent) with a recorded worktree, already surfaced once so the
 // wedge timer runs (fm wedge fixture), at the firstmate wedge threshold.
 func pDWedgeRig(t *testing.T) *portRig {

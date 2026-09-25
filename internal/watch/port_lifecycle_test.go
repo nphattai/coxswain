@@ -30,12 +30,6 @@ import (
 	"github.com/nphattai/coxswain/internal/wake"
 )
 
-// notImplementedLC fails the case naming the cox mechanism firstmate pins and cox lacks (contract rule 3).
-func notImplementedLC(t *testing.T, mechanism string) {
-	t.Helper()
-	t.Fatalf("cox gap: %s", mechanism)
-}
-
 // lcEpic makes a temp epic dir with a .cox control tree (the watcher never creates .cox itself, mkdirControl).
 func lcEpic(t *testing.T) string {
 	t.Helper()
