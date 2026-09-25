@@ -96,6 +96,17 @@ func epicNew(args []string) int {
 	if err != nil {
 		return fail("%v", err)
 	}
+	// Refuse early, before any branch or worktree exists, on a checkout Orca does not know (B-34b); never register it
+	// silently here (leader ruling q001: only add-repo registers). An unknown answer proceeds as before.
+	var epicRepos []workspace.Repo
+	for _, a := range aliases {
+		if r, ok := ws.Repo(a); ok {
+			epicRepos = append(epicRepos, r)
+		}
+	}
+	if missing := unregisteredOrcaRepos(epicRepos); len(missing) > 0 {
+		return fail("cannot create epic %s: %s", slug, strings.Join(missing, "; "))
+	}
 	rt := orca.New(os.Getenv("ORCA_RUN_ID"))
 	epicDir, err := epic.New(epic.NewOptions{
 		Runtime: rt, Workspace: ws, WsRoot: wsRoot, Project: project, Slug: slug,

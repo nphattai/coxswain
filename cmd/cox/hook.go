@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/nphattai/coxswain/internal/adapter/backend"
+	"github.com/nphattai/coxswain/internal/boundexec"
 	"github.com/nphattai/coxswain/internal/protocol/checkpoint"
 	"github.com/nphattai/coxswain/internal/state"
 	"github.com/nphattai/coxswain/internal/wake"
@@ -487,6 +488,7 @@ func hookStopRewake(epicDir, harnessName string, runGuard bool) int {
 		waiterSignal(cycles, s, func(code int) {
 			releaseMu.Lock()
 			release()
+			boundexec.KillLive()
 			os.Exit(code)
 		})
 	}()

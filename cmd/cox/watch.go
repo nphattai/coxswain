@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/nphattai/coxswain/internal/boundexec"
 	"github.com/nphattai/coxswain/internal/supervision"
 	"github.com/nphattai/coxswain/internal/wake"
 	"github.com/nphattai/coxswain/internal/watch"
@@ -395,6 +396,7 @@ func cmdWatch(args []string) int {
 		// short grace to finish, then release the pidfile and exit without waiting for it.
 		time.Sleep(watcherStopGrace)
 		release()
+		boundexec.KillLive() // a bounded probe in flight (quota-axi) must not outlive the watcher
 		os.Exit(0)
 	}()
 	w.Run(stop, 5*time.Second)

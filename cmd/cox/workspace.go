@@ -231,6 +231,14 @@ func cmdWorkspaceAddRepo(args []string) int {
 		return fail("%v", err)
 	}
 	fmt.Printf("added repo %s (%s, production %s)\n", r.Alias, r.Ref(), r.Production)
+	// Adding a repo is the captain's intent to work in it, so register a checkout Orca does not know (B-34b): an epic
+	// worktree for it would otherwise fail late with repo_not_found. An unknown answer (no orca) changes nothing.
+	if r.Path != "" && orcaRepoStatus(r.Path) == orcaRepoUnregistered {
+		if err := orcaRepoAdd(r.Path); err != nil {
+			return fail("added repo %s to the workspace, but registering it with Orca failed: %v; run: %s", r.Alias, err, orcaRepoFix(r.Path))
+		}
+		fmt.Printf("registered %s with orca\n", r.Path)
+	}
 	return 0
 }
 

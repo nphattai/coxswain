@@ -20,6 +20,7 @@ import (
 	"github.com/nphattai/coxswain/internal/adapter/forge"
 	"github.com/nphattai/coxswain/internal/adapter/forge/github"
 	"github.com/nphattai/coxswain/internal/bearings"
+	"github.com/nphattai/coxswain/internal/boundexec"
 	"github.com/nphattai/coxswain/internal/state"
 	"github.com/nphattai/coxswain/internal/workspace"
 )
@@ -98,6 +99,7 @@ func cmdBearings(args []string) int {
 			if err := writeDeferredBackstop(ws, deferredBound+30*time.Second); err != nil {
 				fmt.Fprintf(os.Stderr, "cox bearings deferred: failed record: %v\n", err)
 			}
+			boundexec.KillLive() // the wedged stage's bounded commands end with the worker
 			os.Exit(3)
 		})
 		o := bearingsOpts(ws, "", *harness, false)

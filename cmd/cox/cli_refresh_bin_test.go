@@ -383,3 +383,112 @@ func TestDeferredBackstopWritesFailedRecord(t *testing.T) {
 		}
 	}
 }
+
+// Delta E, the cmd/cox site (firstmate ac2ed3b, fm-timeout-lib.test.sh:132 "a descendant holding the captured output
+// must not keep the caller waiting"): a quota-axi whose background child keeps stdout open returns its version at once.
+// Before, exec.CommandContext + Output waited for the child's EOF (here 20s; the ctx only killed the exited parent).
+func TestQuotaAxiVersionDescendantHoldingStdout(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "quota-axi")
+	mustWrite(t, bin, "#!/bin/sh\nsleep 20 &\necho 'quota-axi 1.2.3'\n")
+	if err := os.Chmod(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	began := time.Now()
+	v := quotaAxiVersion(bin)
+	if took := time.Since(began); took > 5*time.Second {
+		t.Fatalf("quotaAxiVersion took %s: a descendant holding stdout parked the read", took)
+	}
+	if v != "quota-axi 1.2.3" {
+		t.Errorf("version = %q", v)
+	}
+}
+
+// #47 follow-up against the real binary: doctor inside a valid v2 workspace no longer opens with "no coxswain
+// installations found" (that list is only the legacy v1 kits), and with nothing found at all it says what it scanned.
+func TestDoctorBinaryInstallationsLine(t *testing.T) {
+	root := t.TempDir()
+	coxInit(t, root, "--repo", "app="+t.TempDir()+":main")
+	if out := doctorOn(t, root); strings.Contains(out, "no coxswain installations found") || strings.Contains(out, "no coxswain workspace found") {
+		t.Errorf("doctor inside a v2 workspace reports none found:\n%s", out)
+	}
+	if out := doctorOn(t, t.TempDir()); !strings.Contains(out, "no coxswain workspace found under ") {
+		t.Errorf("doctor with nothing to find does not say what it scanned:\n%s", out)
+	}
+}
+
+// fakeOrcaRepos puts an orca first on PATH that knows only the checkouts listed in its registry file: `repo show`
+// answers repo_not_found for any other path, `repo add` appends to the registry, and every call is logged. It returns
+// the log path.
+func fakeOrcaRepos(t *testing.T, registered ...string) string {
+	t.Helper()
+	bin := t.TempDir()
+	reg, log := filepath.Join(bin, "registry"), filepath.Join(bin, "orca.log")
+	mustWrite(t, reg, strings.Join(registered, "\n")+"\n")
+	mustWrite(t, filepath.Join(bin, "orca"), `#!/bin/sh
+echo "$@" >> '`+log+`'
+case "$1 $2" in
+'repo show') p=${4#path:}; if grep -qxF "$p" '`+reg+`'; then echo '{"ok":true,"result":{"repo":{}}}'; else echo '{"ok":false,"error":{"code":"repo_not_found","message":"repo_not_found"}}'; exit 1; fi ;;
+'repo add') echo "$4" >> '`+reg+`'; echo '{"ok":true,"result":{"repo":{}}}' ;;
+*) echo '{"ok":true,"result":{}}' ;;
+esac
+`)
+	if err := os.Chmod(filepath.Join(bin, "orca"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return log
+}
+
+// gitCheckout is a temp git repo with one commit on main.
+func gitCheckout(t *testing.T) string {
+	t.Helper()
+	d := t.TempDir()
+	gitInitRepo(t, d)
+	real, err := filepath.EvalSymlinks(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return real
+}
+
+// B-34b against the real binary: add-repo registers a checkout Orca does not know; a known one is left alone.
+func TestWorkspaceAddRepoBinaryRegistersWithOrca(t *testing.T) {
+	root := t.TempDir()
+	known, fresh := gitCheckout(t), gitCheckout(t)
+	coxInit(t, root, "--repo", "app="+known+":main")
+	log := fakeOrcaRepos(t, known)
+	so, se, code := runCox(t, root, nil, "workspace", "add-repo", "web="+fresh+":main", "--root", root)
+	if code != 0 || !strings.Contains(so, "registered "+fresh+" with orca") {
+		t.Fatalf("add-repo of an unregistered checkout: exit %d\n%s%s", code, so, se)
+	}
+	so, se, code = runCox(t, root, nil, "workspace", "add-repo", "api="+known+":main", "--root", root)
+	if code != 0 || strings.Contains(so, "registered") {
+		t.Errorf("add-repo of a registered checkout: exit %d\n%s%s", code, so, se)
+	}
+	b, _ := os.ReadFile(log)
+	if n := strings.Count(string(b), "repo add"); n != 1 {
+		t.Errorf("orca repo add ran %d time(s), want once:\n%s", n, b)
+	}
+}
+
+// B-34b against the real binary (leader ruling q001): `cox epic new` never registers; on a checkout Orca does not know
+// it fails before creating anything, naming the exact `orca repo add` command, and doctor reports the same fix.
+func TestEpicNewBinaryRefusesUnregisteredRepo(t *testing.T) {
+	root := t.TempDir()
+	repo := gitCheckout(t)
+	coxInit(t, root, "--repo", "app="+repo+":main")
+	log := fakeOrcaRepos(t)
+	_, se, code := runCox(t, root, nil, "epic", "new", "proj", "e1", "--repo", "app", "--no-push", "--root", root)
+	if code == 0 || !strings.Contains(se, "run: orca repo add --path "+repo) {
+		t.Fatalf("epic new on an unregistered repo: exit %d, stderr %q", code, se)
+	}
+	if _, err := os.Stat(filepath.Join(root, "proj", "epics", "e1")); err == nil {
+		t.Error("epic new created the epic dir before refusing")
+	}
+	if b, _ := os.ReadFile(log); strings.Contains(string(b), "repo add") || strings.Contains(string(b), "worktree create") {
+		t.Errorf("epic new registered the repo or cut a worktree:\n%s", b)
+	}
+	if out := doctorOn(t, root); !strings.Contains(out, "repo app ("+repo+") is not registered with Orca; run: orca repo add --path "+repo) {
+		t.Errorf("doctor does not report the unregistered repo with its fix:\n%s", out)
+	}
+}
