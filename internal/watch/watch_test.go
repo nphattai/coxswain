@@ -197,7 +197,7 @@ func containsCall(calls []string, want string) bool {
 }
 
 func TestHeartbeatIsNotAWake(t *testing.T) {
-	epic := t.TempDir()
+	epic := lcEpic(t) // a real epic always has its .cox control tree
 	b := fake.New()
 	mb := b.Mail().(*fake.Mailbox)
 	mb.Queue = []backend.Message{{
@@ -404,7 +404,7 @@ func must(t *testing.T, err error) {
 
 // F8(c): a working story that went idle (composer empty, last message stale) with an unanswered steer and no
 // worker_done since raises exactly one urgent idle_no_done wake, once per steer.
-// Turn-end triage (supersedes the steer-gated idle pass, firstmate fm-watch-triage.test.sh:774): a working story whose
+// Turn-end triage (supersedes the steer-gated idle pass, firstmate fm-watch-triage.test.sh:775): a working story whose
 // harness record turned idle with no report since the turn began raises one urgent idle_no_done - no steer needed -
 // once per turn end; a report in the same turn covers it; a still-busy worker is absorbed.
 func TestTurnEndWithoutReportSurfaces(t *testing.T) {
@@ -717,26 +717,53 @@ func TestEvictReason(t *testing.T) {
 	}
 }
 
-// The Run loop exits within one tick once the .cox control tree is renamed away, and releases so the process can end.
+// The Run loop exits once the .cox control tree is renamed away, and releases so the process can end. The rename may
+// land mid-Tick, where a later write in the same pass recreates .cox (the flake: 1 in ~40 under parallel load); the
+// loop still stands down because the recreated tree is not the one it started on.
 func TestRunEvictsWhenControlTreeGone(t *testing.T) {
 	epic := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(epic, state.ControlDir), 0o755); err != nil {
+	cox := filepath.Join(epic, state.ControlDir)
+	if err := os.MkdirAll(cox, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	w := &Watcher{EpicDir: epic, Backend: fake.New(), Now: fixedNow()}
 	done := make(chan struct{})
 	go func() { w.Run(make(chan struct{}), 5*time.Millisecond); close(done) }()
-	// Let it tick at least once, then rename .cox away.
-	time.Sleep(20 * time.Millisecond)
-	if err := os.Rename(filepath.Join(epic, state.ControlDir), filepath.Join(epic, "gone")); err != nil {
+	// Wait for the first tick's beacon (not a wall-clock sleep), then rename .cox away.
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(time.Millisecond) {
+		if _, err := os.Stat(filepath.Join(cox, "watch", "lasttick")); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("Run never completed a first tick")
+		}
+	}
+	if err := os.Rename(cox, filepath.Join(epic, "gone")); err != nil {
 		t.Fatal(err)
 	}
 	select {
 	case <-done:
-	// The loop stands down one tick after the rename (markTick no longer resurrects .cox); a generous ceiling absorbs
-	// CI scheduler jitter under -race without measuring the tick.
-	case <-time.After(5 * time.Second):
-		t.Fatal("Run did not exit within one tick after .cox was renamed away")
+	// A hang guard only: eviction is decided by the loop-top check, independent of load.
+	case <-time.After(10 * time.Second):
+		t.Fatal("Run did not exit after .cox was renamed away")
+	}
+}
+
+// A control tree removed and recreated (a teardown racing a write that re-creates .cox) is not the tree the watcher
+// started on, so it evicts instead of polling the replacement forever.
+func TestEvictsWhenControlTreeRecreated(t *testing.T) {
+	epic := t.TempDir()
+	cox := filepath.Join(epic, state.ControlDir)
+	must(t, os.MkdirAll(cox, 0o755))
+	w := &Watcher{EpicDir: epic, Backend: fake.New(), Now: fixedNow()}
+	w.controlID, _ = os.Stat(cox)
+	if r := w.evictReason(); r != "" {
+		t.Fatalf("the original control tree must not evict, got %q", r)
+	}
+	must(t, os.Rename(cox, filepath.Join(epic, "gone")))
+	must(t, os.MkdirAll(filepath.Join(cox, "watch"), 0o755)) // a mid-Tick write resurrects .cox
+	if r := w.evictReason(); !strings.Contains(r, "recreated") {
+		t.Fatalf("a recreated control tree must evict, got %q", r)
 	}
 }
 
@@ -1017,5 +1044,151 @@ func TestReportCursorStartsAtTheQueueTip(t *testing.T) {
 	must(t, func() error { _, err := w.Tick(); return err }())
 	if got := mustDrain(t, epic); len(got) != 1 {
 		t.Fatalf("an old report was replayed as a fresh signal: %+v", got)
+	}
+}
+
+// fm: tests/fm-claude-stop-autoarm.test.sh:465@a8572f6 (test_attached_cycle_end_starts_handling_successor, 31c47af):
+// after an actionable close the fleet must stay watched while the leader handles the wake. Firstmate's arm cycle ends
+// on delivery, so its Stop hook starts a successor that outlives the exit-2 rewake; cox's watcher is the persistent
+// loop (Run returns only on eviction or stop), so the translation is that the watcher keeps ticking after an urgent
+// wake is delivered and acked.
+// n/a tests/fm-claude-stop-autoarm.test.sh:498 (an unconfirmed successor adds a banner line): cox launches no
+// successor, so there is none to fail to confirm.
+func TestWatcherOutlivesADeliveredWake(t *testing.T) {
+	t.Run("FM/fm-claude-stop-autoarm/attached_cycle_end_starts_handling_successor", func(t *testing.T) {
+		epic := t.TempDir()
+		must(t, os.MkdirAll(filepath.Join(epic, state.ControlDir), 0o755))
+		b := fake.New()
+		mb := b.Mail().(*fake.Mailbox)
+		mb.Delivery = "d1"
+		mb.Queue = []backend.Message{{ID: "r1", From: "dispatch:c", Type: "worker_done", Subject: "up", Payload: `{"dispatchId":"c","outcome":"succeeded"}`}}
+		w := &Watcher{EpicDir: epic, Backend: b}
+		stop := make(chan struct{})
+		done := make(chan struct{})
+		go func() { w.Run(stop, 10*time.Millisecond); close(done) }()
+		defer func() { close(stop); <-done }()
+
+		waitGen := func(want int) int {
+			t.Helper()
+			for end := time.Now().Add(5 * time.Second); time.Now().Before(end); time.Sleep(10 * time.Millisecond) {
+				if ws, _ := wake.Load(epic); len(ws) >= want {
+					return ws[len(ws)-1].Gen
+				}
+			}
+			t.Fatalf("the watcher never queued wake #%d", want)
+			return 0
+		}
+		gen := waitGen(1)
+		must(t, wake.AckThrough(epic, gen)) // the leader's turn drains and acks the delivered wake
+		// The watcher keeps covering the handling turn: its beacon, removed after the ack, is written again by later
+		// ticks, and Run has not returned.
+		beacon := filepath.Join(epic, state.ControlDir, "watch", "lasttick")
+		waitBeacon := func(why string) {
+			t.Helper()
+			for end := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+				if _, err := os.Stat(beacon); err == nil {
+					return
+				}
+				if time.Now().After(end) {
+					t.Fatal(why)
+				}
+			}
+		}
+		waitBeacon("the delivering tick wrote no beacon")
+		must(t, os.Remove(beacon))
+		waitBeacon("the watcher stopped ticking after the delivered wake; the handling turn is unwatched")
+		select {
+		case <-done:
+			t.Fatal("the watcher returned after the delivered wake")
+		default:
+		}
+	})
+}
+
+// leader inbox 004 (found during cox-refresh-watch): the turn-end idle note claimed "no running CI" while the story PR's
+// checks were pending, because the watcher had no forge to read (cmd/cox wires none). The note names the CI evidence
+// as read: unknown when the forge cannot answer, "no running CI" only when it answered with every check completed.
+func TestIdleNoDoneNoteNamesCIEvidenceAsRead(t *testing.T) {
+	for _, tc := range []struct {
+		ci, want, not string
+	}{{"", "CI state unknown", "no running CI"}, {"unknown", "CI state unknown", "no running CI"}, {"passed", "no running CI", "CI state unknown"}} {
+		r := newPortRig(t)
+		if tc.ci != "" {
+			r.ci(tc.ci)
+		}
+		r.busySet(busy.Idle) // the worker's turn ended with no report
+		var note string
+		for _, w := range r.tick() {
+			if w.Kind == wake.KindIdleNoDone {
+				note = w.Note
+			}
+		}
+		if !strings.Contains(note, tc.want) || strings.Contains(note, tc.not) {
+			t.Errorf("forge %q: idle note %q, want it to say %q", tc.ci, note, tc.want)
+		}
+	}
+}
+
+// dialogBackend is a backend that reads a harness dialog (backend.DialogReader), as Orca does from agents[] "waiting".
+type dialogBackend struct {
+	*fake.Backend
+	dialog bool
+}
+
+func (d *dialogBackend) Dialog(backend.Session) bool { return d.dialog }
+
+// A claude/pi worker on a permission dialog keeps a busy record that says busy; blockedPass must still see the dialog
+// through the backend's DialogReader (as internal/protocol/control does) and raise the stuck wake after BlockedWait.
+func TestBlockedPassSeesDialogBehindBusyRecord(t *testing.T) {
+	epic := t.TempDir()
+	must(t, state.Append(epic, ev(epic, "s", 1, state.Submitted, state.Working)))
+	gen, err := busy.Arm(epic, "s", "claude", []string{"dispatch", "claude-hook", "recovery"})
+	must(t, err)
+	must(t, busy.Apply(epic, "s", busy.Busy, gen, "claude-hook", "UserPromptSubmit"))
+	now := time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC)
+	b := &dialogBackend{Backend: fake.New(), dialog: true}
+	w := &Watcher{EpicDir: epic, Backend: b, Sessions: map[string]backend.Session{"s": {ID: "ctx_1", Handle: "term_1"}},
+		BlockedWait: time.Minute, Now: func() time.Time { return now }}
+
+	if n, _, _ := w.blockedPass(); n != 0 {
+		t.Fatalf("first sight should record only, got %d", n)
+	}
+	now = now.Add(2 * time.Minute)
+	if n, urg, err := w.blockedPass(); err != nil || n != 1 || !urg {
+		t.Fatalf("a worker on a dialog behind a busy record: want 1 urgent stuck wake, got n=%d urg=%v err=%v", n, urg, err)
+	}
+
+	// No dialog: a busy worker is just busy.
+	b.dialog = false
+	now = now.Add(5 * time.Minute)
+	if n, _, _ := w.blockedPass(); n != 0 {
+		t.Fatalf("a busy worker with no dialog raised %d stuck wake(s)", n)
+	}
+	now = now.Add(5 * time.Minute)
+	if n, _, _ := w.blockedPass(); n != 0 {
+		t.Fatalf("a busy worker with no dialog raised %d stuck wake(s) after the window", n)
+	}
+}
+
+// mkdirControl never creates the .cox control tree itself, so a teardown mid-Tick is not undone by a later write.
+func TestMkdirControlNeverCreatesTheControlTree(t *testing.T) {
+	epic := t.TempDir()
+	dir := filepath.Join(epic, state.ControlDir, "watch", "hb")
+	if err := mkdirControl(dir); err == nil {
+		t.Errorf("mkdirControl created %s with no .cox", dir)
+	}
+	if _, err := os.Stat(filepath.Join(epic, state.ControlDir)); err == nil {
+		t.Fatalf("mkdirControl resurrected .cox")
+	}
+	must(t, os.Mkdir(filepath.Join(epic, state.ControlDir), 0o755))
+	if err := mkdirControl(dir); err != nil {
+		t.Fatalf("mkdirControl under a present .cox: %v", err)
+	}
+	if err := mkdirControl(dir); err != nil {
+		t.Fatalf("mkdirControl is not idempotent: %v", err)
+	}
+	outside := filepath.Join(epic, "a", "b")
+	if err := mkdirControl(outside); err != nil {
+		t.Fatalf("a dir outside .cox: %v", err)
 	}
 }

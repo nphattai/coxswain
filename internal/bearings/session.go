@@ -54,7 +54,7 @@ func (s *session) stage(name string) {
 		s.current = name
 	}
 	s.mu.Unlock()
-	s.procs.run(s.o.StageCmd[name])
+	s.procs.run(s.o.StageCmd[name], s.o.Timeout)
 }
 
 func (s *session) isReadOnly() bool {
@@ -174,7 +174,7 @@ func (s *session) run() {
 	switch {
 	case readOnly || o.Reemit:
 	case o.Forge != nil || o.StateRead != nil:
-		d := startDeferred(o, s.epics)
+		d := startDeferred(o, s.epics, time.Time{})
 		s.mu.Lock()
 		s.deferred = d
 		s.mu.Unlock()
@@ -245,6 +245,10 @@ func (s *session) run() {
 		p.line(detached)
 	default:
 		p.line("not configured - no deferred forge checks run for this session.")
+	}
+	if rec := DeferredFailed(o.Workspace); rec != nil {
+		p.line("FAILED - the last deferred worker could not publish its results inside its budget.")
+		p.lines(rec...)
 	}
 
 	// 8. notes: curated memory, the cheapest thing for a truncated tail to lose.

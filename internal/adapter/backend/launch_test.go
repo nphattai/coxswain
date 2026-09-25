@@ -16,9 +16,21 @@ func TestLaunchLineQuotesArgvWithEnv(t *testing.T) {
 	spec := HarnessSpec{Name: "claude", Argv: []string{"claude", "--model", "claude-opus-4-8", "the prompt"}}
 	brief := Brief{StoryPath: "/epics/v2/stories/m10.md"}
 	got := LaunchLine(spec, brief)
-	want := "COX_EPIC='/epics/v2' COX_STORY='m10' COX_PLANE=terminal 'claude' '--model' 'claude-opus-4-8' 'the prompt'"
+	want := "COX_EPIC='/epics/v2' COX_STORY='m10' COMPACT_ADVISER_DISABLE=1 COX_PLANE=terminal 'claude' '--model' 'claude-opus-4-8' 'the prompt'"
 	if got != want {
 		t.Fatalf("LaunchLine =\n  %q\nwant\n  %q", got, want)
+	}
+}
+
+// B-41: every worker launch line disables compact-adviser for the unattended session, whatever the harness, and the
+// variable is in the env prefix (before the argv), so it reaches the harness process rather than being an argument.
+func TestLaunchLineDisablesCompactAdviser(t *testing.T) {
+	for _, h := range []string{"claude", "codex", "pi"} {
+		line := LaunchLine(HarnessSpec{Name: h, Argv: []string{h, "prompt"}}, Brief{StoryPath: "/e/stories/s.md"})
+		i, j := strings.Index(line, "COMPACT_ADVISER_DISABLE=1 "), strings.Index(line, shellQuote(h))
+		if i < 0 || j < 0 || i > j {
+			t.Errorf("%s launch line lacks COMPACT_ADVISER_DISABLE=1 in its env prefix: %q", h, line)
+		}
 	}
 }
 
@@ -35,7 +47,7 @@ func pinCoxSelf(v string) func() {
 func TestLaunchLineForwardsCoxBin(t *testing.T) {
 	defer pinCoxSelf("/tmp/dist/cox")()
 	got := LaunchLine(HarnessSpec{Name: "pi", Argv: []string{"pi", "hi"}}, Brief{StoryPath: "/e/stories/s.md"})
-	want := "COX_EPIC='/e' COX_STORY='s' COX_BIN='/tmp/dist/cox' COX_PLANE=terminal 'pi' 'hi'"
+	want := "COX_EPIC='/e' COX_STORY='s' COX_BIN='/tmp/dist/cox' COMPACT_ADVISER_DISABLE=1 COX_PLANE=terminal 'pi' 'hi'"
 	if got != want {
 		t.Fatalf("LaunchLine =\n  %q\nwant\n  %q", got, want)
 	}
@@ -46,7 +58,7 @@ func TestLaunchLineForwardsCoxBin(t *testing.T) {
 func TestLaunchLineNoStoryPathSkipsEnvAndEmptyTokens(t *testing.T) {
 	defer pinCoxSelf("")()
 	got := LaunchLine(HarnessSpec{Name: "pi", Argv: []string{"pi", "", "hello"}}, Brief{})
-	want := "COX_PLANE=terminal 'pi' 'hello'"
+	want := "COMPACT_ADVISER_DISABLE=1 COX_PLANE=terminal 'pi' 'hello'"
 	if got != want {
 		t.Fatalf("LaunchLine = %q, want %q", got, want)
 	}

@@ -73,9 +73,12 @@ same `Decide`, records the route as `evidence.route` on the working event (`rule
 
 `cox route --brief` lets typesafe.ai's System One model (Jev) make the rule *match* in one short tool turn, when
 `TYPESAFE_API_KEY` is present (the environment wins over the workspace's gitignored `.env`) and `routing.rules` is
-non-empty. The model is shown only the brief and each rule's `when`; it never sees quota, catalogs, approvals, or
-profiles. Code then applies the confidence floor (0.6), validates the probabilities, and runs the matched rule through
-the same gates and ranking. Off (no key) prints one stderr line and exits 0 with the leader path unchanged; every
+non-empty. The model is shown only the story's task sections (`## Goal`, `## Scope`, `## Acceptance criteria` under
+the story's title, led by `Brief kind: scout (report only)` for a scout; the whole file when it has none of them) and
+each rule's `when`; it never sees quota, catalogs, approvals, confidence floors, or profiles. Code then validates the
+probabilities, applies the confidence floor (0.6 on the answer confidence, or a rule's own `min_confidence` on that
+rule's probability, falling to the most probable other option that clears its own floor, printed as `fallback:`), and
+runs the matched rule through the same gates and ranking (firstmate 795e4b5). Off (no key) prints one stderr line and exits 0 with the leader path unchanged; every
 outcome exits 0. The key is used only as a request header - never on argv, in a log, or in output.
 
 ## Policy

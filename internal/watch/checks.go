@@ -1,7 +1,7 @@
 package watch
 
-// The registered custom-check sweep, ported from firstmate bin/fm-watch.sh:2470-2590 (run_check_capture :1954,
-// run_check_process :1887) and bin/fm-check-lib.sh fm_custom_check_snapshot_prepare, pinned 1e0e773. A check is a
+// The registered custom-check sweep, ported from firstmate bin/fm-watch.sh:2615-2735 (run_check_capture :1954,
+// run_check_process :1887) and bin/fm-check-lib.sh fm_custom_check_snapshot_prepare, pinned a8572f6. A check is a
 // <epic>/.cox/<id>.check.sh that `cox watch check register` bound to its bytes (internal/supervision). Every
 // CheckInterval the watcher runs each registered check from a private snapshot of the registered bytes, in the
 // watcher's own environment, bounded by CheckTimeout; non-empty stdout is an urgent check wake. A check whose bytes no

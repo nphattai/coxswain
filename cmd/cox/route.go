@@ -23,7 +23,7 @@ import (
 func cmdRoute(args []string) int {
 	fs := flag.NewFlagSet("route", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	epicDir := fs.String("epic", "", "epic directory")
+	epicDir := epicFlag(fs, "", "epic directory")
 	story := fs.String("story", "", "story id")
 	brief := fs.String("brief", "", "resolve a rule match for a story brief file via the opt-in typed path (Jev)")
 	candidates := fs.String("candidates", "", "comma-separated harness:model list; print the first quota-eligible one (or none, exit 1)")
@@ -215,7 +215,8 @@ func cmdRouteBrief(epicDir, briefPath string) int {
 	// COX_TYPESAFE_BASE_URL redirects the endpoint to an httptest server in tests; empty uses the production base. The
 	// real endpoint is never called from a test.
 	cfg := routing.TypedConfig{BaseURL: strings.TrimSpace(os.Getenv("COX_TYPESAFE_BASE_URL"))}
-	res := routing.ResolveTyped(context.Background(), cfg, apiKey, projectName(epicDir), string(briefBytes),
+	// The model sees only the story's task sections (firstmate 795e4b5), not the whole story file.
+	res := routing.ResolveTyped(context.Background(), cfg, apiKey, projectName(epicDir), routing.TaskText(string(briefBytes), meta.Kind),
 		pol, cards, mergedQuotaReadings(epicDir), story)
 	printTypedResult(res)
 	return 0
@@ -264,6 +265,9 @@ func printTypedResult(res routing.TypedResult) {
 	}
 	if len(res.Probabilities) > 0 {
 		fmt.Printf("  probabilities: %s\n", probLine(res.Probabilities))
+	}
+	if res.Fallback != "" {
+		fmt.Printf("  fallback: %s\n", res.Fallback)
 	}
 	if res.Reason != "" {
 		fmt.Printf("  reason: %s\n", res.Reason)

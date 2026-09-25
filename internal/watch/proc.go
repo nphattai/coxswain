@@ -1,7 +1,9 @@
 package watch
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,11 +17,11 @@ import (
 )
 
 // Watcher process identity, liveness and signals, ported from firstmate bin/fm-wake-lib.sh fm_pid_identity,
-// fm_poll_derived_grace and bin/fm-watch.sh watcher_stop_signals (pinned 1e0e773). cmd/cox (story w2-hooks) wires them
+// fm_poll_derived_grace and bin/fm-watch.sh watcher_stop_signals (pinned a8572f6). cmd/cox (story w2-hooks) wires them
 // into the pidfile claim, the turn-end guard and the watch command.
 
 // ExitSignals are the signals that stop a watcher through its exit cleanup (pidfile release). Firstmate keeps HUP and
-// TERM on the fatal path that runs the EXIT trap and traps INT (docs/watcher-continuity.md:117), so all three stop it.
+// TERM on the fatal path that runs the EXIT trap and traps INT (docs/watcher-continuity.md:121), so all three stop it.
 var ExitSignals = []os.Signal{syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM}
 
 // DefaultGrace is the default beacon freshness window: max(300s, poll+60s) (fm_poll_derived_grace). A watcher touches
@@ -75,7 +77,7 @@ func ProcIdentity(pid int) (string, error) {
 		}
 		return fmt.Sprintf("%s=%s cmdline-hex=%x", key, start, cmdline), nil
 	}
-	out, err := psRun(append(os.Environ(), "LC_ALL=C"), "-p", strconv.Itoa(pid), "-o", "lstart=", "-o", "command=")
+	out, err := psRun(append(os.Environ(), "LC_ALL=C", "COLUMNS=10000"), "-p", strconv.Itoa(pid), "-o", "lstart=", "-o", "command=")
 	if err != nil {
 		return "", fmt.Errorf("pid %d: %w", pid, err)
 	}
@@ -155,12 +157,41 @@ func Healthy(epicDir string, now time.Time, grace time.Duration) bool {
 	return now.Sub(info.ModTime()) < orDur(grace, DefaultGrace)
 }
 
+// mkdirControl creates dir like os.MkdirAll, except that it never creates the epic's .cox control tree itself: every
+// directory below .cox is made one level at a time with os.Mkdir, so a teardown that removes .cox mid-Tick makes the
+// write fail instead of resurrecting the tree (which would hide the teardown from evictReason and litter a closed
+// epic). A dir outside any .cox is created as MkdirAll would.
+func mkdirControl(dir string) error {
+	parts := strings.Split(filepath.Clean(dir), string(filepath.Separator))
+	i := len(parts) - 1
+	for i >= 0 && parts[i] != state.ControlDir {
+		i--
+	}
+	if i < 0 {
+		return os.MkdirAll(dir, 0o755)
+	}
+	cur := strings.Join(parts[:i+1], string(filepath.Separator))
+	if cur == "" {
+		cur = string(filepath.Separator)
+	}
+	if _, err := os.Stat(cur); err != nil {
+		return err
+	}
+	for _, p := range parts[i+1:] {
+		cur = filepath.Join(cur, p)
+		if err := os.Mkdir(cur, 0o755); err != nil && !errors.Is(err, fs.ErrExist) {
+			return err
+		}
+	}
+	return nil
+}
+
 // writeAtomic publishes data at path through a temp file in the same directory and a rename, so a symlink planted at
 // path is replaced rather than followed and a reader never sees a torn write (firstmate
-// fm-watch-arm.test.sh:860). The directory is created when missing.
+// fm-watch-arm.test.sh:886). The directory is created when missing, never the .cox control tree (mkdirControl).
 func writeAtomic(path string, data []byte) error {
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := mkdirControl(dir); err != nil {
 		return err
 	}
 	f, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp*")

@@ -35,7 +35,7 @@ func cmdWake(args []string) int {
 func wakeDrain(args []string) int {
 	fs := flag.NewFlagSet("wake drain", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	epicDir := fs.String("epic", "", "epic directory")
+	epicDir := epicFlag(fs, "", "epic directory")
 	peek := fs.Bool("peek", false, "print without any side effect (identical output; ack stays explicit)")
 	full := fs.Bool("full", false, "print each wake's full body instead of the 200-char note")
 	if err := fs.Parse(args); err != nil {
@@ -58,7 +58,7 @@ func wakeAckThrough(args []string) int {
 	gen, rest := onePositional(args)
 	fs := flag.NewFlagSet("wake ack-through", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	epicDir := fs.String("epic", "", "epic directory")
+	epicDir := epicFlag(fs, "", "epic directory")
 	recoveryGen := fs.String("recovery-generation", "", "retire the watcher-down recovery episode the drain printed")
 	if err := fs.Parse(rest); err != nil {
 		return 2
@@ -75,7 +75,7 @@ func wakeAckThrough(args []string) int {
 	if *recoveryGen != "" {
 		switch err := recoveryAck(*epicDir, *recoveryGen); {
 		case errors.Is(err, errRecoveryMoved):
-			// The sequence alone owns consumption; a moved generation names its own remedy (fm-wake-drain.sh:757).
+			// The sequence alone owns consumption; a moved generation names its own remedy (fm-wake-drain.sh:762).
 			fmt.Fprintf(os.Stderr, "wake drain: acknowledged wakes through %d (%d row(s) consumed), but a newer recovery episode is pending; re-run cox wake drain --epic %s and use the new WAKE_ACK_REQUIRED command\n",
 				g, res.Consumed, *epicDir)
 		case err != nil:
@@ -88,7 +88,7 @@ func wakeAckThrough(args []string) int {
 func wakeWait(args []string) int {
 	fs := flag.NewFlagSet("wake wait", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	epicDir := fs.String("epic", "", "epic directory")
+	epicDir := epicFlag(fs, "", "epic directory")
 	max := fs.Duration("max", 25*time.Minute, "maximum time to block")
 	if err := fs.Parse(args); err != nil {
 		return 2

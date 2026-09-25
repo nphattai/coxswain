@@ -16,7 +16,7 @@ import (
 	"github.com/nphattai/coxswain/internal/state"
 )
 
-// Presentation bounds (fm-wake-drain.sh:304,444 and fm-line-cap-lib.sh): each section item is cut to 219 characters
+// Presentation bounds (fm-wake-drain.sh:307,447 and fm-line-cap-lib.sh): each section item is cut to 219 characters
 // with the shared truncation marker, and each section's items share a 4000-byte budget.
 const (
 	itemCap     = 220 - 1
@@ -88,7 +88,7 @@ func FormatWake(w Wake, full bool) string {
 }
 
 // OpenDecisionLine renders one still-open decision the way the drain's OPEN DECISIONS section prints it
-// (fm-wake-drain.sh:444 print_open_decisions_section): "<story> [key=<k>] <verb>: <note>", with the key segment
+// (fm-wake-drain.sh:447 print_open_decisions_section): "<story> [key=<k>] <verb>: <note>", with the key segment
 // omitted for the default key.
 func OpenDecisionLine(story string, d decision.Decision) string {
 	line := story
@@ -245,7 +245,7 @@ func StoryKind(epicDir, story string) decision.Kind {
 	return decision.KindShip
 }
 
-// openDecisionsSection prints OPEN DECISIONS (fm-wake-drain.sh:444): every still-open decision, epic-wide, folded
+// openDecisionsSection prints OPEN DECISIONS (fm-wake-drain.sh:447): every still-open decision, epic-wide, folded
 // from the durable histories rather than from this drain's rows, bounded, and silent when nothing is open.
 func openDecisionsSection(buf *bytes.Buffer, hist []History) {
 	var items []string
@@ -283,7 +283,7 @@ func bounded(items []string) (shown []string, omitted int) {
 	return shown, omitted
 }
 
-// backstopSection prints STATUS OUTCOME BACKSTOP (fm-wake-drain.sh:304): per story, the newest recognised status
+// backstopSection prints STATUS OUTCOME BACKSTOP (fm-wake-drain.sh:307): per story, the newest recognised status
 // event, when it is captain-facing, not a parseable decision (those belong to the fold), not yet receipted, and not
 // covered by a wake row the leader handled or is being shown now. It returns the receipts to commit once presented.
 func backstopSection(buf *bytes.Buffer, epicDir string, hist []History) (map[string]int, error) {
@@ -441,7 +441,7 @@ func Handled(epicDir string) (int, error) {
 	return n, nil
 }
 
-// watcherDownBanner is the drain's liveness assertion (fm-wake-drain.sh:223 assert_watcher_liveness, fm-guard.sh
+// watcherDownBanner is the drain's liveness assertion (fm-wake-drain.sh:226 assert_watcher_liveness, fm-guard.sh
 // banner): stories in flight and no live watcher with a fresh beacon.
 func watcherDownBanner(epicDir string, alive func() bool) string {
 	events, _, err := state.Load(epicDir)

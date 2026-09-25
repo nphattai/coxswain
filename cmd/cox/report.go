@@ -32,7 +32,7 @@ func cmdStoryReport(args []string) int {
 	}
 	fs := flag.NewFlagSet("story report", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	epicDir := fs.String("epic", os.Getenv("COX_EPIC"), "epic directory")
+	epicDir := epicFlag(fs, os.Getenv("COX_EPIC"), "epic directory")
 	story := fs.String("story", os.Getenv("COX_STORY"), "story id")
 	note := fs.String("note", "", "status/done/stuck summary (3 sentences)")
 	body := fs.String("body", "", "question body")

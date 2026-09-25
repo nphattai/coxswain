@@ -27,7 +27,9 @@ var credRules = []struct {
 	name string
 	re   *regexp.Regexp
 }{
-	{"vn-phone", regexp.MustCompile(`0[35789][0-9]{8}`)},
+	// vn-phone is bounded by a non-alphanumeric or a line edge, so a digit run inside hex (a commit sha) or a longer
+	// number is not a phone (B-65).
+	{"vn-phone", regexp.MustCompile(`(?:^|[^0-9A-Za-z])0[35789][0-9]{8}(?:$|[^0-9A-Za-z])`)},
 	{"insurance-id", regexp.MustCompile(`INSU[0-9]{8,}`)},
 	{"jwt", regexp.MustCompile(`eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}`)},
 	{"password-literal", regexp.MustCompile(`password *[:=] *["'][^"']{3,}`)},

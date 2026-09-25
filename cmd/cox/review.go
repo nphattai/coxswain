@@ -80,7 +80,7 @@ func parseInterspersed(fs *flag.FlagSet, args []string) ([]string, bool) {
 func reviewOpen(args []string) int {
 	fs := flag.NewFlagSet("review open", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	epicDir := fs.String("epic", "", "epic directory")
+	epicDir := epicFlag(fs, "", "epic directory")
 	pos, ok := parseInterspersed(fs, args)
 	if !ok {
 		return 2
@@ -101,7 +101,7 @@ func reviewOpen(args []string) int {
 func reviewPoll(args []string) int {
 	fs := flag.NewFlagSet("review poll", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	epicDir := fs.String("epic", "", "epic directory")
+	epicDir := epicFlag(fs, "", "epic directory")
 	max := fs.Duration("max", 25*time.Minute, "how long to wait for feedback before timing out")
 	pos, ok := parseInterspersed(fs, args)
 	if !ok {
@@ -129,7 +129,7 @@ func reviewPoll(args []string) int {
 func reviewReply(args []string) int {
 	fs := flag.NewFlagSet("review reply", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	epicDir := fs.String("epic", "", "epic directory")
+	epicDir := epicFlag(fs, "", "epic directory")
 	max := fs.Duration("max", 25*time.Minute, "how long to wait for feedback after replying")
 	pos, ok := parseInterspersed(fs, args)
 	if !ok {
@@ -156,7 +156,7 @@ func reviewReply(args []string) int {
 func reviewShare(args []string) int {
 	fs := flag.NewFlagSet("review share", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	epicDir := fs.String("epic", "", "epic directory")
+	epicDir := epicFlag(fs, "", "epic directory")
 	share := fs.Bool("share", false, "publish to the third-party ht-ml.app host (outward-facing; required when policy review.share is false)")
 	pos, ok := parseInterspersed(fs, args)
 	if !ok {

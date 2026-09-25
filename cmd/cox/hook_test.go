@@ -773,7 +773,7 @@ func TestRewakeWaiterAliveNeedsIdentity(t *testing.T) {
 }
 
 // A signal to a waiter attached to a live watcher cycle records that cycle once as arm-interrupted with the signal's
-// exit status and exits 128+n (firstmate fm-watch-arm.sh:342 handle_attached_signal).
+// exit status and exits 128+n (firstmate fm-watch-arm.sh:349 handle_attached_signal).
 func TestStopRewakeSignalRecordsArmInterrupted(t *testing.T) {
 	epic := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(epic, controlDir, "watch"), 0o755); err != nil {

@@ -22,22 +22,27 @@ import (
 // controlDir is the per-epic control directory (mirrors state.ControlDir).
 const controlDir = ".cox"
 
-// modelAlias maps a bare model alias to its concrete id. `opus` resolves to claude-opus-4-8 (captain ruling
-// 2026-09-03: bare "opus" is NOT Opus 5; claude workers run Opus 4.8). Any other value passes through unchanged.
+// modelAlias maps a bare model alias to its concrete id for a caller with no policy in hand: `opus` resolves to
+// workspace.DefaultWorkerModel. A launch resolves the alias against policy instead (resolveWorkerModel). Any other value
+// passes through unchanged.
 func modelAlias(m string) string {
 	if m == "opus" {
-		return "claude-opus-4-8"
+		return workspace.DefaultWorkerModel
 	}
 	return m
 }
 
-// resolveWorkerModel resolves the --model a worker of harness `h` launches with. The alias (opus -> claude-opus-4-8) is
-// a claude-only convenience, so it is applied only for claude; a codex "opus" is left untouched. It then defers to
-// policy WorkerModel and warns to stderr when no default is found, so the launch omits --model and the harness picks
-// its own default rather than being handed another harness's model (M10c).
+// resolveWorkerModel resolves the --model a worker of harness `h` launches with. For claude, the `opus` alias follows
+// the policy's claude worker model when that is an Opus id (B-52: policy moved workers to claude-opus-5-5 while the
+// alias stayed hardcoded), else the built-in modelAlias; a codex "opus" is left untouched. It then defers to policy
+// WorkerModel and warns to stderr when no default is found, so the launch omits --model and the harness picks its own
+// default rather than being handed another harness's model (M10c).
 func resolveWorkerModel(pol *workspace.Policy, h, explicit string) string {
-	if h == "claude" {
+	if h == "claude" && explicit == "opus" {
 		explicit = modelAlias(explicit)
+		if m, ok := pol.WorkerModel("claude", ""); ok && strings.Contains(m, "opus") {
+			explicit = m
+		}
 	}
 	model, ok := pol.WorkerModel(h, explicit)
 	if !ok {

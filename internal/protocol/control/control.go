@@ -95,7 +95,7 @@ func ResolveHarness(name string) (harness.Harness, error) {
 	return nil, fmt.Errorf("harness %q has no verified control mechanics; refusing to guess at one", name)
 }
 
-// begin opens a lifecycle action on story (fm-control.sh:305-330): it takes the story's lifecycle lock FIRST, before any
+// begin opens a lifecycle action on story (fm-control.sh:311-336): it takes the story's lifecycle lock FIRST, before any
 // mutable state is read, then resolves the story - it must be recorded (dispatched: it has events), the session must be
 // bound to it (a session record naming another story is refused), and the Controller must carry a harness with verified
 // control mechanics. The returned release drops the lock; the caller holds it to its last write.
@@ -150,6 +150,12 @@ func sessionHandle(s backend.Session) string {
 // the agent running, so a settled agent afterwards is an error, and the stale pre-delivery proof is not published. The
 // event records ONE working->working attempt with {verb, delivered, verified, cancel}; cancel is always "unconfirmed"
 // because no cox harness acknowledges a cancellation. The story never leaves its state.
+//
+// A harness dialog (a permission/approval prompt or a question the worker asked locally, composer "blocked") is the
+// surface an interrupt can leave open (fm-control.sh dismiss_interrupt_hazard: the screen is re-read after the presses
+// and a surface that stays open fails the verb). After delivery the composer is re-read for dialogSettle; a dialog still
+// open fails the interrupt with the visible rows in the event (dialog: open), and nothing - not even the doorbell - is
+// typed into it (B-01: the verb used to print "ok" over the open dialog).
 func (c *Controller) Interrupt(story string, session backend.Session) error {
 	release, snap, err := c.begin(story, session)
 	if err != nil {
@@ -165,7 +171,6 @@ func (c *Controller) Interrupt(story string, session backend.Session) error {
 		if deliverErr = c.Backend.Interrupt(session); deliverErr == nil {
 			ev["delivered"] = true
 			ev["via"] = "backend"
-			_, _ = c.Backend.Send(session, inbox.Doorbell(inbox.Dir(c.EpicDir, story))) // ring so it reads its inbox now
 		} else {
 			ev["error"] = deliverErr.Error()
 		}
@@ -178,20 +183,28 @@ func (c *Controller) Interrupt(story string, session backend.Session) error {
 			ev["delivered"] = true
 			ev["via"] = "inbox+extension"
 			ev["interrupt_record"] = recPath
-			_, _ = c.Backend.Send(session, inbox.Doorbell(inbox.Dir(c.EpicDir, story))) // best-effort ring
 		}
 	}
 	var postErr error
 	if deliverErr == nil {
 		ev["cancel"] = "unconfirmed"
-		switch live, perr := c.Backend.Probe(session); {
-		case perr == nil && live == backend.Settled:
-			ev["agent_state"] = live.String()
-			postErr = fmt.Errorf("story %s's agent is '%s' after its interrupt; an interrupt must leave the agent running", story, live)
-		case perr == nil && live == backend.Alive:
-			ev["verified"] = "agent-alive"
-		default:
-			ev["verified"] = "unverified"
+		if rows, open := c.dialogOpen(session); open {
+			ev["dialog"] = "open"
+			if len(rows) > 0 {
+				ev["dialog_screen"] = rows
+			}
+			postErr = fmt.Errorf("story %s's worker is still on a local harness dialog (a permission or question prompt) after its interrupt; the interrupt did not close it and nothing was typed into it. Answer or dismiss it in the worker's terminal (never with Enter blind), then retry", story)
+		} else {
+			_, _ = c.Backend.Send(session, inbox.Doorbell(inbox.Dir(c.EpicDir, story))) // ring so it reads its inbox now
+			switch live, perr := c.Backend.Probe(session); {
+			case perr == nil && live == backend.Settled:
+				ev["agent_state"] = live.String()
+				postErr = fmt.Errorf("story %s's agent is '%s' after its interrupt; an interrupt must leave the agent running", story, live)
+			case perr == nil && live == backend.Alive:
+				ev["verified"] = "agent-alive"
+			default:
+				ev["verified"] = "unverified"
+			}
 		}
 	}
 	if err := state.Append(c.EpicDir, state.Event{
@@ -204,6 +217,40 @@ func (c *Controller) Interrupt(story string, session backend.Session) error {
 		return fmt.Errorf("interrupt not delivered (state unchanged): %w", deliverErr)
 	}
 	return postErr
+}
+
+// dialogSettle bounds how long an interrupt waits for a harness dialog its key may close (fm-control.sh
+// dismiss_interrupt_hazard reads the screen one press gap after the key; a dialog closes asynchronously, so poll).
+const dialogSettle = time.Second
+
+// dialogOpen reports whether the worker is still on a local harness dialog (onDialog) after up to dialogSettle (capped
+// by ExitWait, which tests shorten), with the rows on screen when it is. Any other state, including unknown, is not a
+// proven dialog.
+func (c *Controller) dialogOpen(session backend.Session) ([]string, bool) {
+	wait := dialogSettle
+	if w := c.exitWait(); w < wait {
+		wait = w
+	}
+	deadline := time.Now().Add(wait)
+	for {
+		if !c.onDialog(session) {
+			return nil, false
+		}
+		if !time.Now().Before(deadline) {
+			rows, _ := c.Backend.Screen(session)
+			return rows, true
+		}
+		time.Sleep(min(exitPoll, wait))
+	}
+}
+
+// onDialog reads the dialog state once: the backend's DialogReader when it has one, else a "blocked" composer.
+func (c *Controller) onDialog(session backend.Session) bool {
+	if d, ok := c.Backend.(backend.DialogReader); ok && d.Dialog(session) {
+		return true
+	}
+	cs, err := c.Backend.Composer(session)
+	return err == nil && cs == backend.ComposerBlocked
 }
 
 // Park stops a worker for later resume (fm-control.sh do_exit, with Stop = terminal close per ADR 0012). The agent's

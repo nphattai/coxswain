@@ -1,7 +1,7 @@
 # `busy.v1`
 
 The busy record is the harness-owned idle/busy fact for one story incarnation (ADR 0016), ported from firstmate's
-semantic busy-state contract (`bin/fm-busy-lib.sh`, `bin/fm-busy-event.sh` @1e0e773).
+semantic busy-state contract (`bin/fm-busy-lib.sh`, `bin/fm-busy-event.sh` @a8572f6).
 
 ## Files
 

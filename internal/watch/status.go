@@ -10,7 +10,7 @@ import (
 
 // Status-line grammar the watcher needs to triage a quiet worker, ported from firstmate bin/fm-classify-lib.sh
 // (status_line_verb, status_is_captain_relevant, status_is_paused, status_is_captain_held, status_paused_until; pinned
-// 1e0e773). A worker's status line is a status mail's subject (or a report's note); its verb is the word before the
+// a8572f6). A worker's status line is a status mail's subject (or a report's note); its verb is the word before the
 // first colon with any [tag] stripped. Captain relevance and the decision fold ([key=] open/close) are read through
 // internal/protocol/decision, the one classifier the watcher and the drain share.
 
@@ -24,9 +24,6 @@ var untilRE = regexp.MustCompile(`(?i)\suntil\s+(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?
 
 // corrRE is a correlation token (corr=<16 hex>) that status_line_verb drops from the verb words.
 var corrRE = regexp.MustCompile(`^\[?corr=[0-9a-f]{16}\]?$`)
-
-// tagRE is one before-colon [tag] token with its leading space (the emission-time stamp and friends).
-var tagRE = regexp.MustCompile(`\s*\[[^\]]*\]`)
 
 // statusVerb returns the leading verb of a status line: the text before the first colon, cut at the first '[', trimmed,
 // with correlation tokens dropped (status_line_verb).
@@ -63,16 +60,6 @@ func captainRelevantRE(line string, override *regexp.Regexp) bool {
 		o = override.String()
 	}
 	return decision.CaptainRelevant(line, o)
-}
-
-// unstamped drops the [tag] tokens before a line's first colon, so a stamped event still matches the regex.
-func unstamped(line string) string {
-	i := strings.Index(line, ":")
-	if i < 0 {
-		return line
-	}
-	head := tagRE.ReplaceAllString(line[:i], "")
-	return head + line[i:]
 }
 
 func statusPaused(line string) bool      { return statusVerb(line) == verbPaused }

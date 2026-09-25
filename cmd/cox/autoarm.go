@@ -15,7 +15,7 @@ import (
 )
 
 // The Claude turn-end contract, ported from firstmate bin/fm-turnend-guard.sh --claude, bin/fm-claude-stop-autoarm.sh
-// and the fm_autoarm_* / fm_failure_episode_reset helpers of bin/fm-wake-lib.sh (pinned 1e0e773;
+// and the fm_autoarm_* / fm_failure_episode_reset helpers of bin/fm-wake-lib.sh (pinned a8572f6;
 // docs/turnend-guard.md "Harness integrations"). Firstmate runs two Stop hooks - the guard and the asyncRewake
 // auto-arm - over one state dir; cox's stop-rewake is both in one process, over the epic's control dir:
 //

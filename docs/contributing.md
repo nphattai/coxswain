@@ -8,7 +8,6 @@ plug in without touching the engine.
 ```bash
 make install          # build + install cox
 go test -race ./...   # unit tests with fakes for every adapter, and the translated firstmate supervision corpus
-bats tests/hooks      # hook tests
 claude plugin validate .
 ```
 

@@ -7,10 +7,10 @@ package worktree
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 
 	"github.com/nphattai/coxswain/internal/adapter/backend"
+	"github.com/nphattai/coxswain/internal/boundexec"
 )
 
 // Ensure creates and verifies a story worktree. It returns the backend's Worktree only when the directory exists and
@@ -55,8 +55,7 @@ func (e *BranchMismatchError) Error() string {
 
 // currentBranch returns the checked-out branch of the git worktree at path.
 func currentBranch(path string) (string, error) {
-	cmd := exec.Command("git", "-C", path, "branch", "--show-current")
-	out, err := cmd.Output()
+	out, err := boundexec.Git("-C", path, "branch", "--show-current")
 	if err != nil {
 		return "", err
 	}

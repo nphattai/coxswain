@@ -1,6 +1,7 @@
 package workspace
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io/fs"
@@ -99,18 +100,87 @@ func StaleOptionNotices(onDisk, tmpl *Policy) []string {
 	return notices
 }
 
-// ScaffoldReport lists what a Scaffold run wrote (Created) and what it found already in place (Present), so the CLI can
-// tell a first-time user everything it made and tell a re-run that nothing was missing.
+// HealPolicy writes into the policy file at path every REQUIRED section (the ones Validate checks) whose top-level key is
+// absent, using the embedded template's section verbatim, and returns the keys it added in template order (captain
+// ruling 2026-09-25, B-43: a workspace policy that predates a required section, such as merge, otherwise fails every
+// command). It inserts text before the closing brace rather than re-marshalling, so every existing byte, key order and
+// value stays as written; a present section is never touched, even when invalid (Validate keeps naming it). A file that
+// is not a JSON object is an error naming the path.
+func HealPolicy(path string) ([]string, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var disk map[string]json.RawMessage
+	if err := json.Unmarshal(b, &disk); err != nil {
+		return nil, fmt.Errorf("parse %s: %w", path, err)
+	}
+	if disk == nil {
+		return nil, fmt.Errorf("parse %s: not a JSON object", path)
+	}
+	tb, err := templates.File("policy.json")
+	if err != nil {
+		return nil, err
+	}
+	var tmpl map[string]json.RawMessage
+	if err := json.Unmarshal(tb, &tmpl); err != nil {
+		return nil, fmt.Errorf("parse template policy: %w", err)
+	}
+	var added []string
+	var ins strings.Builder
+	for _, s := range (&Policy{}).sections() {
+		if _, ok := disk[s.name]; ok {
+			continue
+		}
+		if len(disk) > 0 || len(added) > 0 {
+			ins.WriteString(",")
+		}
+		fmt.Fprintf(&ins, "\n  %q: %s", s.name, tmpl[s.name])
+		added = append(added, s.name)
+	}
+	if len(added) == 0 {
+		return nil, nil
+	}
+	body := bytes.TrimRight(b, " \t\r\n")
+	body = bytes.TrimRight(body[:len(body)-1], " \t\r\n") // drop the closing brace of the object
+	out := append(append([]byte{}, body...), ins.String()+"\n}\n"...)
+	// Replace atomically: a crash or a full disk mid-write must never leave the captain's policy truncated.
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".policy.json.*")
+	if err != nil {
+		return nil, err
+	}
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.Write(out); err != nil {
+		tmp.Close()
+		return nil, err
+	}
+	if err := tmp.Close(); err != nil {
+		return nil, err
+	}
+	if err := os.Chmod(tmp.Name(), 0o644); err != nil {
+		return nil, err
+	}
+	if err := os.Rename(tmp.Name(), path); err != nil {
+		return nil, err
+	}
+	return added, nil
+}
+
+// ScaffoldReport lists what a Scaffold run wrote (Created), rewrote in place (Updated) and found already current
+// (Present), so the CLI can name every file a run changed.
 type ScaffoldReport struct {
 	Created []string
+	Updated []string
 	Present []string
 }
 
 func (r *ScaffoldReport) created(p string) { r.Created = append(r.Created, p) }
+func (r *ScaffoldReport) updated(p string) { r.Updated = append(r.Updated, p) }
 func (r *ScaffoldReport) present(p string) { r.Present = append(r.Present, p) }
 
-// Scaffold writes everything a leader needs under wsRoot, creating only what is missing and never rewriting a file that
-// exists (so a re-run is idempotent and a user-edited workspace.json/policy.json/AGENTS.md is never clobbered): the two
+// Scaffold writes everything a leader needs under wsRoot, creating only what is missing and never rewriting a user-owned
+// file (so a re-run is idempotent and a user-edited workspace.json/policy.json/AGENTS.md is never clobbered; the pinned
+// leader skills are the exception, refreshed from the embed by ensureSkills): the two
 // registry files and cox/services/ (via Init), a .gitignore covering the machine-bound paths, an AGENTS.md skeleton,
 // and the pinned leader skills under .agents/skills/. Hooks are written by the caller (they depend on the policy's
 // leader harness options). When workspace.json is absent, repos seeds it, so the caller must pass at least one repo in
@@ -135,10 +205,22 @@ func Scaffold(wsRoot string, repos []Repo) (ScaffoldReport, error) {
 	for _, c := range created {
 		rep.created(c)
 	}
-	// Everything Init did not (re)create is already present.
-	for _, p := range []string{wsPath, filepath.Join(wsRoot, ControlDir, "policy.json")} {
-		if !contains(created, p) {
-			rep.present(p)
+	// Everything Init did not (re)create is already present. An existing policy first gains any required section it
+	// predates (B-43), each named on its own Updated line. A policy that cannot be healed (unparseable) does not stop the
+	// rest of the scaffold: its error is returned once everything else is in place.
+	var healErr error
+	if !contains(created, wsPath) {
+		rep.present(wsPath)
+	}
+	polPath := filepath.Join(wsRoot, ControlDir, "policy.json")
+	if !contains(created, polPath) {
+		added, err := HealPolicy(polPath)
+		healErr = err
+		for _, k := range added {
+			rep.updated(fmt.Sprintf("%s (+%s from template)", polPath, k))
+		}
+		if len(added) == 0 && err == nil {
+			rep.present(polPath)
 		}
 	}
 
@@ -155,7 +237,7 @@ func Scaffold(wsRoot string, repos []Repo) (ScaffoldReport, error) {
 	if err := ensureSkills(wsRoot, &rep); err != nil {
 		return rep, err
 	}
-	return rep, nil
+	return rep, healErr
 }
 
 // DetectProduction returns a git checkout's default branch: the short name of origin/HEAD (e.g. "main" from
@@ -262,23 +344,27 @@ func ensureFile(dest, tmpl string, rep *ScaffoldReport) error {
 	return nil
 }
 
-// ensureSkills copies the embedded leader skills under <ws>/.agents/skills/, writing only files that are missing.
+// ensureSkills copies the embedded leader skills under <ws>/.agents/skills/. They are pinned copies of the driver's
+// skills, not user-owned (B-72): a missing file is written, a file whose content differs from the embed is rewritten and
+// reported in Updated, so a driver upgrade followed by init leaves the workspace current. Files the embed does not carry
+// are never touched.
 func ensureSkills(wsRoot string, rep *ScaffoldReport) error {
 	base := filepath.Join(wsRoot, ".agents", "skills")
 	missing := 0
-	present := 0
 	err := fs.WalkDir(skills.FS, ".", func(p string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return err
 		}
-		dest := filepath.Join(base, p)
-		if fileExists(dest) {
-			present++
-			return nil
-		}
 		b, rErr := skills.FS.ReadFile(p)
 		if rErr != nil {
 			return rErr
+		}
+		dest := filepath.Join(base, p)
+		existed := fileExists(dest)
+		if existed {
+			if cur, cErr := os.ReadFile(dest); cErr == nil && bytes.Equal(cur, b) {
+				return nil
+			}
 		}
 		if mErr := os.MkdirAll(filepath.Dir(dest), 0o755); mErr != nil {
 			return mErr
@@ -286,7 +372,11 @@ func ensureSkills(wsRoot string, rep *ScaffoldReport) error {
 		if wErr := os.WriteFile(dest, b, 0o644); wErr != nil {
 			return wErr
 		}
-		missing++
+		if existed {
+			rep.updated(dest)
+		} else {
+			missing++
+		}
 		return nil
 	})
 	if err != nil {

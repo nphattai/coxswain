@@ -40,7 +40,7 @@ func cmdShip(args []string) int {
 func cmdShipFacts(args []string) int {
 	fs := flag.NewFlagSet("ship facts", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	epicDir := fs.String("epic", "", "epic directory")
+	epicDir := epicFlag(fs, "", "epic directory")
 	asJSON := fs.Bool("json", false, "emit JSON")
 	noForge := fs.Bool("no-forge", false, "skip the GitHub forge probe (PR/checks/merged stay unknown)")
 	if err := fs.Parse(args[1:]); err != nil {
@@ -116,7 +116,7 @@ func cmdShipFacts(args []string) int {
 func cmdShipMerge(args []string) int {
 	fs := flag.NewFlagSet("ship merge", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	epicDir := fs.String("epic", "", "epic directory")
+	epicDir := epicFlag(fs, "", "epic directory")
 	prNumber := fs.Int("pr", 0, "PR number to merge")
 	method := fs.String("method", "squash", "merge method: squash|merge|rebase")
 	check := fs.Bool("check", false, "read and print the verdict, but never merge or write the ledger")
@@ -180,8 +180,52 @@ func runShipMerge(epicDir string, in verdict.MergeInput, f forge.Forge) int {
 	case verdict.MergeUndetermined:
 		return 3
 	default:
+		if recordLandedMerge(epicDir, in, rep, f) {
+			return 0
+		}
 		return 1
 	}
+}
+
+// recordLandedMerge covers the re-run after an unknown read-back (#45 follow-up): the earlier `cox ship merge` merged the
+// PR but could not confirm it, so it wrote no ledger row, and this run refuses the now-merged PR on the state gate. When
+// that is the only refusal (mergeability of a merged PR is moot), the PR reads merged live, and the ledger has no
+// `merged` row for it yet, the row is written now and the merge counts as done. It cannot tell a merge an earlier cox
+// run made from one done by hand, so the row says only what it saw ("already merged when this run read it"). Never
+// under --check.
+func recordLandedMerge(epicDir string, in verdict.MergeInput, rep verdict.MergeReport, f forge.Forge) bool {
+	if in.Check {
+		return false
+	}
+	for _, r := range rep.Reasons {
+		if !strings.HasPrefix(r, "state: ") && !strings.HasPrefix(r, "mergeable: ") {
+			return false // authority, base, draft or a failed check still refuses
+		}
+	}
+	pr, err := f.PR(in.Selector)
+	if err != nil || pr.State != "merged" {
+		return false
+	}
+	events, _, err := state.Load(epicDir)
+	if err != nil {
+		return false
+	}
+	for _, ev := range events {
+		if n, ok := ev.Evidence["pr"].(float64); ok && ev.Type == state.Merged && int(n) == pr.Number {
+			return false // already recorded: a plain refusal
+		}
+	}
+	if err := state.AppendLedger(epicDir, state.Event{
+		Type: state.Merged, Epic: filepath.Base(epicDir), Story: state.EpicStory, Actor: state.Captain,
+		Evidence: map[string]any{"pr": pr.Number, "head": pr.Head, "method": in.Method, "by": mergeBy(in.Captain),
+			"recorded": "already merged when this run read it"},
+		ExternalConfirmed: true,
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "cox: record merged event: %v\n", err)
+		return false
+	}
+	fmt.Printf("  PR #%d was already merged and the ledger had no row for it; recorded in %s\n", pr.Number, state.LedgerPath(epicDir))
+	return true
 }
 
 // mergeBy names who ran the merge for the ledger `by` field: "captain" when --captain, else the terminal handle, else

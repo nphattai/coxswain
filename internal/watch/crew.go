@@ -13,7 +13,7 @@ import (
 )
 
 // Crew state: the cox reading of firstmate's crew_absorb_class / crew_is_provably_working (bin/fm-classify-lib.sh over
-// bin/fm-crew-state.sh, pinned 1e0e773). Firstmate absorbs a benign wake only on POSITIVE evidence the crew is still
+// bin/fm-crew-state.sh, pinned a8572f6). Firstmate absorbs a benign wake only on POSITIVE evidence the crew is still
 // executing: an actively running no-mistakes step, or a busy pane. The cox observables are, in order:
 //
 //   - run-step: the story PR has CI checks running at its live head (captain ruling 2026-09-24), read through the forge

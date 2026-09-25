@@ -20,6 +20,7 @@ import (
 	"github.com/nphattai/coxswain/internal/adapter/forge"
 	"github.com/nphattai/coxswain/internal/adapter/forge/github"
 	"github.com/nphattai/coxswain/internal/bearings"
+	"github.com/nphattai/coxswain/internal/boundexec"
 	"github.com/nphattai/coxswain/internal/state"
 	"github.com/nphattai/coxswain/internal/workspace"
 )
@@ -91,8 +92,16 @@ func cmdBearings(args []string) int {
 			return 0
 		}
 		defer unlock()
-		// A hard backstop past the stage's own wait, so a wedged probe can never outlive the worker's bound for long.
-		time.AfterFunc(deferredBound+30*time.Second, func() { os.Exit(3) })
+		// A hard backstop past the stage's own wait, so a wedged probe can never outlive the worker's bound for long. It
+		// leaves the failed record the next digest prints (firstmate 5842d42: a worker ended at its bound says so and how
+		// to rerun), never a silent exit.
+		time.AfterFunc(deferredBound+30*time.Second, func() {
+			if err := writeDeferredBackstop(ws, deferredBound+30*time.Second); err != nil {
+				fmt.Fprintf(os.Stderr, "cox bearings deferred: failed record: %v\n", err)
+			}
+			boundexec.KillLive() // the wedged stage's bounded commands end with the worker
+			os.Exit(3)
+		})
 		o := bearingsOpts(ws, "", *harness, false)
 		if *leader != "" {
 			o.LeaderID = *leader
@@ -107,6 +116,26 @@ func cmdBearings(args []string) int {
 		fmt.Fprintln(os.Stderr, bearingsUsage)
 		return 2
 	}
+}
+
+// writeDeferredBackstop writes the deferred worker's failed record (internal/bearings DeferredFailed reads and the next
+// digest prints it) for a worker the hard backstop is about to end: what happened and the rerun command. The format is
+// the one internal/bearings writes for a missed publish.
+func writeDeferredBackstop(ws string, bound time.Duration) error {
+	path := filepath.Join(ws, bearings.RuntimeDir, bearings.DeferredFailedFile)
+	body := strings.Join([]string{
+		"state=failed",
+		fmt.Sprintf("reason: the deferred worker (pid %d) was still running at its hard bound (%s) and was ended; its results were not published.", os.Getpid(), bound),
+		"rerun: cox bearings deferred --root " + ws,
+	}, "\n") + "\n"
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, []byte(body), 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 // bearingsSessionStart is the leader session-start hook's entry point (cox hook session-start calls it): a startup or

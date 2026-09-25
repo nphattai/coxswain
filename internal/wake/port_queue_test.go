@@ -2,7 +2,7 @@
 // fm-wake-drain-unread-status, fm-wake-drain-open-decisions, fm-wake-drain-open-decisions-cursor,
 // fm-wake-drain-outcome-backstop, fm-wake-daemon-lifecycle-e2e) and docs/wedge-alarm.md translated case by case against
 // cox's wake queue (wake.Append/Drain/AckThrough/Load), the `cox wake` verbs, worker reports and questions, and the
-// watcher's leader-doorbell alarm. Firstmate pinned at 1e0e773 (references/firstmate, read only). Every case is
+// watcher's leader-doorbell alarm. Firstmate pinned at a8572f6 (references/firstmate, read only). Every case is
 // t.Run("FM/<suite>/<case>") with a `// fm: <path>:<line>` citation. A failure names its cox mechanism as
 // red[<mechanism>] or notImplemented[<mechanism>]; red is the deliverable (DESIGN translation contract). This is an
 // external test package so it can drive the watcher (which imports wake) without an import cycle.
@@ -164,7 +164,7 @@ func cox(t *testing.T, args ...string) (string, string, int) {
 }
 
 func TestPortWakeQueue(t *testing.T) {
-	// fm: tests/fm-wake-queue.test.sh:22
+	// fm: tests/fm-wake-queue.test.sh:22@a8572f6
 	t.Run("FM/fm-wake-queue/concurrent_append_and_drain", func(t *testing.T) {
 		epic := newEpic(t)
 		var wg sync.WaitGroup
@@ -207,7 +207,7 @@ func TestPortWakeQueue(t *testing.T) {
 		}
 	})
 
-	// fm: tests/fm-wake-queue.test.sh:57 (a worker report written while no watcher runs is durable at once on the
+	// fm: tests/fm-wake-queue.test.sh:57@a8572f6 (a worker report written while no watcher runs is durable at once on the
 	// terminal plane: report.Report appends the wake itself, so the next drain catches it up)
 	t.Run("FM/fm-wake-queue/signal_catchup_without_running_watcher", func(t *testing.T) {
 		epic := newEpic(t)
@@ -225,18 +225,18 @@ func TestPortWakeQueue(t *testing.T) {
 		}
 	})
 
-	// fm: tests/fm-wake-queue.test.sh:89 (the stale wake is the stalePass unknown_probe wake; its suppressor is the
+	// fm: tests/fm-wake-queue.test.sh:89@a8572f6 (the stale wake is the stalePass unknown_probe wake; its suppressor is the
 	// heartbeat bump, which must not advance when the enqueue failed)
 	t.Run("FM/fm-wake-queue/stale_enqueue_before_suppressor", func(t *testing.T) {
 		staleEnqueueBeforeSuppressor(t, nil)
 	})
 
-	// fm: tests/fm-wake-queue.test.sh:123 (not provably working: the probe itself errors)
+	// fm: tests/fm-wake-queue.test.sh:123@a8572f6 (not provably working: the probe itself errors)
 	t.Run("FM/fm-wake-queue/not_working_stale_enqueue_before_suppressor", func(t *testing.T) {
 		staleEnqueueBeforeSuppressor(t, errors.New("probe: terminal gone"))
 	})
 
-	// fm: tests/fm-wake-queue.test.sh:157
+	// fm: tests/fm-wake-queue.test.sh:157@a8572f6
 	t.Run("FM/fm-wake-queue/check_output_is_queued", func(t *testing.T) {
 		epic := newEpic(t)
 		control := filepath.Join(epic, state.ControlDir)
@@ -258,7 +258,7 @@ func TestPortWakeQueue(t *testing.T) {
 		}
 	})
 
-	// fm: tests/fm-wake-queue.test.sh:181
+	// fm: tests/fm-wake-queue.test.sh:181@a8572f6
 	t.Run("FM/fm-wake-queue/atomic_double_drain", func(t *testing.T) {
 		epic := newEpic(t)
 		appendN(t, epic, wake.KindStatus, "heartbeat", "signal: task", "stale: s:fm-task")
@@ -280,7 +280,7 @@ func TestPortWakeQueue(t *testing.T) {
 		}
 	})
 
-	// fm: tests/fm-wake-queue.test.sh:213
+	// fm: tests/fm-wake-queue.test.sh:213@a8572f6
 	t.Run("FM/fm-wake-queue/drain_dedupes_obvious_duplicates", func(t *testing.T) {
 		epic := newEpic(t)
 		for _, n := range []string{"phase 2 building", "phase 2 building", "phase 2 building (turn ended)"} {
@@ -294,19 +294,19 @@ func TestPortWakeQueue(t *testing.T) {
 		}
 	})
 
-	// n/a secondmate_foreign_queue_stall_tracks_progress_and_alerts_once fm:tests/fm-wake-queue.test.sh:265 - secondmates are firstmate-only (DESIGN rule 5)
-	// n/a secondmate_declared_pause_rows_do_not_feed_stall_escalation fm:tests/fm-wake-queue.test.sh:339 - secondmates are firstmate-only
-	// n/a secondmate_reprovisioned_queue_starts_a_fresh_interval fm:tests/fm-wake-queue.test.sh:387 - secondmates are firstmate-only
-	// n/a secondmate_active_turn_defers_stall_until_the_turn_ends fm:tests/fm-wake-queue.test.sh:449 - secondmates are firstmate-only
-	// n/a secondmate_long_lived_mate_mid_turn_is_not_a_stall fm:tests/fm-wake-queue.test.sh:516 - secondmates are firstmate-only
-	// n/a secondmate_proven_idle_ring_lets_the_child_drain fm:tests/fm-wake-queue.test.sh:625 - secondmates are firstmate-only
-	// n/a secondmate_busy_and_unknown_panes_are_not_rung fm:tests/fm-wake-queue.test.sh:687 - secondmates are firstmate-only
-	// n/a secondmate_genuine_stall_after_idle_ring_still_alarms fm:tests/fm-wake-queue.test.sh:746 - secondmates are firstmate-only
-	// n/a secondmate_stall_marker_rejects_symlink fm:tests/fm-wake-queue.test.sh:805 - secondmates are firstmate-only
-	// n/a acknowledged_stall_publication_survives_pre_marker_crash fm:tests/fm-wake-queue.test.sh:844 - secondmate wake-loop stall publication, firstmate-only
-	// n/a empty_prefix_mate_preserves_other_mate_receipt fm:tests/fm-wake-queue.test.sh:883 - secondmate homes, firstmate-only
+	// n/a secondmate_foreign_queue_stall_tracks_progress_and_alerts_once fm:tests/fm-wake-queue.test.sh:266@a8572f6 - secondmates are firstmate-only (DESIGN rule 5)
+	// n/a secondmate_declared_pause_rows_do_not_feed_stall_escalation fm:tests/fm-wake-queue.test.sh:567@a8572f6 - secondmates are firstmate-only
+	// n/a secondmate_reprovisioned_queue_starts_a_fresh_interval fm:tests/fm-wake-queue.test.sh:615@a8572f6 - secondmates are firstmate-only
+	// n/a secondmate_active_turn_defers_stall_until_the_turn_ends fm:tests/fm-wake-queue.test.sh:677@a8572f6 - secondmates are firstmate-only
+	// n/a secondmate_long_lived_mate_mid_turn_is_not_a_stall fm:tests/fm-wake-queue.test.sh:743@a8572f6 - secondmates are firstmate-only
+	// n/a secondmate_proven_idle_ring_lets_the_child_drain fm:tests/fm-wake-queue.test.sh:851@a8572f6 - secondmates are firstmate-only
+	// n/a secondmate_busy_and_unknown_panes_are_not_rung fm:tests/fm-wake-queue.test.sh:913@a8572f6 - secondmates are firstmate-only
+	// n/a secondmate_genuine_stall_after_idle_ring_still_alarms fm:tests/fm-wake-queue.test.sh:972@a8572f6 - secondmates are firstmate-only
+	// n/a secondmate_stall_marker_rejects_symlink fm:tests/fm-wake-queue.test.sh:1031@a8572f6 - secondmates are firstmate-only
+	// n/a acknowledged_stall_publication_survives_pre_marker_crash fm:tests/fm-wake-queue.test.sh:1069@a8572f6 - secondmate wake-loop stall publication, firstmate-only
+	// n/a empty_prefix_mate_preserves_other_mate_receipt fm:tests/fm-wake-queue.test.sh:1108@a8572f6 - secondmate homes, firstmate-only
 
-	// fm: tests/fm-wake-queue.test.sh:934 (work in flight and no live watcher: the drain warns; a live watcher whose
+	// fm: tests/fm-wake-queue.test.sh:1163@a8572f6 (work in flight and no live watcher: the drain warns; a live watcher whose
 	// beacon (.cox/watch/lasttick) is fresh keeps it silent)
 	t.Run("FM/fm-wake-queue/drain_asserts_watcher_liveness", func(t *testing.T) {
 		epic := newEpic(t)
@@ -326,14 +326,14 @@ func TestPortWakeQueue(t *testing.T) {
 		}
 	})
 
-	// n/a structural_signal_enrichment_preserves_raw_rows fm:tests/fm-wake-queue.test.sh:959 - drain-time enrichment from firstmate status files; a cox wake carries its report body itself
-	// n/a enrichment_preserves_all_unread_lines_and_status_file_failures fm:tests/fm-wake-queue.test.sh:1017 - status-file annotation, firstmate-only
-	// n/a slow_annotation_does_not_block_append_and_deleted_file_fails_open fm:tests/fm-wake-queue.test.sh:1073 - status-file annotation, firstmate-only
-	// n/a branch_actor_scoped_ack_never_swallows_a_main_owned_row fm:tests/fm-wake-queue.test.sh:1107 - per-actor grants for firstmate's Pi supervision branch; cox has one leader consumer per epic
-	// n/a main_drain_excludes_rows_already_granted_to_branch fm:tests/fm-wake-queue.test.sh:1165 - per-actor grants, firstmate-only
-	// n/a main_is_never_told_to_drain_rows_only_the_branch_owns fm:tests/fm-wake-queue.test.sh:1209 - per-actor grants, firstmate-only
+	// n/a structural_signal_enrichment_preserves_raw_rows fm:tests/fm-wake-queue.test.sh:1188@a8572f6 - drain-time enrichment from firstmate status files; a cox wake carries its report body itself
+	// n/a enrichment_preserves_all_unread_lines_and_status_file_failures fm:tests/fm-wake-queue.test.sh:1246@a8572f6 - status-file annotation, firstmate-only
+	// n/a slow_annotation_does_not_block_append_and_deleted_file_fails_open fm:tests/fm-wake-queue.test.sh:1302@a8572f6 - status-file annotation, firstmate-only
+	// n/a branch_actor_scoped_ack_never_swallows_a_main_owned_row fm:tests/fm-wake-queue.test.sh:1336@a8572f6 - per-actor grants for firstmate's Pi supervision branch; cox has one leader consumer per epic
+	// n/a main_drain_excludes_rows_already_granted_to_branch fm:tests/fm-wake-queue.test.sh:1394@a8572f6 - per-actor grants, firstmate-only
+	// n/a main_is_never_told_to_drain_rows_only_the_branch_owns fm:tests/fm-wake-queue.test.sh:1438@a8572f6 - per-actor grants, firstmate-only
 
-	// fm: tests/fm-wake-queue.test.sh:1267 (a queue that cannot be read is never reported as empty)
+	// fm: tests/fm-wake-queue.test.sh:1496@a8572f6 (a queue that cannot be read is never reported as empty)
 	t.Run("FM/fm-wake-queue/uncountable_queue_still_raises_the_pending_alarm", func(t *testing.T) {
 		if os.Geteuid() == 0 {
 			t.Skip("root reads mode-000 files (environment)")
@@ -352,7 +352,7 @@ func TestPortWakeQueue(t *testing.T) {
 		}
 	})
 
-	// fm: tests/fm-wake-queue.test.sh:1314
+	// fm: tests/fm-wake-queue.test.sh:1543@a8572f6
 	t.Run("FM/fm-wake-queue/unconsumable_rows_are_retired_instead_of_wedging_the_queue", func(t *testing.T) {
 		epic := newEpic(t)
 		appendN(t, epic, wake.KindStatus, "signal: task-a")
@@ -373,12 +373,12 @@ func TestPortWakeQueue(t *testing.T) {
 		}
 	})
 
-	// n/a branch_grant_refuses_rows_already_claimed_by_main fm:tests/fm-wake-queue.test.sh:1362 - per-actor grants, firstmate-only
-	// n/a actor_filter_precedes_same_key_deduplication fm:tests/fm-wake-queue.test.sh:1381 - per-actor grants, firstmate-only
-	// n/a main_reclaims_a_grant_whose_branch_owner_exited fm:tests/fm-wake-queue.test.sh:1412 - per-actor grants, firstmate-only
-	// n/a branch_actor_without_eligible_snapshot_refuses fm:tests/fm-wake-queue.test.sh:1448 - per-actor grants, firstmate-only
+	// n/a branch_grant_refuses_rows_already_claimed_by_main fm:tests/fm-wake-queue.test.sh:1591@a8572f6 - per-actor grants, firstmate-only
+	// n/a actor_filter_precedes_same_key_deduplication fm:tests/fm-wake-queue.test.sh:1648@a8572f6 - per-actor grants, firstmate-only
+	// n/a main_reclaims_a_grant_whose_branch_owner_exited fm:tests/fm-wake-queue.test.sh:1679@a8572f6 - per-actor grants, firstmate-only
+	// n/a branch_actor_without_eligible_snapshot_refuses fm:tests/fm-wake-queue.test.sh:1715@a8572f6 - per-actor grants, firstmate-only
 
-	// fm: tests/fm-wake-queue.test.sh:1461 (a failed publish leaves no durable row and a retry is recovered by the drain;
+	// fm: tests/fm-wake-queue.test.sh:1728@a8572f6 (a failed publish leaves no durable row and a retry is recovered by the drain;
 	// cox has no recovery marker, the append itself is the publish)
 	t.Run("FM/fm-wake-queue/wake_publish_requires_atomic_recovery_evidence", func(t *testing.T) {
 		epic := newEpic(t)
@@ -394,7 +394,7 @@ func TestPortWakeQueue(t *testing.T) {
 		}
 	})
 
-	// fm: tests/fm-wake-queue.test.sh:1500 (a row written before the current schema/gen format)
+	// fm: tests/fm-wake-queue.test.sh:1767@a8572f6 (a row written before the current schema/gen format)
 	t.Run("FM/fm-wake-queue/legacy_generationless_wake_is_adopted", func(t *testing.T) {
 		epic := newEpic(t)
 		must(t, os.MkdirAll(filepath.Join(epic, wake.ControlDir), 0o755))
@@ -410,7 +410,7 @@ func TestPortWakeQueue(t *testing.T) {
 		}
 	})
 
-	// fm: tests/fm-wake-queue.test.sh:1535
+	// fm: tests/fm-wake-queue.test.sh:1802@a8572f6
 	t.Run("FM/fm-wake-queue/stale_recovery_generation_cannot_touch_a_newer_episode", func(t *testing.T) {
 		epic := newEpic(t)
 		g := appendN(t, epic, wake.KindStatus, "first", "second")
@@ -422,7 +422,7 @@ func TestPortWakeQueue(t *testing.T) {
 		}
 	})
 
-	// fm: tests/fm-wake-queue.test.sh:1622
+	// fm: tests/fm-wake-queue.test.sh:1889@a8572f6
 	t.Run("FM/fm-wake-queue/stale_ack_that_consumes_nothing_names_the_current_wake", func(t *testing.T) {
 		epic := newEpic(t)
 		g := appendN(t, epic, wake.KindStatus, "first", "current")
@@ -434,9 +434,9 @@ func TestPortWakeQueue(t *testing.T) {
 		}
 	})
 
-	// n/a branch_stale_ack_that_consumes_nothing_names_its_granted_wake fm:tests/fm-wake-queue.test.sh:1672 - per-actor grants, firstmate-only
+	// n/a branch_stale_ack_that_consumes_nothing_names_its_granted_wake fm:tests/fm-wake-queue.test.sh:1939@a8572f6 - per-actor grants, firstmate-only
 
-	// fm: tests/fm-wake-queue.test.sh:1714 (an acknowledgement whose write fails is explicit and retryable)
+	// fm: tests/fm-wake-queue.test.sh:1981@a8572f6 (an acknowledgement whose write fails is explicit and retryable)
 	t.Run("FM/fm-wake-queue/recovery_ack_failure_is_reported", func(t *testing.T) {
 		epic := newEpic(t)
 		g := appendN(t, epic, wake.KindStatus, "fixture")
@@ -454,7 +454,7 @@ func TestPortWakeQueue(t *testing.T) {
 		}
 	})
 
-	// fm: tests/fm-wake-queue.test.sh:1757 (a drain never consumes, so an interruption at any point keeps the row
+	// fm: tests/fm-wake-queue.test.sh:2024@a8572f6 (a drain never consumes, so an interruption at any point keeps the row
 	// until the post-handling acknowledgement)
 	t.Run("FM/fm-wake-queue/interruption_before_and_after_raw_commit", func(t *testing.T) {
 		epic := newEpic(t)
@@ -473,15 +473,15 @@ func TestPortWakeQueue(t *testing.T) {
 		}
 	})
 
-	// n/a self_announced_append_guards fm:tests/fm-wake-queue.test.sh:1820 - self-announced status-file appends and seen-signature gate, firstmate-only
-	// n/a separate_self_announced_answers_after_fold_are_owned fm:tests/fm-wake-queue.test.sh:1912 - owned-append ledger over status files, firstmate-only
-	// n/a unreadable_status_is_not_owned fm:tests/fm-wake-queue.test.sh:1970 - owned-append ledger over status files, firstmate-only
-	// n/a folded_worker_resolved_is_not_owned_lag fm:tests/fm-wake-queue.test.sh:2016 - owned-append ledger over status files, firstmate-only
-	// n/a self_held_lock_reclaims_instead_of_deadlocking fm:tests/fm-wake-queue.test.sh:2052 - bash trap re-entry into a mkdir lock; cox holds flock on an fd the kernel releases
-	// n/a subshell_lock_ownership_without_bashpid fm:tests/fm-wake-queue.test.sh:2078 - bash subshell/BASHPID lock ownership
-	// n/a bounded_lock_handoff_after_contention fm:tests/fm-wake-queue.test.sh:2108 - bash helper-process lock handoff
+	// n/a self_announced_append_guards fm:tests/fm-wake-queue.test.sh:2087@a8572f6 - self-announced status-file appends and seen-signature gate, firstmate-only
+	// n/a separate_self_announced_answers_after_fold_are_owned fm:tests/fm-wake-queue.test.sh:2179@a8572f6 - owned-append ledger over status files, firstmate-only
+	// n/a unreadable_status_is_not_owned fm:tests/fm-wake-queue.test.sh:2237@a8572f6 - owned-append ledger over status files, firstmate-only
+	// n/a folded_worker_resolved_is_not_owned_lag fm:tests/fm-wake-queue.test.sh:2283@a8572f6 - owned-append ledger over status files, firstmate-only
+	// n/a self_held_lock_reclaims_instead_of_deadlocking fm:tests/fm-wake-queue.test.sh:2319@a8572f6 - bash trap re-entry into a mkdir lock; cox holds flock on an fd the kernel releases
+	// n/a subshell_lock_ownership_without_bashpid fm:tests/fm-wake-queue.test.sh:2345@a8572f6 - bash subshell/BASHPID lock ownership
+	// n/a bounded_lock_handoff_after_contention fm:tests/fm-wake-queue.test.sh:2375@a8572f6 - bash helper-process lock handoff
 
-	// fm: tests/fm-wake-queue.test.sh:2181 (a stuck lock holder never strands the drain, while acknowledgement keeps its
+	// fm: tests/fm-wake-queue.test.sh:2448@a8572f6 (a stuck lock holder never strands the drain, while acknowledgement keeps its
 	// blocking all-or-nothing contract)
 	t.Run("FM/fm-wake-queue/live_presentation_holder_is_deadlined_without_weakening_ack", func(t *testing.T) {
 		epic := newEpic(t)
@@ -508,9 +508,54 @@ func TestPortWakeQueue(t *testing.T) {
 		}
 	})
 
-	// n/a malformed_presentation_lock_reports_acquire_failure fm:tests/fm-wake-queue.test.sh:2324 - cox has no presentation lock file (flock on an fd, no pid payload to malform)
-	// n/a owned_growth_still_annotates_turn_ended fm:tests/fm-wake-queue.test.sh:2354 - owned-append ledger and turn-ended annotation over status files, firstmate-only
-	// n/a historical_annotation_skips_announced_status fm:tests/fm-wake-queue.test.sh:2396 - status-file historical annotation, firstmate-only
+	// fm: tests/fm-wake-queue.test.sh:1615@a8572f6 (main legs only; the branch grant legs are per-actor grants, n/a)
+	t.Run("FM/fm-wake-queue/main_ack_leaves_a_row_that_arrived_after_its_drain_unclaimed", func(t *testing.T) {
+		epic := newEpic(t)
+		g := appendN(t, epic, wake.KindStatus, "presented")
+		if ws := drain(t, epic); len(ws) != 1 || ws[0].Gen != g[0] {
+			t.Fatalf("drain presented %v, want the one row", notes(ws))
+		}
+		late := appendN(t, epic, wake.KindStuck, "arrived after the drain")
+		must(t, wake.AckThrough(epic, g[0]))
+		ws := drain(t, epic)
+		if len(ws) != 1 || ws[0].Gen != late[0] {
+			red(t, "wake.ack", "an acknowledgement through the presented row swallowed a row that arrived after the drain: %v", notes(ws))
+		}
+	})
+
+	// fm: tests/fm-wake-queue.test.sh:2708@a8572f6 (teardown prunes only the torn-down task's stale, signal and check
+	// rows; cox's release of a story prunes its story-scoped supervision rows and keeps every decision row)
+	t.Run("FM/fm-wake-queue/prune_task", func(t *testing.T) {
+		epic := newEpic(t)
+		add := func(st string, k wake.Kind, note string) int {
+			g, err := wake.Append(epic, wake.Wake{Epic: filepath.Base(epic), Story: st, Kind: k, Note: note})
+			must(t, err)
+			return g
+		}
+		add("task-a", wake.KindStale, "stale: task-a")
+		add("task-a", wake.KindStatus, "signal: task-a status")
+		add("task-a", wake.KindIdleNoDone, "idle: task-a turn ended")
+		add("task-a", wake.KindCheck, "check: task-a merged")
+		add("task-a", wake.KindWorkerDone, "done: task-a")
+		add("task-b", wake.KindStale, "stale: task-b")
+		add("task-b", wake.KindStatus, "signal: task-b status")
+		top := add("task-a", wake.KindUnknownProbe, "probe: task-a")
+		n, err := wake.PruneStory(epic, "task-a")
+		must(t, err)
+		got := notes(drain(t, epic))
+		want := []string{"done: task-a", "stale: task-b", "signal: task-b status"}
+		if n != 5 || strings.Join(got, "|") != strings.Join(want, "|") {
+			red(t, "wake.prune", "prune removed %d row(s), left %v; want 5 removed and %v", n, got, want)
+		}
+		// Generations never move: the pruned newest gen is not reused, so an ack a drain already printed stays exact.
+		if g := add("task-b", wake.KindCheck, "check: task-b"); g <= top {
+			red(t, "wake.prune", "the next append reused gen %d after a prune removed gen %d", g, top)
+		}
+	})
+
+	// n/a malformed_presentation_lock_reports_acquire_failure fm:tests/fm-wake-queue.test.sh:2591@a8572f6 - cox has no presentation lock file (flock on an fd; its "pid=N" payload is informational, never parsed as the lock)
+	// n/a owned_growth_still_annotates_turn_ended fm:tests/fm-wake-queue.test.sh:2621@a8572f6 - owned-append ledger and turn-ended annotation over status files, firstmate-only
+	// n/a historical_annotation_skips_announced_status fm:tests/fm-wake-queue.test.sh:2663@a8572f6 - status-file historical annotation, firstmate-only
 }
 
 // staleEnqueueBeforeSuppressor drives the watcher's stale probe over a silent worker while the queue cannot be written:
@@ -519,19 +564,23 @@ func staleEnqueueBeforeSuppressor(t *testing.T, probeErr error) {
 	t.Helper()
 	epic := newEpic(t)
 	hb := filepath.Join(epic, state.ControlDir, "watch", "hb", "ctx_"+story)
-	must(t, os.MkdirAll(filepath.Dir(hb), 0o755))
-	must(t, os.WriteFile(hb, nil, 0o644))
-	old := time.Now().Add(-time.Hour)
-	must(t, os.Chtimes(hb, old, old))
-	// fm primes .hash-$key to the pane's current hash (fm-wake-queue.test.sh:105,137): the quiet interval is already
-	// running. cox's analog is the story's activity signature (no busy record, no activity: "-|").
-	sig := filepath.Join(epic, state.ControlDir, "watch", "sig", story)
-	must(t, os.MkdirAll(filepath.Dir(sig), 0o755))
-	must(t, os.WriteFile(sig, []byte("-|"), 0o644))
 	stale := filepath.Join(epic, state.ControlDir, "watch", "stale", story) // fm .stale-$key, the stale suppressor
 	b := fake.New()
 	b.Liveness = backend.Unknown
 	w := &watch.Watcher{EpicDir: epic, Backend: b, StaleMin: time.Minute}
+	// fm primes .hash-$key to the pane's current hash (fm-wake-queue.test.sh:105,137): the quiet interval is already
+	// running. cox's analog is the story's activity signature, recorded by a first watcher tick (never written by hand:
+	// its encoding is the watch package's), after which the quiet clock is aged past StaleMin.
+	_, _ = w.Tick()
+	if ws := drain(t, epic); len(ws) != 0 {
+		t.Fatalf("the priming tick raised %d wake(s), want none: %v", len(ws), notes(ws))
+	}
+	old := time.Now().Add(-time.Hour)
+	must(t, os.MkdirAll(filepath.Dir(hb), 0o755))
+	if _, err := os.Stat(hb); os.IsNotExist(err) {
+		must(t, os.WriteFile(hb, nil, 0o644))
+	}
+	must(t, os.Chtimes(hb, old, old))
 	must(t, os.Mkdir(queuePath(epic), 0o755)) // enqueue fails
 	if probeErr != nil {
 		b.FailNext("Probe", probeErr)
@@ -576,7 +625,7 @@ func ask(t *testing.T, epic, body string) string {
 }
 
 func TestPortWakeDrainUnreadStatus(t *testing.T) {
-	// fm: tests/fm-wake-drain-unread-status.test.sh:28
+	// fm: tests/fm-wake-drain-unread-status.test.sh:28@a8572f6
 	t.Run("FM/fm-wake-drain-unread-status/incident_note_answer_buried_under_routine_note_surfaces_both", func(t *testing.T) {
 		epic := newEpic(t)
 		for _, n := range []string{"captain said use REST not RPC", "re-read acknowledgement"} {
@@ -589,7 +638,7 @@ func TestPortWakeDrainUnreadStatus(t *testing.T) {
 		}
 	})
 
-	// fm: tests/fm-wake-drain-unread-status.test.sh:50
+	// fm: tests/fm-wake-drain-unread-status.test.sh:50@a8572f6
 	t.Run("FM/fm-wake-drain-unread-status/already_presented_notes_are_not_replayed", func(t *testing.T) {
 		epic := newEpic(t)
 		g, err := report.Report(epic, story, 1, report.KindStatus, "captain said use REST not RPC", nil)
@@ -600,7 +649,7 @@ func TestPortWakeDrainUnreadStatus(t *testing.T) {
 		}
 	})
 
-	// fm: tests/fm-wake-drain-unread-status.test.sh:77
+	// fm: tests/fm-wake-drain-unread-status.test.sh:77@a8572f6
 	t.Run("FM/fm-wake-drain-unread-status/brand_new_note_after_presentation_is_surfaced", func(t *testing.T) {
 		epic := newEpic(t)
 		g, err := report.Report(epic, story, 1, report.KindStatus, "first answer", nil)
@@ -613,7 +662,7 @@ func TestPortWakeDrainUnreadStatus(t *testing.T) {
 		}
 	})
 
-	// fm: tests/fm-wake-drain-unread-status.test.sh:100 (every unread report is presented beside the queued signal)
+	// fm: tests/fm-wake-drain-unread-status.test.sh:100@a8572f6 (every unread report is presented beside the queued signal)
 	t.Run("FM/fm-wake-drain-unread-status/signal_annotation_surfaces_every_unread_note_not_only_the_newest", func(t *testing.T) {
 		epic := newEpic(t)
 		for _, n := range []string{"captain said use REST not RPC", "re-read acknowledgement"} {
@@ -626,7 +675,7 @@ func TestPortWakeDrainUnreadStatus(t *testing.T) {
 		}
 	})
 
-	// fm: tests/fm-wake-drain-unread-status.test.sh:126 (a pending reply resolves once; B-53: a reply the worker already
+	// fm: tests/fm-wake-drain-unread-status.test.sh:126@a8572f6 (a pending reply resolves once; B-53: a reply the worker already
 	// consumed through `cox question wait` must not keep counting as an unread inbox steer, or the runaway rule fires)
 	t.Run("FM/fm-wake-drain-unread-status/pending_reply_resolution_surfaces_once", func(t *testing.T) {
 		epic := newEpic(t)
@@ -644,10 +693,10 @@ func TestPortWakeDrainUnreadStatus(t *testing.T) {
 		b := fake.New()
 		b.Liveness = backend.Alive
 		clock := time.Now().Add(2 * time.Hour)
-		w := &watch.Watcher{EpicDir: epic, Backend: b, InboxGrace: time.Second, RunawayMin: time.Minute, Now: func() time.Time { return clock }}
+		w := &watch.Watcher{EpicDir: epic, Backend: b, InboxGrace: time.Second, Now: func() time.Time { return clock }}
 		_, _ = w.Tick()
 		for _, wk := range drain(t, epic) {
-			if wk.Kind == wake.KindRunaway {
+			if wk.Kind == "runaway" { // the retired runaway kind (B-03)
 				red(t, "watch.runaway-consumed-reply", "B-53: a reply already consumed by `cox question wait` counted as unread and raised a runaway (%s)", wk.Note)
 			}
 		}
@@ -657,9 +706,9 @@ func TestPortWakeDrainUnreadStatus(t *testing.T) {
 		}
 	})
 
-	// n/a self_announced_pending_reply_close_still_surfaces fm:tests/fm-wake-drain-unread-status.test.sh:165 - watcher-authored pending-reply escalation close over a status file; cox never escalates a pending reply
+	// n/a self_announced_pending_reply_close_still_surfaces fm:tests/fm-wake-drain-unread-status.test.sh:165@a8572f6 - watcher-authored pending-reply escalation close over a status file; cox never escalates a pending reply
 
-	// fm: tests/fm-wake-drain-unread-status.test.sh:222 (the 200-char note is a cap on the line, the full body survives)
+	// fm: tests/fm-wake-drain-unread-status.test.sh:222@a8572f6 (the 200-char note is a cap on the line, the full body survives)
 	t.Run("FM/fm-wake-drain-unread-status/unread_output_over_cap_remains_recoverable", func(t *testing.T) {
 		epic := newEpic(t)
 		long := strings.Repeat("x", 20000)
@@ -675,7 +724,7 @@ func TestPortWakeDrainUnreadStatus(t *testing.T) {
 		}
 	})
 
-	// fm: tests/fm-wake-drain-unread-status.test.sh:247
+	// fm: tests/fm-wake-drain-unread-status.test.sh:247@a8572f6
 	t.Run("FM/fm-wake-drain-unread-status/snapshot_does_not_ack_a_later_append", func(t *testing.T) {
 		epic := newEpic(t)
 		g := appendN(t, epic, wake.KindStatus, "presented")
@@ -687,7 +736,7 @@ func TestPortWakeDrainUnreadStatus(t *testing.T) {
 		}
 	})
 
-	// fm: tests/fm-wake-drain-unread-status.test.sh:275 (a re-dispatched story id starts unread)
+	// fm: tests/fm-wake-drain-unread-status.test.sh:275@a8572f6 (a re-dispatched story id starts unread)
 	t.Run("FM/fm-wake-drain-unread-status/retired_task_id_starts_new_status_unread", func(t *testing.T) {
 		epic := newEpic(t)
 		g, err := report.Report(epic, story, 1, report.KindDone, "old incarnation done", nil)
@@ -700,9 +749,9 @@ func TestPortWakeDrainUnreadStatus(t *testing.T) {
 		}
 	})
 
-	// n/a weak_identity_still_presents_and_advances fm:tests/fm-wake-drain-unread-status.test.sh:333 - status-file inode identity fallback, firstmate-only
+	// n/a weak_identity_still_presents_and_advances fm:tests/fm-wake-drain-unread-status.test.sh:333@a8572f6 - status-file inode identity fallback, firstmate-only
 
-	// fm: tests/fm-wake-drain-unread-status.test.sh:352
+	// fm: tests/fm-wake-drain-unread-status.test.sh:352@a8572f6
 	t.Run("FM/fm-wake-drain-unread-status/snapshot_failure_is_visible", func(t *testing.T) {
 		epic := newEpic(t)
 		must(t, os.MkdirAll(filepath.Join(epic, wake.ControlDir), 0o755))
@@ -714,7 +763,7 @@ func TestPortWakeDrainUnreadStatus(t *testing.T) {
 		}
 	})
 
-	// fm: tests/fm-wake-drain-unread-status.test.sh:364 (the open-decision fold runs independently of unread status: a
+	// fm: tests/fm-wake-drain-unread-status.test.sh:364@a8572f6 (the open-decision fold runs independently of unread status: a
 	// buried decision and an unread note surface together, and a resolution clears the decision everywhere)
 	t.Run("FM/fm-wake-drain-unread-status/open_decisions_fold_is_unchanged", func(t *testing.T) {
 		epic := newEpic(t)
@@ -749,7 +798,7 @@ func TestPortWakeDrainUnreadStatus(t *testing.T) {
 		}
 	})
 
-	// fm: tests/fm-wake-drain-unread-status.test.sh:393
+	// fm: tests/fm-wake-drain-unread-status.test.sh:393@a8572f6
 	t.Run("FM/fm-wake-drain-unread-status/empty_queue_does_not_swallow_later_signal_annotation", func(t *testing.T) {
 		epic := newEpic(t)
 		if ws := drain(t, epic); len(ws) != 0 {
@@ -762,7 +811,7 @@ func TestPortWakeDrainUnreadStatus(t *testing.T) {
 		}
 	})
 
-	// fm: tests/fm-wake-drain-unread-status.test.sh:415
+	// fm: tests/fm-wake-drain-unread-status.test.sh:415@a8572f6
 	t.Run("FM/fm-wake-drain-unread-status/routine_working_and_covered_done_stay_silent_on_the_empty_queue", func(t *testing.T) {
 		epic := newEpic(t)
 		g, err := report.Report(epic, story, 1, report.KindDone, "covered done", nil)
@@ -850,7 +899,7 @@ func openQuestionOnDrain(t *testing.T, epic, text string) bool {
 }
 
 func TestPortWakeDrainOpenDecisions(t *testing.T) {
-	// fm: tests/fm-wake-drain-open-decisions.test.sh:18
+	// fm: tests/fm-wake-drain-open-decisions.test.sh:18@a8572f6
 	t.Run("FM/fm-wake-drain-open-decisions/buried_decision_still_surfaces", func(t *testing.T) {
 		epic := newEpic(t)
 		ask(t, epic, "pick REST or RPC")
@@ -872,7 +921,7 @@ func TestPortWakeDrainOpenDecisions(t *testing.T) {
 		wantLine(t, out, "OPEN DECISIONS: close one by answering it:", "open section is missing the answerer-closes hint")
 	})
 
-	// fm: tests/fm-wake-drain-open-decisions.test.sh:40 (answering closes it: the question leaves the open set)
+	// fm: tests/fm-wake-drain-open-decisions.test.sh:40@a8572f6 (answering closes it: the question leaves the open set)
 	t.Run("FM/fm-wake-drain-open-decisions/explicit_resolution_closes_it", func(t *testing.T) {
 		epic := newEpic(t)
 		id := ask(t, epic, "pick REST or RPC")
@@ -886,9 +935,9 @@ func TestPortWakeDrainOpenDecisions(t *testing.T) {
 		}
 	})
 
-	// n/a reserved_key_namespace_is_owned_by_its_library fm:tests/fm-wake-drain-open-decisions.test.sh:57 - reserved decision keys owned by firstmate libraries (pending-reply-*)
+	// n/a reserved_key_namespace_is_owned_by_its_library fm:tests/fm-wake-drain-open-decisions.test.sh:57@a8572f6 - reserved decision keys owned by firstmate libraries (pending-reply-*)
 
-	// fm: tests/fm-wake-drain-open-decisions.test.sh:88 (no story file: kind unknown, so done: supersedes nothing)
+	// fm: tests/fm-wake-drain-open-decisions.test.sh:88@a8572f6 (no story file: kind unknown, so done: supersedes nothing)
 	t.Run("FM/fm-wake-drain-open-decisions/later_unrelated_terminal_line_does_not_close_it", func(t *testing.T) {
 		epic := newEpic(t)
 		ask(t, epic, "pick REST or RPC")
@@ -908,7 +957,7 @@ func TestPortWakeDrainOpenDecisions(t *testing.T) {
 		wantLine(t, out, "task3 [key=api-shape] needs-decision: pick REST or RPC", "a later unrelated terminal line incorrectly cleared the open decision")
 	})
 
-	// fm: tests/fm-wake-drain-open-decisions.test.sh:105
+	// fm: tests/fm-wake-drain-open-decisions.test.sh:105@a8572f6
 	t.Run("FM/fm-wake-drain-open-decisions/no_open_decisions_prints_nothing", func(t *testing.T) {
 		epic := newEpic(t)
 		if out, _, _ := cox(t, "wake", "drain", "--epic", epic); strings.TrimSpace(out) != "" {
@@ -916,7 +965,7 @@ func TestPortWakeDrainOpenDecisions(t *testing.T) {
 		}
 	})
 
-	// fm: tests/fm-wake-drain-open-decisions.test.sh:122
+	// fm: tests/fm-wake-drain-open-decisions.test.sh:122@a8572f6
 	t.Run("FM/fm-wake-drain-open-decisions/open_decision_surfaces_even_with_an_unrelated_queued_wake", func(t *testing.T) {
 		epic := newEpic(t)
 		ask(t, epic, "pick REST or RPC")
@@ -927,7 +976,7 @@ func TestPortWakeDrainOpenDecisions(t *testing.T) {
 		wantLine(t, out, "pick REST or RPC", "the open-question section is not epic-wide")
 	})
 
-	// fm: tests/fm-wake-drain-open-decisions.test.sh:144
+	// fm: tests/fm-wake-drain-open-decisions.test.sh:144@a8572f6
 	t.Run("FM/fm-wake-drain-open-decisions/buried_decision_surfaces_on_the_empty_queue_fast_path", func(t *testing.T) {
 		epic := newEpic(t)
 		ask(t, epic, "pick REST or RPC")
@@ -940,9 +989,9 @@ func TestPortWakeDrainOpenDecisions(t *testing.T) {
 		}
 	})
 
-	// n/a status_symlink_is_not_followed fm:tests/fm-wake-drain-open-decisions.test.sh:161 - fleet-wide status-file scan, firstmate-only
+	// n/a status_symlink_is_not_followed fm:tests/fm-wake-drain-open-decisions.test.sh:161@a8572f6 - fleet-wide status-file scan, firstmate-only
 
-	// fm: tests/fm-wake-drain-open-decisions.test.sh:186 (the item line is cut to 219 characters with the shared
+	// fm: tests/fm-wake-drain-open-decisions.test.sh:186@a8572f6 (the item line is cut to 219 characters with the shared
 	// " [truncated]" marker, its lede intact; a short item is untouched)
 	t.Run("FM/fm-wake-drain-open-decisions/over_long_decision_note_is_capped_with_a_marker", func(t *testing.T) {
 		epic := newEpic(t)
@@ -965,7 +1014,7 @@ func TestPortWakeDrainOpenDecisions(t *testing.T) {
 }
 
 func TestPortWakeDrainOpenDecisionsCursor(t *testing.T) {
-	// fm: tests/fm-wake-drain-open-decisions-cursor.test.sh:42
+	// fm: tests/fm-wake-drain-open-decisions-cursor.test.sh:42@a8572f6
 	t.Run("FM/fm-wake-drain-open-decisions-cursor/buried_decision_survives_many_growing_drains_and_resolution_clears_it", func(t *testing.T) {
 		epic := newEpic(t)
 		id := ask(t, epic, "pick REST or RPC")
@@ -987,10 +1036,10 @@ func TestPortWakeDrainOpenDecisionsCursor(t *testing.T) {
 		}
 	})
 
-	// n/a truncated_log_falls_back_to_a_full_refold_not_a_dropped_decision fm:tests/fm-wake-drain-open-decisions-cursor.test.sh:113 - status-log rewrite and fold cursor, firstmate-only
-	// n/a same_size_rewrite_is_detected_via_inode_identity fm:tests/fm-wake-drain-open-decisions-cursor.test.sh:146 - status-log inode rotation, firstmate-only
+	// n/a truncated_log_falls_back_to_a_full_refold_not_a_dropped_decision fm:tests/fm-wake-drain-open-decisions-cursor.test.sh:113@a8572f6 - status-log rewrite and fold cursor, firstmate-only
+	// n/a same_size_rewrite_is_detected_via_inode_identity fm:tests/fm-wake-drain-open-decisions-cursor.test.sh:146@a8572f6 - status-log inode rotation, firstmate-only
 
-	// fm: tests/fm-wake-drain-open-decisions-cursor.test.sh:187 (a failed presentation read keeps the cursor for retry)
+	// fm: tests/fm-wake-drain-open-decisions-cursor.test.sh:187@a8572f6 (a failed presentation read keeps the cursor for retry)
 	t.Run("FM/fm-wake-drain-open-decisions-cursor/read_failure_preserves_state_for_retry", func(t *testing.T) {
 		if os.Geteuid() == 0 {
 			t.Skip("root reads mode-000 files (environment)")
@@ -1008,11 +1057,11 @@ func TestPortWakeDrainOpenDecisionsCursor(t *testing.T) {
 		}
 	})
 
-	// n/a cursor_cache_read_failure_refolds_without_replaying_unread_status fm:tests/fm-wake-drain-open-decisions-cursor.test.sh:224 - fold cache over status files, firstmate-only
-	// n/a pre_fix_cursor_refolds_corr_tagged_decision fm:tests/fm-wake-drain-open-decisions-cursor.test.sh:276 - fold cache versioning, firstmate-only
-	// n/a previous_fold_cache_is_refolded_under_current_semantics fm:tests/fm-wake-drain-open-decisions-cursor.test.sh:309 - fold cache versioning, firstmate-only
+	// n/a cursor_cache_read_failure_refolds_without_replaying_unread_status fm:tests/fm-wake-drain-open-decisions-cursor.test.sh:224@a8572f6 - fold cache over status files, firstmate-only
+	// n/a pre_fix_cursor_refolds_corr_tagged_decision fm:tests/fm-wake-drain-open-decisions-cursor.test.sh:276@a8572f6 - fold cache versioning, firstmate-only
+	// n/a previous_fold_cache_is_refolded_under_current_semantics fm:tests/fm-wake-drain-open-decisions-cursor.test.sh:309@a8572f6 - fold cache versioning, firstmate-only
 
-	// fm: tests/fm-wake-drain-open-decisions-cursor.test.sh:350 (a ship/scout terminal report supersedes the story's open
+	// fm: tests/fm-wake-drain-open-decisions-cursor.test.sh:350@a8572f6 (a ship/scout terminal report supersedes the story's open
 	// decisions; a secondmate's does not; a reopening after it surfaces again. The cache-migration pass is n/a: cox
 	// keeps no fold cache)
 	t.Run("FM/fm-wake-drain-open-decisions-cursor/terminal_supersession_reaches_cached_drains", func(t *testing.T) {
@@ -1067,12 +1116,12 @@ func TestPortWakeDrainOpenDecisionsCursor(t *testing.T) {
 		}
 	})
 
-	// n/a kind_changes_invalidate_folded_decisions fm:tests/fm-wake-drain-open-decisions-cursor.test.sh:397 - task-kind evidence cache, firstmate-only
+	// n/a kind_changes_invalidate_folded_decisions fm:tests/fm-wake-drain-open-decisions-cursor.test.sh:397@a8572f6 - task-kind evidence cache, firstmate-only
 }
 
 func TestPortWakeDrainOutcomeBackstop(t *testing.T) {
 	const mech = "wake.outcome-backstop"
-	// fm: tests/fm-wake-drain-outcome-backstop.test.sh:32 (a captain-facing latest status event whose wake was never
+	// fm: tests/fm-wake-drain-outcome-backstop.test.sh:32@a8572f6 (a captain-facing latest status event whose wake was never
 	// handled - its row lost, or acknowledged past without being named - resurfaces on the next drain)
 	t.Run("FM/fm-wake-drain-outcome-backstop/uncovered_keyless_captain_events_surface_on_the_next_main_drain", func(t *testing.T) {
 		epic := newEpic(t)
@@ -1092,7 +1141,7 @@ func TestPortWakeDrainOutcomeBackstop(t *testing.T) {
 		wantLine(t, out, "decision-task needs-decision: choose REST or RPC", "keyless needs-decision event did not surface through OPEN DECISIONS")
 	})
 
-	// fm: tests/fm-wake-drain-outcome-backstop.test.sh:59 (cox: a handled wake is the covering outcome)
+	// fm: tests/fm-wake-drain-outcome-backstop.test.sh:59@a8572f6 (cox: a handled wake is the covering outcome)
 	t.Run("FM/fm-wake-drain-outcome-backstop/newer_task_outcome_and_routine_latest_events_stay_silent", func(t *testing.T) {
 		epic := newEpic(t)
 		g, err := report.Report(epic, "covered", 1, report.KindDone, "done: already delivered completion", nil)
@@ -1105,7 +1154,7 @@ func TestPortWakeDrainOutcomeBackstop(t *testing.T) {
 		}
 	})
 
-	// fm: tests/fm-wake-drain-outcome-backstop.test.sh:81
+	// fm: tests/fm-wake-drain-outcome-backstop.test.sh:81@a8572f6
 	t.Run("FM/fm-wake-drain-outcome-backstop/older_or_other_task_outcome_cannot_hide_a_new_captain_event", func(t *testing.T) {
 		epic := newEpic(t)
 		for _, s := range []string{"same-task", "unrelated-task"} {
@@ -1121,9 +1170,9 @@ func TestPortWakeDrainOutcomeBackstop(t *testing.T) {
 		wantLine(t, body, "no-task-outcome PR ready for review", "another task's newer outcome hid a captain-facing event")
 	})
 
-	// n/a branch_annotation_cannot_consume_the_main_resurfacing_backstop fm:tests/fm-wake-drain-outcome-backstop.test.sh:103 - Pi supervision-branch actor, firstmate-only
+	// n/a branch_annotation_cannot_consume_the_main_resurfacing_backstop fm:tests/fm-wake-drain-outcome-backstop.test.sh:103@a8572f6 - Pi supervision-branch actor, firstmate-only
 
-	// fm: tests/fm-wake-drain-outcome-backstop.test.sh:141 (every event here lands in the same second; the history
+	// fm: tests/fm-wake-drain-outcome-backstop.test.sh:141@a8572f6 (every event here lands in the same second; the history
 	// position, not the timestamp, separates handled from later)
 	t.Run("FM/fm-wake-drain-outcome-backstop/same_second_outcome_uses_status_causal_position", func(t *testing.T) {
 		epic := newEpic(t)
@@ -1138,9 +1187,9 @@ func TestPortWakeDrainOutcomeBackstop(t *testing.T) {
 		wantLine(t, out, "same-second failed: genuinely later same-second event", "a later same-second status was hidden by the older outcome")
 	})
 
-	// n/a drain_does_not_scan_append_only_outcome_history fm:tests/fm-wake-drain-outcome-backstop.test.sh:168 - cost bound of firstmate's append-only outcome-history store
+	// n/a drain_does_not_scan_append_only_outcome_history fm:tests/fm-wake-drain-outcome-backstop.test.sh:168@a8572f6 - cost bound of firstmate's append-only outcome-history store
 
-	// fm: tests/fm-wake-drain-outcome-backstop.test.sh:189
+	// fm: tests/fm-wake-drain-outcome-backstop.test.sh:189@a8572f6
 	t.Run("FM/fm-wake-drain-outcome-backstop/successful_backstop_is_idempotent_without_consuming_delayed_annotation", func(t *testing.T) {
 		epic := newEpic(t)
 		statusLine(t, epic, "receipt-task", "done: keyless completion awaiting recovery")
@@ -1155,7 +1204,7 @@ func TestPortWakeDrainOutcomeBackstop(t *testing.T) {
 		wantLine(t, out, "worker_done receipt-task: done: keyless completion awaiting recovery", "the backstop receipt consumed the delayed wake")
 	})
 
-	// fm: tests/fm-wake-drain-outcome-backstop.test.sh:217 (the output consumer fails: wake.Present's writer)
+	// fm: tests/fm-wake-drain-outcome-backstop.test.sh:217@a8572f6 (the output consumer fails: wake.Present's writer)
 	t.Run("FM/fm-wake-drain-outcome-backstop/output_failure_does_not_commit_the_backstop_receipt", func(t *testing.T) {
 		epic := newEpic(t)
 		statusLine(t, epic, "output-task", "done: retry after the output consumer fails")
@@ -1167,7 +1216,7 @@ func TestPortWakeDrainOutcomeBackstop(t *testing.T) {
 		wantLine(t, retry.String(), "output-task done: retry after the output consumer fails", "the output failure consumed the backstop receipt")
 	})
 
-	// fm: tests/fm-wake-drain-outcome-backstop.test.sh:248 (the receipt's atomic write cannot land)
+	// fm: tests/fm-wake-drain-outcome-backstop.test.sh:248@a8572f6 (the receipt's atomic write cannot land)
 	t.Run("FM/fm-wake-drain-outcome-backstop/receipt_commit_failure_repeats_the_already_presented_backstop", func(t *testing.T) {
 		epic := newEpic(t)
 		statusLine(t, epic, "atomic-task", "done: presentation precedes its durable receipt")
@@ -1185,7 +1234,7 @@ func TestPortWakeDrainOutcomeBackstop(t *testing.T) {
 		}
 	})
 
-	// fm: tests/fm-wake-drain-outcome-backstop.test.sh:284
+	// fm: tests/fm-wake-drain-outcome-backstop.test.sh:284@a8572f6
 	t.Run("FM/fm-wake-drain-outcome-backstop/rejected_decision_line_surfaces_once_through_backstop", func(t *testing.T) {
 		epic := newEpic(t)
 		statusLine(t, epic, "rejected", "blocked [key=bad/value]: credential missing")
@@ -1199,9 +1248,9 @@ func TestPortWakeDrainOutcomeBackstop(t *testing.T) {
 		}
 	})
 
-	// n/a missing_index_self_heals_on_first_drain fm:tests/fm-wake-drain-outcome-backstop.test.sh:306 - outcome index store, firstmate-only
+	// n/a missing_index_self_heals_on_first_drain fm:tests/fm-wake-drain-outcome-backstop.test.sh:306@a8572f6 - outcome index store, firstmate-only
 
-	// fm: tests/fm-wake-drain-outcome-backstop.test.sh:331 (a fresh epic: status history, no receipts)
+	// fm: tests/fm-wake-drain-outcome-backstop.test.sh:331@a8572f6 (a fresh epic: status history, no receipts)
 	t.Run("FM/fm-wake-drain-outcome-backstop/uncovered_event_surfaces_on_first_drain_without_index", func(t *testing.T) {
 		epic := newEpic(t)
 		statusLine(t, epic, "fresh", "done: uncovered completion with no index")
@@ -1210,12 +1259,12 @@ func TestPortWakeDrainOutcomeBackstop(t *testing.T) {
 		wantLine(t, backstopBody(out), "fresh done: uncovered completion with no index", "uncovered status did not surface on the first drain")
 	})
 
-	// n/a malformed_outcome_store_fails_closed_without_pi_advice fm:tests/fm-wake-drain-outcome-backstop.test.sh:358 - outcome store and Pi restart advice, firstmate-only
-	// n/a held_lock_mode_rejects_an_unlocked_caller fm:tests/fm-wake-drain-outcome-backstop.test.sh:383 - bash process-tree lock inheritance
-	// n/a held_lock_mode_accepts_a_lock_owner_descendant fm:tests/fm-wake-drain-outcome-backstop.test.sh:402 - bash process-tree lock inheritance
-	// n/a index_self_heal_runs_under_the_outcome_lock fm:tests/fm-wake-drain-outcome-backstop.test.sh:423 - outcome index store, firstmate-only
+	// n/a malformed_outcome_store_fails_closed_without_pi_advice fm:tests/fm-wake-drain-outcome-backstop.test.sh:358@a8572f6 - outcome store and Pi restart advice, firstmate-only
+	// n/a held_lock_mode_rejects_an_unlocked_caller fm:tests/fm-wake-drain-outcome-backstop.test.sh:383@a8572f6 - bash process-tree lock inheritance
+	// n/a held_lock_mode_accepts_a_lock_owner_descendant fm:tests/fm-wake-drain-outcome-backstop.test.sh:402@a8572f6 - bash process-tree lock inheritance
+	// n/a index_self_heal_runs_under_the_outcome_lock fm:tests/fm-wake-drain-outcome-backstop.test.sh:423@a8572f6 - outcome index store, firstmate-only
 
-	// fm: tests/fm-wake-drain-outcome-backstop.test.sh:469
+	// fm: tests/fm-wake-drain-outcome-backstop.test.sh:469@a8572f6
 	t.Run("FM/fm-wake-drain-outcome-backstop/overbound_routine_event_stays_silent", func(t *testing.T) {
 		epic := newEpic(t)
 		statusLine(t, epic, "oversized", "working: "+strings.Repeat("x", 70000))
@@ -1224,7 +1273,7 @@ func TestPortWakeDrainOutcomeBackstop(t *testing.T) {
 		}
 	})
 
-	// fm: tests/fm-wake-drain-outcome-backstop.test.sh:483
+	// fm: tests/fm-wake-drain-outcome-backstop.test.sh:483@a8572f6
 	t.Run("FM/fm-wake-drain-outcome-backstop/backstop_output_is_bounded", func(t *testing.T) {
 		epic := newEpic(t)
 		payload := strings.Repeat("0", 300)
@@ -1254,7 +1303,7 @@ func TestPortWakeDrainOutcomeBackstop(t *testing.T) {
 }
 
 func TestPortWakeDaemonLifecycle(t *testing.T) {
-	// fm: tests/fm-wake-daemon-lifecycle-e2e.test.sh:61 (queue-facing half: a routine report queues, a terminal report
+	// fm: tests/fm-wake-daemon-lifecycle-e2e.test.sh:61@a8572f6 (queue-facing half: a routine report queues, a terminal report
 	// written while the watcher is down is caught on restart, exactly once, and a later watcher pass does not duplicate
 	// it; the afk daemon's buffer and pane injection are n/a)
 	t.Run("FM/fm-wake-daemon-lifecycle-e2e/routine_then_terminal_after_restart", func(t *testing.T) {
@@ -1278,7 +1327,7 @@ func TestPortWakeDaemonLifecycle(t *testing.T) {
 		}
 	})
 
-	// n/a stale_pane_transient_persistent_resume fm:tests/fm-wake-daemon-lifecycle-e2e.test.sh:122 - tmux pane-hash staleness and the afk daemon's escalation buffer, firstmate-only
+	// n/a stale_pane_transient_persistent_resume fm:tests/fm-wake-daemon-lifecycle-e2e.test.sh:122@a8572f6 - tmux pane-hash staleness and the afk daemon's escalation buffer, firstmate-only
 }
 
 // failSend is a backend whose leader doorbell never lands (a dead leader terminal).
@@ -1308,7 +1357,7 @@ func wedgeRig(t *testing.T, channel string, ticks int) (string, []alarm) {
 }
 
 func TestPortWedgeAlarm(t *testing.T) {
-	// fm: docs/wedge-alarm.md:4 (delivery to the primary unconfirmed past a bound raises one out-of-band alarm)
+	// fm: docs/wedge-alarm.md:4@a8572f6 (delivery to the primary unconfirmed past a bound raises one out-of-band alarm)
 	t.Run("FM/wedge-alarm/unconfirmed_delivery_past_bound_raises_alarm", func(t *testing.T) {
 		_, got := wedgeRig(t, "command:true", watch.DoorbellFailAlarm)
 		if len(got) != 1 || !strings.Contains(got[0].summary, "leader doorbell failed") {
@@ -1316,7 +1365,7 @@ func TestPortWedgeAlarm(t *testing.T) {
 		}
 	})
 
-	// fm: docs/wedge-alarm.md:11 (every listed non-off channel fires, best-effort)
+	// fm: docs/wedge-alarm.md:11@a8572f6 (every listed non-off channel fires, best-effort)
 	t.Run("FM/wedge-alarm/every_listed_channel_fires", func(t *testing.T) {
 		_, got := wedgeRig(t, "osascript\ncommand:true", watch.DoorbellFailAlarm)
 		if len(got) != 2 {
@@ -1324,9 +1373,9 @@ func TestPortWedgeAlarm(t *testing.T) {
 		}
 	})
 
-	// n/a env_override_single_directive fm:docs/wedge-alarm.md:12 - FM_WEDGE_ALARM_CHANNEL test override; cox's test seam is Watcher.AlarmRun (case test_seam_records_channel_and_summary)
+	// n/a env_override_single_directive fm:docs/wedge-alarm.md:12@a8572f6 - FM_WEDGE_ALARM_CHANNEL test override; cox's test seam is Watcher.AlarmRun (case test_seam_records_channel_and_summary)
 
-	// fm: docs/wedge-alarm.md:14 (off silences the active alert and keeps the durable marker)
+	// fm: docs/wedge-alarm.md:14@a8572f6 (off silences the active alert and keeps the durable marker)
 	t.Run("FM/wedge-alarm/off_disables_active_alerts_retaining_durable_marker", func(t *testing.T) {
 		epic, got := wedgeRig(t, "off", watch.DoorbellFailAlarm)
 		if len(got) != 0 {
@@ -1341,7 +1390,7 @@ func TestPortWedgeAlarm(t *testing.T) {
 		}
 	})
 
-	// fm: docs/wedge-alarm.md:15
+	// fm: docs/wedge-alarm.md:15@a8572f6
 	t.Run("FM/wedge-alarm/auto_resolves_to_osascript_on_macos", func(t *testing.T) {
 		_, got := wedgeRig(t, "auto", watch.DoorbellFailAlarm)
 		if runtime.GOOS != "darwin" {
@@ -1356,9 +1405,9 @@ func TestPortWedgeAlarm(t *testing.T) {
 		}
 	})
 
-	// n/a other_platforms_need_command fm:docs/wedge-alarm.md:16 - guidance for non-macOS hosts, not a behaviour
+	// n/a other_platforms_need_command fm:docs/wedge-alarm.md:16@a8572f6 - guidance for non-macOS hosts, not a behaviour
 
-	// fm: docs/wedge-alarm.md:17 (the osascript channel posts through osascript, outside any terminal pane)
+	// fm: docs/wedge-alarm.md:17@a8572f6 (the osascript channel posts through osascript, outside any terminal pane)
 	t.Run("FM/wedge-alarm/osascript_posts_outside_the_pane", func(t *testing.T) {
 		argv := fakeOsascript(t)
 		_, _ = wedgeRigReal(t, "osascript")
@@ -1367,9 +1416,9 @@ func TestPortWedgeAlarm(t *testing.T) {
 		}
 	})
 
-	// n/a herdr_notification_channel fm:docs/wedge-alarm.md:18 - herdr is firstmate-only (DESIGN rule 5)
+	// n/a herdr_notification_channel fm:docs/wedge-alarm.md:18@a8572f6 - herdr is firstmate-only (DESIGN rule 5)
 
-	// fm: docs/wedge-alarm.md:19
+	// fm: docs/wedge-alarm.md:19@a8572f6
 	t.Run("FM/wedge-alarm/command_receives_summary_as_arg_and_stdin", func(t *testing.T) {
 		dir := t.TempDir()
 		ch := fmt.Sprintf(`command:printf '%%s' "$1" > %s/arg; cat > %s/stdin`, dir, dir)
@@ -1381,7 +1430,7 @@ func TestPortWedgeAlarm(t *testing.T) {
 		}
 	})
 
-	// fm: docs/wedge-alarm.md:21 (an absent config is auto: default-on, so N doorbell failures alarm out of band)
+	// fm: docs/wedge-alarm.md:21@a8572f6 (an absent config is auto: default-on, so N doorbell failures alarm out of band)
 	t.Run("FM/wedge-alarm/absent_config_is_default_on", func(t *testing.T) {
 		if ch := (&workspace.Policy{}).AlertsChannel(); ch == "off" {
 			red(t, "watch.leader-alarm-default", "an absent alerts.channel resolves to %q: N failed leader doorbells raise no out-of-band alarm by default", ch)
@@ -1396,7 +1445,7 @@ func TestPortWedgeAlarm(t *testing.T) {
 		}
 	})
 
-	// fm: docs/wedge-alarm.md:22 (rate-limited to at most once per window)
+	// fm: docs/wedge-alarm.md:22@a8572f6 (rate-limited to at most once per window)
 	t.Run("FM/wedge-alarm/rate_limited_once_per_window", func(t *testing.T) {
 		_, got := wedgeRig(t, "command:true", watch.DoorbellFailAlarm+3) // 3 more failures inside one alarm window
 		if len(got) != 1 {
@@ -1404,7 +1453,7 @@ func TestPortWedgeAlarm(t *testing.T) {
 		}
 	})
 
-	// fm: docs/wedge-alarm.md:25 (a failing channel logs a warning and the loop carries on)
+	// fm: docs/wedge-alarm.md:25@a8572f6 (a failing channel logs a warning and the loop carries on)
 	t.Run("FM/wedge-alarm/failing_channel_logs_and_continues", func(t *testing.T) {
 		epic := newEpic(t)
 		appendN(t, epic, wake.KindStuck, "urgent backlog")
@@ -1423,7 +1472,7 @@ func TestPortWedgeAlarm(t *testing.T) {
 		}
 	})
 
-	// fm: docs/wedge-alarm.md:26 (every invocation is bounded by a 10s timeout)
+	// fm: docs/wedge-alarm.md:26@a8572f6 (every invocation is bounded by a 10s timeout)
 	t.Run("FM/wedge-alarm/invocation_bounded_by_timeout", func(t *testing.T) {
 		t.Parallel()
 		start := time.Now()
@@ -1433,7 +1482,7 @@ func TestPortWedgeAlarm(t *testing.T) {
 		}
 	})
 
-	// fm: docs/wedge-alarm.md:27 (on timeout the notifier's whole process group is terminated)
+	// fm: docs/wedge-alarm.md:27@a8572f6 (on timeout the notifier's whole process group is terminated)
 	t.Run("FM/wedge-alarm/timeout_terminates_the_process_group", func(t *testing.T) {
 		t.Parallel()
 		// The child proves its own fate instead of a pid probe (a reaped pid can be reissued at once on a busy host):
@@ -1451,7 +1500,7 @@ func TestPortWedgeAlarm(t *testing.T) {
 		}
 	})
 
-	// fm: docs/wedge-alarm.md:28 (the summary reaches AppleScript as argv, never interpolated into the script)
+	// fm: docs/wedge-alarm.md:28@a8572f6 (the summary reaches AppleScript as argv, never interpolated into the script)
 	t.Run("FM/wedge-alarm/applescript_summary_is_argv", func(t *testing.T) {
 		argv := fakeOsascript(t)
 		_, _ = wedgeRigReal(t, "osascript")
@@ -1467,9 +1516,9 @@ func TestPortWedgeAlarm(t *testing.T) {
 		}
 	})
 
-	// n/a copyable_config_example fm:docs/wedge-alarm.md:29 - pointer to an example file, not a behaviour
+	// n/a copyable_config_example fm:docs/wedge-alarm.md:29@a8572f6 - pointer to an example file, not a behaviour
 
-	// fm: docs/wedge-alarm.md:33 (every notifier routes through a seam a test replaces with a recorder)
+	// fm: docs/wedge-alarm.md:33@a8572f6 (every notifier routes through a seam a test replaces with a recorder)
 	t.Run("FM/wedge-alarm/test_seam_records_channel_and_summary", func(t *testing.T) {
 		_, got := wedgeRig(t, "command:true", watch.DoorbellFailAlarm)
 		if len(got) != 1 || got[0].channel != "command:true" || got[0].summary == "" {
@@ -1477,8 +1526,8 @@ func TestPortWedgeAlarm(t *testing.T) {
 		}
 	})
 
-	// n/a daemon_library_mode_discards fm:docs/wedge-alarm.md:34 - daemon sourced-as-library default, firstmate-only
-	// n/a verification_pointers fm:docs/wedge-alarm.md:38 - pointers to fm-daemon.test.sh and manual verification
+	// n/a daemon_library_mode_discards fm:docs/wedge-alarm.md:34@a8572f6 - daemon sourced-as-library default, firstmate-only
+	// n/a verification_pointers fm:docs/wedge-alarm.md:38@a8572f6 - pointers to fm-daemon.test.sh and manual verification
 }
 
 // wedgeRigReal is wedgeRig with the real channel runner (AlarmRun nil), so the actual osascript/command dispatch runs.

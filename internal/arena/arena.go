@@ -374,8 +374,8 @@ func dispatchTransition(prev *state.StorySnap, round int) (attempt int, from sta
 }
 
 // roleDone reports whether a role has already finished the given round: its report file is present, or its story folded
-// to completed at that round's attempt (a headless role never reaches completed, so the report file is the signal that
-// covers it; a terminal role that finished shows completed). A skip check, not a gate: --force ignores it.
+// to completed at that round's attempt (a headless role from before B-06 stayed at working, so the report file is the
+// signal that covers it; a finished role now shows completed). A skip check, not a gate: --force ignores it.
 func roleDone(epicDir string, role roles.Role, round int) bool {
 	reportPath := filepath.Join(epicDir, "reports", "arena", fmt.Sprintf("round-%d-%s.md", round, role))
 	if _, err := os.Stat(reportPath); err == nil {

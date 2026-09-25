@@ -1,7 +1,7 @@
 // Port tests (wave 1, cox-supervision-port-busy-wake): firstmate's busy-state suites fm-busy-state,
 // fm-busy-adapter-wiring and fm-tmux-submit-busy translated case by case against cox's harness-owned busy record
 // (busy.Arm/Apply/Read/Retire and the capability-card trust table), the worker hooks dispatch writes, and the Pi
-// extension. Firstmate pinned at 1e0e773 (references/firstmate, read only). Every case is t.Run("FM/<suite>/<case>")
+// extension. Firstmate pinned at a8572f6 (references/firstmate, read only). Every case is t.Run("FM/<suite>/<case>")
 // with a `// fm: tests/<file>:<line>` citation. A failure names its cox mechanism as red[<mechanism>] (behaviour differs)
 // or notImplemented[<mechanism>] (cox has no such mechanism); red is the deliverable (DESIGN translation contract).
 //
@@ -119,7 +119,7 @@ func recJSON(t *testing.T, r busy.Record) string {
 func TestPortBusyState(t *testing.T) {
 	const s = "t1"
 
-	// fm: tests/fm-busy-state.test.sh:31
+	// fm: tests/fm-busy-state.test.sh:31@a8572f6
 	t.Run("FM/fm-busy-state/arm_seeds_busy_spawn", func(t *testing.T) {
 		epic := t.TempDir()
 		gen := arm(t, epic, s, "claude")
@@ -130,7 +130,7 @@ func TestPortBusyState(t *testing.T) {
 		wantView(t, "busy.arm", epic, s, "busy dispatch")
 	})
 
-	// fm: tests/fm-busy-state.test.sh:42
+	// fm: tests/fm-busy-state.test.sh:42@a8572f6
 	t.Run("FM/fm-busy-state/apply_advances_seq_and_source", func(t *testing.T) {
 		epic := t.TempDir()
 		gen := arm(t, epic, s, "claude")
@@ -143,7 +143,7 @@ func TestPortBusyState(t *testing.T) {
 		}
 	})
 
-	// fm: tests/fm-busy-state.test.sh:59
+	// fm: tests/fm-busy-state.test.sh:59@a8572f6
 	t.Run("FM/fm-busy-state/apply_current_gen_reset", func(t *testing.T) {
 		epic := t.TempDir()
 		arm(t, epic, s, "pi")
@@ -155,7 +155,7 @@ func TestPortBusyState(t *testing.T) {
 		wantUnknown(t, epic, s, "pi", "recovery")
 	})
 
-	// fm: tests/fm-busy-state.test.sh:74
+	// fm: tests/fm-busy-state.test.sh:74@a8572f6
 	t.Run("FM/fm-busy-state/apply_unarmed_refused", func(t *testing.T) {
 		epic := t.TempDir()
 		if err := busy.Apply(epic, s, busy.Busy, "g1.2.3", "claude-hook", "x"); err == nil {
@@ -166,7 +166,7 @@ func TestPortBusyState(t *testing.T) {
 		}
 	})
 
-	// fm: tests/fm-busy-state.test.sh:84
+	// fm: tests/fm-busy-state.test.sh:84@a8572f6
 	t.Run("FM/fm-busy-state/retire_serializes_and_rejects_stale_gen", func(t *testing.T) {
 		epic := t.TempDir()
 		oldGen := arm(t, epic, s, "claude")
@@ -195,7 +195,7 @@ func TestPortBusyState(t *testing.T) {
 		}
 	})
 
-	// fm: tests/fm-busy-state.test.sh:122 (GNU stat stubs -> an old lock mtime; Go stats the lock natively)
+	// fm: tests/fm-busy-state.test.sh:122@a8572f6 (GNU stat stubs -> an old lock mtime; Go stats the lock natively)
 	t.Run("FM/fm-busy-state/stale_lock_broken_under_gnu_stat", func(t *testing.T) {
 		epic := t.TempDir()
 		gen := arm(t, epic, s, "claude")
@@ -217,7 +217,7 @@ func TestPortBusyState(t *testing.T) {
 		}
 	})
 
-	// fm: tests/fm-busy-state.test.sh:168
+	// fm: tests/fm-busy-state.test.sh:168@a8572f6
 	t.Run("FM/fm-busy-state/retire_missing_sidecar_is_idempotent", func(t *testing.T) {
 		epic := t.TempDir()
 		gen := arm(t, epic, s, "claude")
@@ -241,7 +241,7 @@ func TestPortBusyState(t *testing.T) {
 		}
 	})
 
-	// fm: tests/fm-busy-state.test.sh:190
+	// fm: tests/fm-busy-state.test.sh:190@a8572f6
 	t.Run("FM/fm-busy-state/stale_gen_event_rejected", func(t *testing.T) {
 		epic := t.TempDir()
 		oldGen := arm(t, epic, s, "claude")
@@ -255,7 +255,7 @@ func TestPortBusyState(t *testing.T) {
 		wantView(t, "busy.apply", epic, s, "busy dispatch")
 	})
 
-	// fm: tests/fm-busy-state.test.sh:204 (the armed gen lives in a sidecar apart from the record; cox keeps it only
+	// fm: tests/fm-busy-state.test.sh:204@a8572f6 (the armed gen lives in a sidecar apart from the record; cox keeps it only
 	// inside the record, so a record carrying a superseded gen cannot be told from the live one)
 	t.Run("FM/fm-busy-state/stale_gen_record_unknown", func(t *testing.T) {
 		epic := t.TempDir()
@@ -270,7 +270,7 @@ func TestPortBusyState(t *testing.T) {
 		wantClassify(t, "busy.armed-gen-binding", classify(epic, s, "claude", ""), "unknown gen-mismatch")
 	})
 
-	// fm: tests/fm-busy-state.test.sh:218
+	// fm: tests/fm-busy-state.test.sh:218@a8572f6
 	t.Run("FM/fm-busy-state/missing_record_unknown_not_idle", func(t *testing.T) {
 		epic := t.TempDir()
 		for _, h := range []string{"claude", "pi"} {
@@ -287,7 +287,7 @@ func TestPortBusyState(t *testing.T) {
 		}
 	})
 
-	// fm: tests/fm-busy-state.test.sh:230
+	// fm: tests/fm-busy-state.test.sh:230@a8572f6
 	t.Run("FM/fm-busy-state/malformed_record_unknown", func(t *testing.T) {
 		epic := t.TempDir()
 		arm(t, epic, s, "claude")
@@ -311,7 +311,7 @@ func TestPortBusyState(t *testing.T) {
 		}
 	})
 
-	// fm: tests/fm-busy-state.test.sh:251
+	// fm: tests/fm-busy-state.test.sh:251@a8572f6
 	t.Run("FM/fm-busy-state/record_without_sidecar_unknown", func(t *testing.T) {
 		epic := t.TempDir()
 		rawRecord(t, epic, s, recJSON(t, busy.Record{Schema: busy.Schema, State: busy.Busy, Gen: "g1.1.1", Seq: 1, TS: 1,
@@ -322,7 +322,7 @@ func TestPortBusyState(t *testing.T) {
 		wantClassify(t, "busy.read", classify(epic, s, "claude", ""), "unknown malformed")
 	})
 
-	// fm: tests/fm-busy-state.test.sh:262
+	// fm: tests/fm-busy-state.test.sh:262@a8572f6
 	t.Run("FM/fm-busy-state/source_mismatch_cross_adapter", func(t *testing.T) {
 		epic := t.TempDir()
 		gen := arm(t, epic, s, "claude")
@@ -346,7 +346,7 @@ func TestPortBusyState(t *testing.T) {
 		}
 	})
 
-	// fm: tests/fm-busy-state.test.sh:276 (cox's reader takes no rendered text at all; BusyComposer never reads a pane)
+	// fm: tests/fm-busy-state.test.sh:276@a8572f6 (cox's reader takes no rendered text at all; BusyComposer never reads a pane)
 	t.Run("FM/fm-busy-state/converted_adapters_ignore_footer_text", func(t *testing.T) {
 		epic := t.TempDir()
 		footer := "• Working (6s • esc to interrupt)\n   ■■■■⬝⬝⬝⬝  esc interrupt\nWorking...\nCtrl+c:cancel"
@@ -362,7 +362,7 @@ func TestPortBusyState(t *testing.T) {
 		}
 	})
 
-	// fm: tests/fm-busy-state.test.sh:295
+	// fm: tests/fm-busy-state.test.sh:295@a8572f6
 	t.Run("FM/fm-busy-state/launch_prompt_claude_trust_dialog", func(t *testing.T) {
 		epic := t.TempDir()
 		arm(t, epic, s, "claude")
@@ -378,7 +378,7 @@ This project's CLAUDE.md imports files outside the current working directory.
   Yes, allow external imports`), "unknown launch-prompt")
 	})
 
-	// fm: tests/fm-busy-state.test.sh:316
+	// fm: tests/fm-busy-state.test.sh:316@a8572f6
 	t.Run("FM/fm-busy-state/launch_prompt_pi_trust_dialog", func(t *testing.T) {
 		epic := t.TempDir()
 		arm(t, epic, s, "pi")
@@ -396,14 +396,14 @@ This project's CLAUDE.md imports files outside the current working directory.
  up/down navigate  enter select  escape/ctrl+c cancel`), "unknown launch-prompt")
 	})
 
-	// fm: tests/fm-busy-state.test.sh:339
+	// fm: tests/fm-busy-state.test.sh:339@a8572f6
 	t.Run("FM/fm-busy-state/launch_prompt_pi_requires_both_markers", func(t *testing.T) {
 		epic := t.TempDir()
 		arm(t, epic, s, "pi")
 		wantClassify(t, "busy.launch-prompt-backstop", classify(epic, s, "pi", "I trust this approach and will proceed."), "busy dispatch")
 	})
 
-	// fm: tests/fm-busy-state.test.sh:352
+	// fm: tests/fm-busy-state.test.sh:352@a8572f6
 	t.Run("FM/fm-busy-state/launch_prompt_gemini_dialogs", func(t *testing.T) {
 		// cox has no gemini card; the record is armed with firstmate's gemini trust set so the backstop itself is tested.
 		gemini := []string{"gemini-hook", "dispatch", "interrupt", "recovery"}
@@ -417,14 +417,14 @@ This project's CLAUDE.md imports files outside the current working directory.
 		}
 	})
 
-	// fm: tests/fm-busy-state.test.sh:379
+	// fm: tests/fm-busy-state.test.sh:379@a8572f6
 	t.Run("FM/fm-busy-state/launch_prompt_never_shortens_a_working_launch", func(t *testing.T) {
 		epic := t.TempDir()
 		arm(t, epic, s, "claude")
 		wantClassify(t, "busy.launch-prompt-backstop", classify(epic, s, "claude", "• Working (6s • esc to interrupt)"), "busy dispatch")
 	})
 
-	// fm: tests/fm-busy-state.test.sh:392 (opencode has no cox card; translated to a card-less harness)
+	// fm: tests/fm-busy-state.test.sh:392@a8572f6 (opencode has no cox card; translated to a card-less harness)
 	t.Run("FM/fm-busy-state/launch_prompt_scoped_to_armed_harnesses", func(t *testing.T) {
 		epic := t.TempDir()
 		_, err := busy.Arm(epic, s, "opencode", []string{"opencode-plugin", "dispatch", "interrupt", "recovery"})
@@ -433,7 +433,7 @@ This project's CLAUDE.md imports files outside the current working directory.
 			"Quick safety check: Is this a project you created or one you trust?"), "busy dispatch")
 	})
 
-	// fm: tests/fm-busy-state.test.sh:405
+	// fm: tests/fm-busy-state.test.sh:405@a8572f6
 	t.Run("FM/fm-busy-state/launch_prompt_never_reclassifies_an_advanced_record", func(t *testing.T) {
 		epic := t.TempDir()
 		gen := arm(t, epic, s, "claude")
@@ -442,16 +442,16 @@ This project's CLAUDE.md imports files outside the current working directory.
 			"Quick safety check: Is this a project you created or one you trust?"), "busy claude-hook")
 	})
 
-	// fm: tests/fm-busy-state.test.sh:417
+	// fm: tests/fm-busy-state.test.sh:417@a8572f6
 	t.Run("FM/fm-busy-state/launch_prompt_requires_a_captured_tail", func(t *testing.T) {
 		epic := t.TempDir()
 		arm(t, epic, s, "claude")
 		wantClassify(t, "busy.launch-prompt-backstop", classify(epic, s, "claude", ""), "busy dispatch")
 	})
 
-	// n/a grok_regex_isolated fm:tests/fm-busy-state.test.sh:427 - grok has no cox harness card and cox never classifies busy from rendered pane text (captain ruling 2026-09-21)
+	// n/a grok_regex_isolated fm:tests/fm-busy-state.test.sh:427@a8572f6 - grok has no cox harness card and cox never classifies busy from rendered pane text (captain ruling 2026-09-21)
 
-	// fm: tests/fm-busy-state.test.sh:444 (the verification gate lives at arming in cox: card BusyRecord=false unless
+	// fm: tests/fm-busy-state.test.sh:444@a8572f6 (the verification gate lives at arming in cox: card BusyRecord=false unless
 	// policy harness.busy_verified, so an unverified codex is never armed and reads unknown)
 	t.Run("FM/fm-busy-state/codex_unverified_gate", func(t *testing.T) {
 		epic := t.TempDir()
@@ -464,10 +464,10 @@ This project's CLAUDE.md imports files outside the current working directory.
 		wantClassify(t, "busy.codex-gate", classify(epic, s, "codex", ""), "unknown codex-unverified")
 	})
 
-	// n/a kimi_unverified_gate fm:tests/fm-busy-state.test.sh:456 - kimi has no cox harness card
-	// n/a cursor_ignores_rendered_and_native_signals fm:tests/fm-busy-state.test.sh:468 - cursor has no cox harness card (transcript fold is cursor-only)
+	// n/a kimi_unverified_gate fm:tests/fm-busy-state.test.sh:456@a8572f6 - kimi has no cox harness card
+	// n/a cursor_ignores_rendered_and_native_signals fm:tests/fm-busy-state.test.sh:468@a8572f6 - cursor has no cox harness card (transcript fold is cursor-only)
 
-	// fm: tests/fm-busy-state.test.sh:495 (B-51: a busy record whose endpoint is gone must read dead, never busy)
+	// fm: tests/fm-busy-state.test.sh:495@a8572f6 (B-51: a busy record whose endpoint is gone must read dead, never busy)
 	t.Run("FM/fm-busy-state/dead_endpoint_overrides", func(t *testing.T) {
 		epic := t.TempDir()
 		arm(t, epic, s, "claude")
@@ -481,9 +481,9 @@ This project's CLAUDE.md imports files outside the current working directory.
 		wantClassify(t, "busy.classify-live", busy.ClassifyLive(epic, s, "claude", "", there).String(), "unknown no-target")
 	})
 
-	// n/a herdr_native_busy_only fm:tests/fm-busy-state.test.sh:513 - herdr native agent verdict (herdr is firstmate-only surface per DESIGN rule 5; cox's herdr Composer consults only the busy record)
+	// n/a herdr_native_busy_only fm:tests/fm-busy-state.test.sh:513@a8572f6 - herdr native agent verdict (herdr is firstmate-only surface per DESIGN rule 5; cox's herdr Composer consults only the busy record)
 
-	// fm: tests/fm-busy-state.test.sh:538 (the caller-shell half is bash-only; the translated half is the field check)
+	// fm: tests/fm-busy-state.test.sh:538@a8572f6 (the caller-shell half is bash-only; the translated half is the field check)
 	t.Run("FM/fm-busy-state/record_read_leaves_caller_shell_intact", func(t *testing.T) {
 		epic := t.TempDir()
 		arm(t, epic, s, "claude")
@@ -495,7 +495,7 @@ This project's CLAUDE.md imports files outside the current working directory.
 		}
 	})
 
-	// fm: tests/fm-busy-state.test.sh:561
+	// fm: tests/fm-busy-state.test.sh:561@a8572f6
 	t.Run("FM/fm-busy-state/boolean_view_never_promotes_unknown", func(t *testing.T) {
 		epic := t.TempDir()
 		gen := arm(t, epic, s, "claude")
@@ -512,7 +512,7 @@ This project's CLAUDE.md imports files outside the current working directory.
 		}
 	})
 
-	// fm: tests/fm-busy-state.test.sh:577
+	// fm: tests/fm-busy-state.test.sh:577@a8572f6
 	t.Run("FM/fm-busy-state/progress_is_generation_bound_and_not_semantic_state", func(t *testing.T) {
 		epic := t.TempDir()
 		gen := arm(t, epic, s, "claude")
@@ -730,7 +730,7 @@ func (p *piCase) drive(mode, gen string, want int) {
 }
 
 func TestPortBusyAdapterWiring(t *testing.T) {
-	// fm: tests/fm-busy-adapter-wiring.test.sh:82
+	// fm: tests/fm-busy-adapter-wiring.test.sh:82@a8572f6
 	t.Run("FM/fm-busy-adapter-wiring/pi_extension_semantic_lifecycle", func(t *testing.T) {
 		p := newPiCase(t)
 		wantView(t, "pi-extension", p.epic, "s1", "busy dispatch")
@@ -754,7 +754,7 @@ func TestPortBusyAdapterWiring(t *testing.T) {
 		wantView(t, "pi-extension", p.epic, "s1", "idle pi-ext")
 	})
 
-	// fm: tests/fm-busy-adapter-wiring.test.sh:124
+	// fm: tests/fm-busy-adapter-wiring.test.sh:124@a8572f6
 	t.Run("FM/fm-busy-adapter-wiring/pi_extension_serializes_settle_before_next_start", func(t *testing.T) {
 		// The two applies are separate async children, so the order is a race; ten rounds keep the verdict stable.
 		p := newPiCase(t)
@@ -764,7 +764,7 @@ func TestPortBusyAdapterWiring(t *testing.T) {
 		}
 	})
 
-	// fm: tests/fm-busy-adapter-wiring.test.sh:139
+	// fm: tests/fm-busy-adapter-wiring.test.sh:139@a8572f6
 	t.Run("FM/fm-busy-adapter-wiring/pi_extension_stale_incarnation_rejected", func(t *testing.T) {
 		p := newPiCase(t)
 		stale := p.gen
@@ -773,9 +773,9 @@ func TestPortBusyAdapterWiring(t *testing.T) {
 		wantView(t, "pi-extension", p.epic, "s1", "busy dispatch")
 	})
 
-	// n/a opencode_plugin_semantic_lifecycle fm:tests/fm-busy-adapter-wiring.test.sh:182 - opencode has no cox harness card or plugin
+	// n/a opencode_plugin_semantic_lifecycle fm:tests/fm-busy-adapter-wiring.test.sh:182@a8572f6 - opencode has no cox harness card or plugin
 
-	// fm: tests/fm-busy-adapter-wiring.test.sh:237
+	// fm: tests/fm-busy-adapter-wiring.test.sh:237@a8572f6
 	t.Run("FM/fm-busy-adapter-wiring/claude_hooks_semantic_lifecycle", func(t *testing.T) {
 		epic, wt, env := launchCase(t, "claude")
 		rec, ok := busy.ReadRecord(epic, "s1")
@@ -803,7 +803,7 @@ func TestPortBusyAdapterWiring(t *testing.T) {
 		wantView(t, "worker-hooks.claude", epic, "s1", "idle claude-hook")
 	})
 
-	// fm: tests/fm-busy-adapter-wiring.test.sh:275
+	// fm: tests/fm-busy-adapter-wiring.test.sh:275@a8572f6
 	t.Run("FM/fm-busy-adapter-wiring/claude_hooks_stale_incarnation_harmless", func(t *testing.T) {
 		epic, wt, env := launchCase(t, "claude")
 		rec, _ := busy.ReadRecord(epic, "s1")
@@ -812,7 +812,7 @@ func TestPortBusyAdapterWiring(t *testing.T) {
 		wantView(t, "worker-hooks.claude", epic, "s1", "busy dispatch")
 	})
 
-	// fm: tests/fm-busy-adapter-wiring.test.sh:291
+	// fm: tests/fm-busy-adapter-wiring.test.sh:291@a8572f6
 	t.Run("FM/fm-busy-adapter-wiring/codex_unverified_until_a_semantic_source_exists", func(t *testing.T) {
 		epic, wt, _ := launchCase(t, "codex")
 		if _, ok := busy.ReadRecord(epic, "s1"); ok {
@@ -824,15 +824,15 @@ func TestPortBusyAdapterWiring(t *testing.T) {
 		wantUnknown(t, epic, "s1", "codex", "codex-unverified")
 	})
 
-	// n/a gemini_hooks_semantic_lifecycle fm:tests/fm-busy-adapter-wiring.test.sh:319 - gemini has no cox harness card
-	// n/a gemini_hooks_stale_incarnation_harmless fm:tests/fm-busy-adapter-wiring.test.sh:365 - gemini has no cox harness card
-	// n/a raw_gemini_launch_has_no_semantic_wiring fm:tests/fm-busy-adapter-wiring.test.sh:381 - gemini has no cox harness card
-	// n/a gemini_is_refused_as_a_secondmate fm:tests/fm-busy-adapter-wiring.test.sh:395 - secondmates are firstmate-only (DESIGN rule 5)
-	// n/a kimi_and_grok_install_no_unverified_wiring fm:tests/fm-busy-adapter-wiring.test.sh:410 - kimi and grok have no cox harness card
+	// n/a gemini_hooks_semantic_lifecycle fm:tests/fm-busy-adapter-wiring.test.sh:319@a8572f6 - gemini has no cox harness card
+	// n/a gemini_hooks_stale_incarnation_harmless fm:tests/fm-busy-adapter-wiring.test.sh:365@a8572f6 - gemini has no cox harness card
+	// n/a raw_gemini_launch_has_no_semantic_wiring fm:tests/fm-busy-adapter-wiring.test.sh:381@a8572f6 - gemini has no cox harness card
+	// n/a gemini_is_refused_as_a_secondmate fm:tests/fm-busy-adapter-wiring.test.sh:395@a8572f6 - secondmates are firstmate-only (DESIGN rule 5)
+	// n/a kimi_and_grok_install_no_unverified_wiring fm:tests/fm-busy-adapter-wiring.test.sh:410@a8572f6 - kimi and grok have no cox harness card
 }
 
 func TestPortTmuxSubmitBusy(t *testing.T) {
-	// fm: tests/fm-tmux-submit-busy.test.sh:67 (submit-while-busy: a busy worker's pending input is queued, not a
+	// fm: tests/fm-tmux-submit-busy.test.sh:67@a8572f6 (submit-while-busy: a busy worker's pending input is queued, not a
 	// failed delivery; cox's composer verdict for a busy record is busy, so the ladder skips the ring and the durable
 	// inbox record carries the message)
 	t.Run("FM/fm-tmux-submit-busy/busy_pane_pending_returns_empty", func(t *testing.T) {
@@ -843,13 +843,13 @@ func TestPortTmuxSubmitBusy(t *testing.T) {
 		}
 	})
 
-	// n/a idle_pane_pending_returns_pending fm:tests/fm-tmux-submit-busy.test.sh:90 - tmux Enter-retry verdict; cox confirms delivery by the inbox handled/ ack, not the composer after Enter
-	// n/a wrapped_continuation_retries_swallowed_enter fm:tests/fm-tmux-submit-busy.test.sh:107 - tmux Enter-retry on wrapped input
-	// n/a placeholder_like_bare_input_retries_swallowed_enter fm:tests/fm-tmux-submit-busy.test.sh:127 - tmux Enter-retry on placeholder text
-	// n/a busy_pane_composer_clears_first_try fm:tests/fm-tmux-submit-busy.test.sh:147 - tmux Enter-retry
-	// n/a idle_pane_composer_clears_first_try fm:tests/fm-tmux-submit-busy.test.sh:162 - tmux Enter-retry
+	// n/a idle_pane_pending_returns_pending fm:tests/fm-tmux-submit-busy.test.sh:90@a8572f6 - tmux Enter-retry verdict; cox confirms delivery by the inbox handled/ ack, not the composer after Enter
+	// n/a wrapped_continuation_retries_swallowed_enter fm:tests/fm-tmux-submit-busy.test.sh:107@a8572f6 - tmux Enter-retry on wrapped input
+	// n/a placeholder_like_bare_input_retries_swallowed_enter fm:tests/fm-tmux-submit-busy.test.sh:127@a8572f6 - tmux Enter-retry on placeholder text
+	// n/a busy_pane_composer_clears_first_try fm:tests/fm-tmux-submit-busy.test.sh:147@a8572f6 - tmux Enter-retry
+	// n/a idle_pane_composer_clears_first_try fm:tests/fm-tmux-submit-busy.test.sh:162@a8572f6 - tmux Enter-retry
 
-	// fm: tests/fm-tmux-submit-busy.test.sh:177 (a busy worker never converts an unsafe verdict: an unknown record stays
+	// fm: tests/fm-tmux-submit-busy.test.sh:177@a8572f6 (a busy worker never converts an unsafe verdict: an unknown record stays
 	// unknown and defers to the backend's own classifier)
 	t.Run("FM/fm-tmux-submit-busy/busy_pane_unknown_stays_unknown", func(t *testing.T) {
 		epic := t.TempDir()
@@ -859,10 +859,10 @@ func TestPortTmuxSubmitBusy(t *testing.T) {
 		}
 	})
 
-	// n/a failed_baseline_capture_keeps_busy_unknown_unconfirmed fm:tests/fm-tmux-submit-busy.test.sh:193 - tmux baseline capture before Enter
-	// n/a busy_pane_ambiguous_pending_retries_without_conversion fm:tests/fm-tmux-submit-busy.test.sh:212 - tmux pending-unproven composer text
+	// n/a failed_baseline_capture_keeps_busy_unknown_unconfirmed fm:tests/fm-tmux-submit-busy.test.sh:193@a8572f6 - tmux baseline capture before Enter
+	// n/a busy_pane_ambiguous_pending_retries_without_conversion fm:tests/fm-tmux-submit-busy.test.sh:212@a8572f6 - tmux pending-unproven composer text
 
-	// fm: tests/fm-tmux-submit-busy.test.sh:235 (an unrecognized record state is never converted by the busy view)
+	// fm: tests/fm-tmux-submit-busy.test.sh:235@a8572f6 (an unrecognized record state is never converted by the busy view)
 	t.Run("FM/fm-tmux-submit-busy/unrecognized_state_skips_busy_conversion", func(t *testing.T) {
 		epic := t.TempDir()
 		gen := arm(t, epic, "s1", "claude")
@@ -874,5 +874,5 @@ func TestPortTmuxSubmitBusy(t *testing.T) {
 		}
 	})
 
-	// n/a claude_busy_signature_uses_real_capture_shapes fm:tests/fm-tmux-submit-busy.test.sh:258 - pane-text busy signatures; cox never classifies busy from rendered text (captain ruling 2026-09-21)
+	// n/a claude_busy_signature_uses_real_capture_shapes fm:tests/fm-tmux-submit-busy.test.sh:258@a8572f6 - pane-text busy signatures; cox never classifies busy from rendered text (captain ruling 2026-09-21)
 }

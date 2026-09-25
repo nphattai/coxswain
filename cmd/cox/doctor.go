@@ -17,7 +17,9 @@ import (
 	"github.com/nphattai/coxswain/internal/adapter/backend"
 	"github.com/nphattai/coxswain/internal/adapter/harness/pi"
 	"github.com/nphattai/coxswain/internal/adapter/harness/registry"
+	"github.com/nphattai/coxswain/internal/boundexec"
 	"github.com/nphattai/coxswain/internal/doctor"
+	"github.com/nphattai/coxswain/internal/epic"
 	"github.com/nphattai/coxswain/internal/quota"
 	"github.com/nphattai/coxswain/internal/watch"
 	"github.com/nphattai/coxswain/internal/workspace"
@@ -149,7 +151,7 @@ func cmdDoctor(args []string) int {
 	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	asJSON := fs.Bool("json", false, "emit JSON")
-	epicDir := fs.String("epic", "", "epic directory (optional; adds an adapter column for its policy harness options)")
+	epicDir := epicFlag(fs, "", "epic directory (optional; adds an adapter column for its policy harness options)")
 	fs.Var(&rootFlags, "root", "extra root to scan for workspaces (repeatable; adds to $HOME/Work, $ORCA_WORKSPACES, $COX_ROOTS)")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -177,6 +179,10 @@ func cmdDoctor(args []string) int {
 			// Pi leader extension (finding 3 / dogfood AC6).
 			wpol, _ := workspace.LoadPolicy(d)
 			r.PiLeader = piLeaderExtensionCheck(wpol, d)
+			// A checkout Orca does not know fails every epic worktree for it late (B-34b): report it with the fix.
+			if ws, err := workspace.Load(d); err == nil {
+				r.RepoIssues = append(r.RepoIssues, unregisteredOrcaRepos(ws.Repos)...)
+			}
 		}
 		wsReports = append(wsReports, r)
 	}
@@ -216,16 +222,15 @@ func cmdDoctor(args []string) int {
 			return 1
 		}
 	} else {
-		if len(rep.Installations) == 0 {
-			fmt.Println("no coxswain installations found")
+		// rep.Installations are only the legacy v1 kits that own epics (a bare kit or dev checkout is dropped, B-45), so
+		// "none" is not news beside a v2 workspace: say so only when nothing at all was found.
+		if len(rep.Installations) == 0 && len(wsReports) == 0 {
+			fmt.Printf("no coxswain workspace found under %s (run cox doctor inside one, or pass --root)\n", strings.Join(roots, ", "))
 		}
 		for _, in := range rep.Installations {
 			line := fmt.Sprintf("%s  [%s]  %s", in.Path, in.Type, in.Version)
 			if in.KitPath != in.Path {
 				line += "  (kit: " + in.KitPath + ")"
-			}
-			if len(in.Epics) == 0 {
-				line += "  (dev checkout)"
 			}
 			fmt.Println(line)
 			for _, ep := range in.Epics {
@@ -388,7 +393,10 @@ var signedWordRe = regexp.MustCompile(`(?i)\bsigned\b`)
 // ledger is signed while the text does not say so. It returns "" when they agree. A closed epic is skipped (its Status:
 // text is historical and the archive is the truth).
 func signedDivergence(ep doctor.EpicReport) string {
-	if ep.Closed {
+	// Closed on any evidence git carries too (the ledger's epic_closed, a closed Status), not only the machine-local
+	// .cox.closed: a second machine, or an epic signed before ledgers existed and closed by hand, is not "signature
+	// lost" (B-46).
+	if ep.Closed || (ep.Path != "" && epic.Closed(ep.Path)) {
 		return ""
 	}
 	// Match the whole word "signed" so an honestly unsigned Status (e.g. "active (unsigned, arena pending)") is not read
@@ -726,14 +734,20 @@ func quotaReport(epicDir string) quotaDoctor {
 	return q
 }
 
-// quotaAxiVersion runs `<bin> --version` with a short timeout and returns the trimmed first line, or "" on any error.
+// quotaAxiVersionBound bounds `quota-axi --version` (doctor's other probes use 10s too).
+var quotaAxiVersionBound = 10 * time.Second
+
+// quotaAxiVersion runs `<bin> --version` through the one bounded exec (internal/boundexec: its own process group, TERM
+// then KILL at the bound, a descendant holding stdout cannot park the read) and returns the trimmed first line, or "" on
+// any error or timeout.
 func quotaAxiVersion(bin string) string {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	out, err := exec.CommandContext(ctx, bin, "--version").Output()
-	if err != nil {
+	var buf bytes.Buffer
+	cmd := exec.Command(bin, "--version")
+	cmd.Stdout = &buf
+	if code, err := boundexec.Run(context.Background(), quotaAxiVersionBound, cmd); err != nil || code != 0 {
 		return ""
 	}
+	out := buf.Bytes()
 	line := strings.TrimSpace(string(out))
 	if i := strings.IndexByte(line, '\n'); i >= 0 {
 		line = line[:i]

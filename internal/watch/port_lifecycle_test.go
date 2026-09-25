@@ -2,7 +2,7 @@ package watch
 
 // Port tests, wave 1 (story cox-supervision-port-turnend): the watcher-lifecycle half of firstmate's watcher lock,
 // watch arm and recovery loop suites, translated case by case against the watcher run loop (Run, evictReason,
-// markTick, watch/lasttick, watch/log) under the DESIGN translation contract. Firstmate is pinned at 1e0e773, read
+// markTick, watch/lasttick, watch/log) under the DESIGN translation contract. Firstmate is pinned at a8572f6, read
 // only. Every case is a t.Run named TestFMLifecycle/<suite>/<case> with its `// fm:` citation (`-run 'FM/<suite>'`
 // selects it); a firstmate-only case is an `// n/a:` comment and a report row.
 //
@@ -30,13 +30,7 @@ import (
 	"github.com/nphattai/coxswain/internal/wake"
 )
 
-// notImplementedLC fails the case naming the cox mechanism firstmate pins and cox lacks (contract rule 3).
-func notImplementedLC(t *testing.T, mechanism string) {
-	t.Helper()
-	t.Fatalf("cox gap: %s", mechanism)
-}
-
-// lcEpic makes a temp epic dir with a .cox control tree.
+// lcEpic makes a temp epic dir with a .cox control tree (the watcher never creates .cox itself, mkdirControl).
 func lcEpic(t *testing.T) string {
 	t.Helper()
 	epic := t.TempDir()
@@ -217,7 +211,7 @@ func lcWaitFor(d time.Duration, cond func() bool) bool {
 // lcWatcherLock translates the watcher-side half of tests/fm-watcher-lock.test.sh (the rest is in
 // cmd/cox/port_turnend_test.go under the same suite name).
 func lcWatcherLock(t *testing.T) {
-	// fm: tests/fm-watcher-lock.test.sh:560
+	// fm: tests/fm-watcher-lock.test.sh:560@a8572f6
 	t.Run("watcher_self_evicts_on_lock_takeover", func(t *testing.T) {
 		// The running watcher (this process holds watch.pid) must stand down once watch.pid names another live process,
 		// and must not clobber the new holder's pidfile.
@@ -241,7 +235,7 @@ func lcWatcherLock(t *testing.T) {
 		}
 	})
 
-	// fm: tests/fm-watcher-lock.test.sh:667
+	// fm: tests/fm-watcher-lock.test.sh:667@a8572f6
 	t.Run("attached_arm_signal_is_recorded_in_cycle_ledger", func(t *testing.T) {
 		// cox's attached arm is the stop-rewake waiter over a live `cox watch`; the ledger is <epic>/.cox/watch-cycle-exits.log.
 		epic := lcEpic(t)
@@ -266,7 +260,7 @@ func lcWatcherLock(t *testing.T) {
 		}
 	})
 
-	// fm: tests/fm-watcher-lock.test.sh:899
+	// fm: tests/fm-watcher-lock.test.sh:899@a8572f6
 	t.Run("cycle_exit_ledger_links_successor_and_stays_bounded", func(t *testing.T) {
 		// A cox cycle is one `cox watch` lifetime (the watcher does not exit on a wake); its attached waiter closes on the
 		// delivered wake (fm's actionable-check is cox's attached-delivered-wake), and the next started watcher links the
@@ -328,7 +322,7 @@ func lcWatcherLock(t *testing.T) {
 
 // lcWatchArm translates the watcher-side case of tests/fm-watch-arm.test.sh.
 func lcWatchArm(t *testing.T) {
-	// fm: tests/fm-watch-arm.test.sh:860
+	// fm: tests/fm-watch-arm.test.sh:886@a8572f6
 	t.Run("downtime_marker_does_not_follow_symlink", func(t *testing.T) {
 		// Watcher-published state must never follow a symlink planted in its place: cox's beacon (markTick) is the
 		// state file its watcher publishes every pass.
@@ -353,7 +347,7 @@ func lcWatchArm(t *testing.T) {
 
 // lcWatchRecoveryLoop translates tests/fm-watch-recovery-loop.test.sh.
 func lcWatchRecoveryLoop(t *testing.T) {
-	// fm: tests/fm-watch-recovery-loop.test.sh:67
+	// fm: tests/fm-watch-recovery-loop.test.sh:67@a8572f6
 	t.Run("unacknowledged_recovery_is_announced_once_per_generation", func(t *testing.T) {
 		// An unacknowledged backlog is announced to the leader once, not re-announced every cycle past the old ~52s
 		// loop period, and the watcher keeps running. Cox's announcement is the leader doorbell (nudgeLeader).
@@ -384,7 +378,7 @@ func lcWatchRecoveryLoop(t *testing.T) {
 		}
 	})
 
-	// fm: tests/fm-watch-recovery-loop.test.sh:171
+	// fm: tests/fm-watch-recovery-loop.test.sh:171@a8572f6
 	t.Run("handling_successor_does_not_go_blind", func(t *testing.T) {
 		// A successor watcher started while a recovery is pending enters its poll loop and surfaces a real worker event
 		// within a bounded startup-and-poll budget, instead of going blind.
@@ -421,7 +415,7 @@ func lcWatchRecoveryLoop(t *testing.T) {
 // lcDocWatcherContinuity translates the watcher-side predicates of docs/watcher-continuity.md that no suite case
 // already pins.
 func lcDocWatcherContinuity(t *testing.T) {
-	// fm: docs/watcher-continuity.md:116
+	// fm: docs/watcher-continuity.md:120@a8572f6
 	t.Run("only_the_watcher_writes_the_beacon", func(t *testing.T) {
 		// Only the watcher's own loop touches the beacon; no helper (cox watch --once, a probe) can make a wedged
 		// watcher look healthy.

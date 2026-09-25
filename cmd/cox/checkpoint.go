@@ -29,7 +29,7 @@ func cmdCheckpoint(args []string) int {
 func checkpointFacts(args []string) int {
 	fs := flag.NewFlagSet("checkpoint facts", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	epicDir := fs.String("epic", "", "epic directory")
+	epicDir := epicFlag(fs, "", "epic directory")
 	story := fs.String("story", "", "story id")
 	worktree := fs.String("worktree", ".", "worker worktree path")
 	if err := fs.Parse(args); err != nil {
@@ -49,7 +49,7 @@ func checkpointFacts(args []string) int {
 func checkpointInject(args []string) int {
 	fs := flag.NewFlagSet("checkpoint inject", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	epicDir := fs.String("epic", "", "epic directory")
+	epicDir := epicFlag(fs, "", "epic directory")
 	story := fs.String("story", "", "story id")
 	attempt := fs.Int("attempt", 0, "current attempt (0 = read from event log)")
 	head := fs.String("head", "", "current HEAD sha (for stale detection)")

@@ -75,6 +75,36 @@ func TestScanCredentials(t *testing.T) {
 	}
 }
 
+// B-65: the vn-phone rule needs a boundary, so a digit run inside hex (a commit sha) or a longer number is not a phone,
+// while a real number next to punctuation, a space or a line edge still is. The phone-shaped values are built at runtime
+// so this file's own diff never trips `cox audit pr`.
+const vnPrefix = "09"
+
+func TestScanCredentialsVNPhoneBoundary(t *testing.T) {
+	phone := vnPrefix + "12345678"
+	for _, text := range []string{
+		"5061ede" + phone + "abcdef", // inside a hex sha
+		"sha a" + phone + "b",        // letters on both sides
+		"id 1" + phone + "9",         // a longer digit run
+		"x" + phone + "1",            // trailing digit
+	} {
+		if got := scanCredentials(text); len(got) != 0 {
+			t.Errorf("%q must not match, got %v", text, got)
+		}
+	}
+	for _, text := range []string{
+		"call " + phone,
+		"+84 " + phone,
+		"phone:" + phone + ",",
+		phone,
+		"line one\n" + "03" + "81234567" + "\nline three",
+	} {
+		if got := scanCredentials(text); len(got) != 1 || got[0] != "vn-phone" {
+			t.Errorf("%q must match vn-phone, got %v", text, got)
+		}
+	}
+}
+
 func TestShipFetchFailureIsUnknownNotClean(t *testing.T) {
 	git := func(dir string, args ...string) (string, error) {
 		if len(args) > 0 && args[0] == "fetch" {

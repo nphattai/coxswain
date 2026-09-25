@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-// The ledger caps come from COX_WATCH_CYCLE_LOG_MAX_BYTES / COX_WATCH_CYCLE_LOG_KEEP_LINES (fm-watch-arm.sh:84-88):
+// The ledger caps come from COX_WATCH_CYCLE_LOG_MAX_BYTES / COX_WATCH_CYCLE_LOG_KEEP_LINES (fm-watch-arm.sh:91-95):
 // crossing the byte cap trims to the last KEEP complete records (tail -n KEEP), never one fewer.
 func TestAppendCycleHonorsEnvCaps(t *testing.T) {
 	epic := t.TempDir()

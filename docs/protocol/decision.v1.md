@@ -2,7 +2,7 @@
 
 A worker's status history is an append-only event log. Reading it last-event-wins cannot represent "an earlier
 decision is still open after a later, unrelated event", so cox folds the whole history into the set of decisions still
-open. The grammar and the fold are ported verbatim from firstmate's `bin/fm-classify-lib.sh` (pinned `1e0e773`,
+open. The grammar and the fold are ported verbatim from firstmate's `bin/fm-classify-lib.sh` (pinned `a8572f6`,
 cox-supervision-port wave 2). Executable owner: `internal/protocol/decision` (pure, no I/O) and its tests; the drain
 rendering is `internal/wake/present.go`.
 

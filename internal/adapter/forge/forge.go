@@ -14,6 +14,10 @@ type PR struct {
 	State     string // open | merged | closed
 	Draft     bool   // true while the PR is a draft (not ready for merge)
 	Mergeable bool   // true only when the forge reports the PR cleanly mergeable (no conflicts, mergeable state known)
+
+	// MergeableUnknown is true while the forge has not computed mergeability yet (GitHub `mergeable: UNKNOWN`, e.g.
+	// recomputing after a sibling merge). Mergeable is then false too, but it is not a conflict (B-60).
+	MergeableUnknown bool
 }
 
 // Check is one CI check run. Status is the run status (queued | in_progress | completed); Conclusion is set only when
@@ -47,7 +51,8 @@ type Forge interface {
 	Checks(pr PR) ([]Check, error)
 	// Comments returns the PR's review comments and threads.
 	Comments(pr PR) ([]Comment, error)
-	// Merged reports whether the PR is merged.
+	// Merged reports whether the PR is merged, read live from the forge (never from the passed struct, which may predate a
+	// merge).
 	Merged(pr PR) (bool, error)
 	// Merge merges the PR with its head sha pinned (the equivalent of --match-head-commit), so a push between the read and
 	// the merge is rejected by the forge rather than silently merging a different head. method is "squash"|"merge"|"rebase".

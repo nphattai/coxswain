@@ -15,7 +15,7 @@ in the skills.
 
 Run `cox wake drain --epic <dir>` at the start of every turn, handle each wake, then `cox wake ack-through <gen> --epic
 <dir>` through the highest generation you handled. A wake is the watcher telling you something changed without spending
-a turn to poll; the kinds are `question`, `input_required`, `pr_ready`, `worker_done`, `stuck`, `runaway`, `stale`,
+a turn to poll; the kinds are `question`, `input_required`, `pr_ready`, `worker_done`, `stuck`, `stale`,
 `unknown_probe`, `status`.
 
 A plain `status` wake is progress only: it never means a worker is finished. A worker signals completion with a
@@ -27,8 +27,9 @@ re-running it, so wait for its completion signal; if it goes idle without one th
 
 If an Orca terminal doorbell ("You have N orchestration messages. Run `orca orchestration check`") woke you but the
 drain is empty, the watcher already consumed and classified that mail; there is nothing to do. Reply with one line and
-make no tool call, so the turn ends immediately. (The Claude leader never sees this: its `UserPromptSubmit` hook
-suppresses the empty doorbell before a turn starts.)
+make no tool call, so the turn ends immediately. (That doorbell is Orca's own; the Claude leader never sees it because
+its `UserPromptSubmit` hook suppresses the empty doorbell before a turn starts. The cox watcher itself never types into
+a push leader.)
 
 ## Idle differs by harness
 
@@ -36,7 +37,8 @@ Read your harness capability card (`docs/adapters/<name>.md`).
 
 - **Push harness (Claude Code, Pi):** hooks do the waking. `UserPromptSubmit` (Pi: the cox extension's
   `before_agent_start`) attaches unread wakes to your turn and `Stop` (Pi: `agent_settled`) reopens a turn when an urgent
-  wake is queued. You do nothing special when idle; never run `cox wake wait`.
+  wake is queued. You do nothing special when idle; never run `cox wake wait`. The watcher never types a doorbell into
+  your terminal: the hook rewake is the only wake.
 - **Pull harness (Codex, any new harness without a push card):** when you have nothing left to do, make your **last tool call**
   `cox wake wait --max 25m --epic <dir>`. It blocks until a wake arrives (prints it, exit 0) or the deadline passes
   (exit 3), so the next turn sees the wake without polling. The watcher also sends a doorbell to your terminal as a

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/nphattai/coxswain/hooks"
@@ -77,15 +78,19 @@ func cmdWorkspaceInit(args []string) int {
 		return usageErr("cox workspace init --root <dir> --repo alias=path[:production] ... [--from-repos-md <path>]")
 	}
 
+	// Print what Scaffold wrote even when it failed part-way, so every file it changed is named.
 	rep, err := workspace.Scaffold(wsRoot, repos)
-	if err != nil {
-		return fail("%v", err)
-	}
 	for _, c := range rep.Created {
 		fmt.Println("created", c)
 	}
+	for _, u := range rep.Updated {
+		fmt.Println("updated", u)
+	}
 	for _, p := range rep.Present {
 		fmt.Println("present", p)
+	}
+	if err != nil {
+		return fail("%v", err)
 	}
 
 	// Leader hooks for every harness the policy allows as a leader (claude -> .claude/settings.json,
@@ -95,8 +100,9 @@ func cmdWorkspaceInit(args []string) int {
 		return fail("%v", err)
 	}
 	// Stale-policy notice (DESIGN item 6): an existing cox/policy.json whose harness options lag the template (e.g. a
-	// pre-pi workspace) gets one notice per missing harness. init never rewrites the file, so the captain enables it by
-	// hand. On a fresh init the policy was just scaffolded from the template, so there is nothing to report.
+	// pre-pi workspace) gets one notice per missing harness. Scaffold adds only a missing required section (B-43, an
+	// `updated` line above) and never edits one that exists, so the captain enables a harness option by hand. On a fresh
+	// init the policy was just scaffolded from the template, so there is nothing to report.
 	if tmpl, terr := workspace.TemplatePolicy(); terr == nil {
 		for _, n := range workspace.StaleOptionNotices(pol, tmpl) {
 			fmt.Println("notice:", n)
@@ -107,11 +113,16 @@ func cmdWorkspaceInit(args []string) int {
 		// <ws>/.pi/extensions/ WITHOUT an epic marker, so the unbound leader supervises every active epic of the
 		// workspace (DESIGN item 3). The .pi/extensions/ gitignore line is added by Scaffold's gitignoreRules.
 		if h == "pi" {
+			current := pi.ExtensionCurrent(wsRoot, "")
 			entry, err := pi.InstallExtension(wsRoot, "")
 			if err != nil {
 				return fail("%v", err)
 			}
-			fmt.Printf("hooks: installed cox pi extension at %s (hash %s, unbound leader; load with -e)\n", entry, pi.ExtensionHash()[:12])
+			if current {
+				fmt.Printf("hooks: %s already current (pi leader, unbound)\n", entry)
+			} else {
+				fmt.Printf("hooks: installed cox pi extension at %s (hash %s, unbound leader; pi auto-discovers it)\n", entry, pi.ExtensionHash()[:12])
+			}
 			continue
 		}
 		path, changed, err := writeLeaderHooks(wsRoot, h)
@@ -127,18 +138,36 @@ func cmdWorkspaceInit(args []string) int {
 			fmt.Printf("hooks: %s already current (%s leader)\n", path, h)
 		}
 	}
+	// Each --repo is named explicitly, so it is registered with Orca exactly as `cox workspace add-repo` does, last so a
+	// failure leaves nothing else undone. Only a repo the registry actually holds is registered: Scaffold seeds
+	// workspace.json from --repo only when it is new, and Orca has no `repo remove` (B-35). A --from-repos-md migration
+	// does not register.
+	if *fromReposMD == "" && len(repos) > 0 {
+		ws, err := workspace.Load(wsRoot)
+		if err != nil {
+			return fail("%v", err)
+		}
+		for _, r := range repos {
+			if !slices.ContainsFunc(ws.Repos, func(x workspace.Repo) bool { return x.Path == r.Path }) {
+				continue
+			}
+			if err := registerRepoWithOrca(r); err != nil {
+				return fail("repo %s: %v", r.Alias, err)
+			}
+		}
+	}
 	return 0
 }
 
 // cmdWorkspaceHooks (re)writes the leader hooks for one harness into the workspace, creating the settings file when
-// absent and merging the four hook groups (from hooks/hooks.json, the single shape source) as `cox hook <name>`
+// absent and merging the four hook groups (from hooks/leader.json, the single shape source) as `cox hook <name>`
 // commands, keeping any existing user entries. Idempotent: a second run changes nothing.
 func cmdWorkspaceHooks(args []string) int {
 	fs := flag.NewFlagSet("workspace hooks", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	root := fs.String("root", ".", "workspace root")
 	harnessName := fs.String("harness", "claude", "harness whose hooks to install: "+harnessOptions())
-	epicDir := fs.String("epic", "", "epic dir the pi extension binds (pi only)")
+	epicDir := epicFlag(fs, "", "epic dir the pi extension binds (pi only)")
 	dryRun := fs.Bool("dry-run", false, "pi only: print the extension install plan and write nothing")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -175,12 +204,25 @@ func installPiHooks(root, epicDir string, dryRun bool) int {
 			filepath.Join(root, pi.ExtensionRelDir), pi.ExtensionHash()[:12], epicDir)
 		return 0
 	}
+	current := pi.ExtensionCurrent(root, epicDir)
 	entry, err := pi.InstallExtension(root, epicDir)
 	if err != nil {
 		return fail("%v", err)
 	}
-	fmt.Printf("hooks: installed cox pi extension at %s (hash %s, epic %s; load with -e)\n", entry, pi.ExtensionHash()[:12], epicDir)
+	if current {
+		fmt.Printf("hooks: %s already current (pi leader, %s)\n", entry, piBinding(epicDir))
+	} else {
+		fmt.Printf("hooks: installed cox pi extension at %s (hash %s, %s; pi auto-discovers it)\n", entry, pi.ExtensionHash()[:12], piBinding(epicDir))
+	}
 	return 0
+}
+
+// piBinding names what a Pi extension install is bound to: one epic, or every active epic (unbound).
+func piBinding(epicDir string) string {
+	if epicDir == "" {
+		return "unbound leader"
+	}
+	return "epic " + epicDir
 }
 
 // cmdWorkspaceAddRepo appends a repo to cox/workspace.json (production defaults to the checkout's origin/HEAD, else
@@ -208,7 +250,25 @@ func cmdWorkspaceAddRepo(args []string) int {
 		return fail("%v", err)
 	}
 	fmt.Printf("added repo %s (%s, production %s)\n", r.Alias, r.Ref(), r.Production)
+	if err := registerRepoWithOrca(r); err != nil {
+		return fail("added repo %s to the workspace, but %v", r.Alias, err)
+	}
 	return 0
+}
+
+// registerRepoWithOrca registers a named checkout Orca does not know and prints one line when it did (B-34b). Naming a
+// repo (add-repo, init --repo) is the captain's intent to work in it: an epic worktree for an unregistered checkout would
+// otherwise fail late with repo_not_found. A repo addressed by a backend name, or an unknown answer (no orca), changes
+// nothing. The error names the fix.
+func registerRepoWithOrca(r workspace.Repo) error {
+	if r.Path == "" || orcaRepoStatus(r.Path) != orcaRepoUnregistered {
+		return nil
+	}
+	if err := orcaRepoAdd(r.Path); err != nil {
+		return fmt.Errorf("registering %s with Orca failed: %v; run: %s", r.Path, err, orcaRepoFix(r.Path))
+	}
+	fmt.Printf("registered %s with orca\n", r.Path)
+	return nil
 }
 
 // parseRepoFlag parses alias=ref[:production]. ref is an absolute checkout path (leading /) or a backend repo name; when
@@ -261,12 +321,12 @@ func expandTilde(p string) string {
 	return filepath.Join(home, p[2:])
 }
 
-// hookScriptRe extracts the hook name from a hooks/hooks.json command (".../hooks/<name>.sh").
-var hookScriptRe = regexp.MustCompile(`hooks/([a-z0-9-]+)\.sh`)
+// hookScriptRe extracts the hook name from a hooks/leader.json command ("cox hook <name>").
+var hookScriptRe = regexp.MustCompile(`^cox hook ([a-z0-9-]+)$`)
 
 // writeLeaderHooks writes the leader hook groups for one harness into its workspace settings file, creating it when
 // absent and merging with any non-cox entries. It returns the file path (empty when the harness has no hook target),
-// whether it changed the file, and any error. The group shapes come from hooks/hooks.json; only the command is
+// whether it changed the file, and any error. The group shapes come from hooks/leader.json; only the command is
 // harness-specific (`cox hook <name>` for claude, plus `--harness codex` for codex, whose async key is `async` not
 // `asyncRewake`). Idempotent: sorted-key JSON makes a re-run byte-identical.
 func writeLeaderHooks(root, harnessName string) (string, bool, error) {
@@ -320,7 +380,7 @@ func writeLeaderHooks(root, harnessName string) (string, bool, error) {
 	return path, true, nil
 }
 
-// coxHookGroups derives the per-event cox hook groups for a harness from hooks/hooks.json: each group's shape (matcher,
+// coxHookGroups derives the per-event cox hook groups for a harness from hooks/leader.json: each group's shape (matcher,
 // timeout, async) is kept, only the command is rewritten to `cox hook <name>` (plus `--harness codex` for codex, whose
 // async key is `async`, not claude's `asyncRewake`). Returns event -> []group.
 func coxHookGroups(harnessName string) (map[string][]any, error) {
@@ -328,14 +388,14 @@ func coxHookGroups(harnessName string) (map[string][]any, error) {
 		Hooks map[string][]json.RawMessage `json:"hooks"`
 	}
 	if err := json.Unmarshal(hooks.JSON, &manifest); err != nil {
-		return nil, fmt.Errorf("parse embedded hooks.json: %w", err)
+		return nil, fmt.Errorf("parse embedded hooks/leader.json: %w", err)
 	}
 	out := map[string][]any{}
 	for event, rawGroups := range manifest.Hooks {
 		for _, rg := range rawGroups {
 			var group map[string]any
 			if err := json.Unmarshal(rg, &group); err != nil {
-				return nil, fmt.Errorf("parse hooks.json %s group: %w", event, err)
+				return nil, fmt.Errorf("parse hooks/leader.json %s group: %w", event, err)
 			}
 			hookList, _ := group["hooks"].([]any)
 			for _, h := range hookList {

@@ -121,3 +121,53 @@ func TestRouteBriefClearKeyNeverInOutput(t *testing.T) {
 		t.Fatalf("the API key must never appear in output; stdout=%q stderr=%q", out, errOut)
 	}
 }
+
+// cox route --brief on a real template-shaped story sends the model only the task sections (never the Working rules or
+// the frontmatter), keeps min_confidence out of the request, and prints the `fallback:` line when a runner-up rule is
+// taken (firstmate 795e4b5, delta G).
+func TestRouteBriefSendsTaskSectionsAndPrintsFallback(t *testing.T) {
+	t.Setenv("TYPESAFE_API_KEY", briefTestKey)
+	epic, brief := typedWorkspace(t)
+	polPath := filepath.Join(filepath.Dir(filepath.Dir(filepath.Dir(epic))), "cox", "policy.json")
+	b, err := os.ReadFile(polPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	two := strings.Replace(string(b), `"rules": [{"when":"backend API work","profiles":[{"harness":"claude"},{"harness":"codex"}]}]`,
+		`"rules": [{"when":"backend API work","min_confidence":0.9,"profiles":[{"harness":"claude"}]},{"when":"docs only","min_confidence":0.2,"profiles":[{"harness":"codex"}]}]`, 1)
+	if two == string(b) {
+		t.Fatal("typedWorkspace rule line not found to extend")
+	}
+	mustWrite(t, polPath, two)
+	mustWrite(t, brief, "---\nid: s\nharness: auto\nkind: ship\nmode: direct-PR\n---\n\n# s\n\n## Read first\nREAD-FIRST-BOILERPLATE\n\n"+
+		"## Goal\nImplement the backend API.\n\n## Scope\nOnly api/.\n\n## Acceptance criteria\nIt answers.\n\n## Working rules\nWORKING-RULES-BOILERPLATE\n")
+	reply := `{"model":"jev-latest","answers":{"rule":{"choice":"rule_1","confidence":0.7,"probabilities":{"rule_1":0.7,"rule_2":0.3,"default":0.0}}}}`
+	var body string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		body = string(raw)
+		_, _ = io.WriteString(w, reply)
+	}))
+	defer srv.Close()
+	t.Setenv("COX_TYPESAFE_BASE_URL", srv.URL)
+
+	var rc int
+	out, _ := captureStdErrOut(t, func() { rc = cmdRoute([]string{"--brief", brief, "--epic", epic}) })
+	if rc != 0 {
+		t.Fatalf("exit %d", rc)
+	}
+	for _, want := range []string{`## Goal\nImplement the backend API.`, `## Scope\nOnly api/.`, `## Acceptance criteria\nIt answers.`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("request lacks the task section %q: %s", want, body)
+		}
+	}
+	for _, not := range []string{"BOILERPLATE", "direct-PR", "min_confidence", "harness: auto"} {
+		if strings.Contains(body, not) {
+			t.Errorf("request must not carry %q: %s", not, body)
+		}
+	}
+	if !strings.Contains(out, "  fallback: rule_2 (docs only) probability 0.3 clears its floor 0.2; rule_1 probability 0.7 is below its floor 0.9") ||
+		!strings.Contains(out, "status: clear") || !strings.Contains(out, "profile: --harness codex") {
+		t.Fatalf("the fallback must be printed and resolve rule_2's profile:\n%s", out)
+	}
+}

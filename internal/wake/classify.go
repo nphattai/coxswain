@@ -25,15 +25,13 @@ const (
 	KindPRReady       Kind = "pr_ready"
 	KindWorkerDone    Kind = "worker_done"
 	KindStuck         Kind = "stuck"
-	KindRunaway       Kind = "runaway"
 	KindStale         Kind = "stale"
 	KindUnknownProbe  Kind = "unknown_probe"
 	KindStatus        Kind = "status"
 	KindIdleNoDone    Kind = "idle_no_done"
-	KindQuotaLow      Kind = "quota_low"    // a harness at/near quota exhaustion (M11)
-	KindQuotaHealth   Kind = "quota_health" // the automatic quota source stayed unknown for two polls (M11/M13b)
+	KindQuotaLow      Kind = "quota_low" // a harness at/near quota exhaustion (M11)
 	// KindCheck is a registered custom check's output, or a rejected unauthenticated check (firstmate's check row,
-	// fm-watch.sh:2544,2583): always actionable, so urgent.
+	// fm-watch.sh:2689,2728): always actionable, so urgent.
 	KindCheck Kind = "check"
 
 	// Review wakes (M13): a lavish review comment lands as review_feedback (routine, batched); a review decision or a
@@ -46,7 +44,7 @@ const (
 	KindHeartbeat Kind = "heartbeat"
 )
 
-// urgentKinds start a leader turn at once (v1 hook-stop-rewake batching rule). The rest (status, quota_health) batch up
+// urgentKinds start a leader turn at once (v1 hook-stop-rewake batching rule). The rest (status, quota_low when routine) batch up
 // to WAKE_BATCH so several routine wakes cost one turn. stale and unknown_probe are urgent: firstmate's stale: surfaces
 // (wedge escalation, stale surface, gone endpoint, pause recheck) wake the primary (leader ruling 2026-09-24,
 // cox-supervision-port wave 2). quota_low is watcher-generated (never from
@@ -54,7 +52,7 @@ const (
 // so the quota pass rings the leader doorbell directly for the urgent case rather than relying on this map.
 var urgentKinds = map[Kind]bool{
 	KindQuestion: true, KindInputRequired: true, KindPRReady: true,
-	KindWorkerDone: true, KindStuck: true, KindRunaway: true,
+	KindWorkerDone: true, KindStuck: true,
 	KindIdleNoDone: true, KindReviewDecision: true,
 	KindStale: true, KindUnknownProbe: true,
 	KindCheck: true,

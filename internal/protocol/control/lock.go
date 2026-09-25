@@ -17,7 +17,7 @@ const lockStale = 5 * time.Second
 
 // LockPath is the story's lifecycle lock (fm state/.control-<id>.lock): <epic>/.cox/sessions/.control-<story>.lock.
 // Every control verb holds it from before it resolves the story's state to its last write, so two lifecycle actions on
-// one story serialize instead of interleaving (fm-control.sh:305).
+// one story serialize instead of interleaving (fm-control.sh:311).
 func LockPath(epic, story string) string {
 	return filepath.Join(epic, ".cox", "sessions", ".control-"+story+".lock")
 }

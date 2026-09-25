@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/nphattai/coxswain/internal/epic"
 	"github.com/nphattai/coxswain/internal/protocol/question"
 	"github.com/nphattai/coxswain/internal/state"
 	"github.com/nphattai/coxswain/internal/wake"
@@ -44,22 +45,9 @@ func isDir(p string) bool {
 	return err == nil && fi.IsDir()
 }
 
-func epicClosed(ep string) bool {
-	if _, err := os.Stat(filepath.Join(ep, ".cox.closed")); err == nil && !isDir(filepath.Join(ep, ".cox")) {
-		return true
-	}
-	b, err := os.ReadFile(filepath.Join(ep, "DESIGN.md"))
-	if err != nil {
-		return false
-	}
-	for _, l := range strings.Split(string(b), "\n") {
-		if st, ok := strings.CutPrefix(l, "Status:"); ok {
-			st = strings.ToLower(strings.TrimSpace(st))
-			return strings.HasPrefix(st, "closed") || strings.HasPrefix(st, "complete")
-		}
-	}
-	return false
-}
+// epicClosed is epic.Closed: the one definition doctor and bearings share (the ledger's epic_closed, the local archive,
+// or a closed/complete DESIGN Status).
+func epicClosed(ep string) bool { return epic.Closed(ep) }
 
 // storyFiles are the ids with a stories/<id>.md file.
 func storyFiles(epicDir string) map[string]bool {
@@ -215,6 +203,10 @@ func printFleet(p *printer, o Opts, epics []string) {
 			for _, q := range st.OpenQuestions {
 				p.line("open question " + q)
 			}
+			items = append(items, classifyStory(slug, st)...)
+			if landed(st) {
+				continue // firstmate lists in-flight work only: a landed story keeps its state line, not its tail (B-64)
+			}
 			switch {
 			case o.Endpoint == nil:
 				p.line("endpoint: unknown (no terminal probe)")
@@ -232,7 +224,6 @@ func printFleet(p *printer, o Opts, epics []string) {
 			} else {
 				p.line("status tail: (no status recorded yet)")
 			}
-			items = append(items, classifyStory(slug, st)...)
 		}
 		items = append(items, prReadyItems(ep, slug, sts)...)
 
@@ -272,6 +263,15 @@ func printFleet(p *printer, o Opts, epics []string) {
 			p.line(empty[sec])
 		}
 	}
+}
+
+// landed reports whether a story's work has ended (completed, failed, canceled): the Recently Landed states.
+func landed(st StoryState) bool {
+	switch state.State(st.State) {
+	case state.Completed, state.Failed, state.Canceled:
+		return true
+	}
+	return false
 }
 
 // classifyStory places a story in the bearings sections (bearings SKILL.md "Chat-response contract"): an open question

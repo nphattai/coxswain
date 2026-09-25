@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nphattai/coxswain/internal/boundexec"
 	"github.com/nphattai/coxswain/internal/wake"
 )
 
@@ -28,7 +29,7 @@ func TestTruncationNamesTheStalledStage(t *testing.T) {
 
 func TestRunBoundedExitCodes(t *testing.T) {
 	start := time.Now()
-	if code, err := RunBounded(300*time.Millisecond, "sleep", "30"); err != nil || code != timeoutExit {
+	if code, err := RunBounded(300*time.Millisecond, "sleep", "30"); err != nil || code != boundexec.ExitTimeout {
 		t.Errorf("timed out run: code %d err %v, want 124", code, err)
 	}
 	if time.Since(start) > 5*time.Second {

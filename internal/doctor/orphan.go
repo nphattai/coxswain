@@ -3,7 +3,6 @@ package doctor
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -24,11 +23,11 @@ var ListWatchProcs = func() []WatchProc {
 	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
 		return nil
 	}
-	out, err := exec.Command("ps", "-axww", "-o", "pid=,args=").Output()
-	if err != nil {
+	out, ok := probe("ps", "-axww", "-o", "pid=,args=")
+	if !ok {
 		return nil
 	}
-	return parseWatchProcs(string(out))
+	return parseWatchProcs(out)
 }
 
 // watchEpicRe pulls the pid and the --epic argument out of a `cox watch ... --epic <dir>` command line. The command must
@@ -79,7 +78,9 @@ func OrphanWatchers(roots []string) []string {
 func orphanWatchers(roots []string, procs []WatchProc) []string {
 	var issues []string
 	for _, p := range procs {
-		if p.Epic == "" {
+		// A relative --epic resolves against the watcher's own cwd, which ps does not report: unverifiable from here,
+		// so never an orphan (B-71b; cox watch absolutizes its --epic at parse time, B-71a).
+		if p.Epic == "" || !filepath.IsAbs(p.Epic) {
 			continue
 		}
 		reason := ""

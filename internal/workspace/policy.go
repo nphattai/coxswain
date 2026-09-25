@@ -95,7 +95,7 @@ type Merge struct {
 }
 
 // HarnessRole is the option set and default for one role (leader | worker). Models maps a harness name to the default
-// model id a worker of that harness runs under when a dispatch does not pin one (claude -> claude-opus-4-8, codex ->
+// model id a worker of that harness runs under when a dispatch does not pin one (claude -> claude-opus-5-5, codex ->
 // gpt-5.6-sol): a claude-family default typed at a codex worker made codex reject the launch (M10c). Model is the
 // legacy single default, read only as claude's default so a pre-map policy keeps working. Both are optional and only
 // read for the worker role, via Policy.WorkerModel.
@@ -183,11 +183,14 @@ type RoutingProfile struct {
 // RoutingRule is one captain-authored routing rule (DESIGN wave-4 item 10). When is the natural-language match condition
 // a model's judgment resolves (the leader at decomposition, or Jev's opt-in typed path); code never matches it. Profiles
 // is the non-empty candidate array applied after the match. Approval "captain" makes a matched rule escalate to the
-// captain before dispatch instead of routing; "" or "none" dispatches on the ranked candidate.
+// captain before dispatch instead of routing; "" or "none" dispatches on the ranked candidate. MinConfidence, when
+// declared, replaces the typed path's global 0.6 floor for this rule and is checked against the rule's own probability
+// (firstmate 795e4b5 `min_confidence`); the model never sees it.
 type RoutingRule struct {
-	When     string           `json:"when"`
-	Profiles []RoutingProfile `json:"profiles"`
-	Approval string           `json:"approval,omitempty"` // "" | "none" | "captain"
+	When          string           `json:"when"`
+	Profiles      []RoutingProfile `json:"profiles"`
+	Approval      string           `json:"approval,omitempty"`       // "" | "none" | "captain"
+	MinConfidence *float64         `json:"min_confidence,omitempty"` // nil: the global floor on the answer confidence
 }
 
 // Routing is the worker-routing posture (ADR 0011 baseline default + DESIGN wave-4 item 10 rules). It stays a review_when
@@ -271,16 +274,15 @@ type QuotaNPX struct {
 // Quota is the observe-only quota policy (M11). Like routing and backend it carries why/review_when for the record but is
 // not a mandatory justified section (an epic policy without it keeps working on the code defaults), so adding this field
 // never invalidates an existing policy. Binary overrides the PATH lookup for quota-axi; NPX is the opt-in fallback;
-// low_percent/ok_percent/min_runway_hours/poll_minutes/health_debounce_minutes are the wake and gate thresholds.
+// low_percent/ok_percent/min_runway_hours/poll_minutes are the wake and gate thresholds.
 type Quota struct {
 	Meta
-	Binary                string    `json:"binary"`
-	NPX                   *QuotaNPX `json:"npx"`
-	LowPercent            int       `json:"low_percent"`
-	OKPercent             int       `json:"ok_percent"`
-	MinRunwayHours        int       `json:"min_runway_hours"`
-	PollMinutes           int       `json:"poll_minutes"`
-	HealthDebounceMinutes int       `json:"health_debounce_minutes"`
+	Binary         string    `json:"binary"`
+	NPX            *QuotaNPX `json:"npx"`
+	LowPercent     int       `json:"low_percent"`
+	OKPercent      int       `json:"ok_percent"`
+	MinRunwayHours int       `json:"min_runway_hours"`
+	PollMinutes    int       `json:"poll_minutes"`
 }
 
 // Quota defaults, applied when policy declares none (or is nil).
@@ -289,7 +291,6 @@ const (
 	DefaultQuotaOKPercent      = 25
 	DefaultQuotaMinRunwayHours = 24
 	DefaultQuotaPollMinutes    = 5
-	DefaultQuotaHealthDebounce = 60
 )
 
 // Orca plane values (ADR 0012, decision 4).
@@ -442,17 +443,11 @@ func (p *Policy) QuotaPollMinutes() int {
 	return DefaultQuotaPollMinutes
 }
 
-func (p *Policy) QuotaHealthDebounceMinutes() int {
-	if p != nil && p.Quota.HealthDebounceMinutes > 0 {
-		return p.Quota.HealthDebounceMinutes
-	}
-	return DefaultQuotaHealthDebounce
-}
-
-// DefaultWorkerModel is the captain ruling for a dispatched claude worker with no pinned model: Opus 4.8. It is the
+// DefaultWorkerModel is the captain ruling for a dispatched claude worker with no pinned model: Opus 5.5 (captain
+// 2026-09-23, B-52; was Opus 4.8 from the 2026-09-03 ruling). It is the
 // final fallback under WorkerModel for the claude harness so a claude launch line always carries a --model, even with
 // no policy loaded (ADR 0012 / M10b). Other harnesses have no such ruling: an unmapped harness resolves to no model.
-const DefaultWorkerModel = "claude-opus-4-8"
+const DefaultWorkerModel = "claude-opus-5-5"
 
 // WorkerModel resolves the model a worker of harness `h` runs under and whether one was found: an explicit dispatch
 // model wins, else the per-harness policy default (harness.worker.models[h]), else the legacy harness.worker.model as
@@ -616,6 +611,9 @@ func (p *Policy) routingProblems() []string {
 		case "", "none", "captain":
 		default:
 			problems = append(problems, fmt.Sprintf("%s (invalid approval %q; want none|captain)", where, r.Approval))
+		}
+		if mc := r.MinConfidence; mc != nil && (*mc < 0 || *mc > 1) {
+			problems = append(problems, where+" (min_confidence must be a number from 0 through 1 when present)")
 		}
 		problems = append(problems, profileArrayProblems(where+".profiles", r.Profiles, true)...)
 	}

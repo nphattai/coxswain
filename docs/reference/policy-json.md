@@ -115,6 +115,7 @@ Each entry in `rules` is an object:
 | `when` | string | The natural-language match condition a model's judgment resolves; code never matches it. |
 | `approval` | string | `"captain"` makes a matched rule escalate for the captain's explicit approval before dispatch; `"none"` or absent dispatches on the ranked candidate. |
 | `profiles` | array | The non-empty candidate array applied after the match (each candidate is a profile object below). |
+| `min_confidence` | number | Optional, 0 through 1. On the Jev typed path it replaces the global 0.6 floor for this rule and is checked against the rule's own probability; a pick below it falls to the most probable other option that clears its own floor (ambiguous when none does or the top two tie). The model never sees it. |
 
 Each profile object (in `rules[].profiles` and in `default_profiles`) is:
 
@@ -144,7 +145,6 @@ Observe-only; `cox` never reroutes automatically.
 | `ok_percent` | int | The percentage at which a harness is considered healthy again. |
 | `min_runway_hours` | int | Minimum runway before a low-quota wake. |
 | `poll_minutes` | int | How often quota is polled. |
-| `health_debounce_minutes` | int | Debounce window for health wakes. |
 
 ### `review`
 

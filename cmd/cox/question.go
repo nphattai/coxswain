@@ -20,7 +20,7 @@ func cmdQuestion(args []string) int {
 	qid, rest := onePositional(args[1:])
 	fs := flag.NewFlagSet("question wait", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	epicDir := fs.String("epic", os.Getenv("COX_EPIC"), "epic directory")
+	epicDir := epicFlag(fs, os.Getenv("COX_EPIC"), "epic directory")
 	story := fs.String("story", os.Getenv("COX_STORY"), "story id")
 	max := fs.Duration("max", 25*time.Minute, "max wait before timing out (exit 3)")
 	if err := fs.Parse(rest); err != nil {
