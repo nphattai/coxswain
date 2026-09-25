@@ -7,6 +7,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/nphattai/coxswain/internal/adapter/backend"
+	"github.com/nphattai/coxswain/internal/protocol/busy"
 )
 
 // B-34a: Orca exits non-zero on an ok=false envelope and still prints it on stdout. call must surface Orca's code and
@@ -100,5 +103,46 @@ func must(t *testing.T, err error) {
 	t.Helper()
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+// B-01: a terminal-plane worker on a local dialog (agents[] "waiting") is on a dialog even while its harness-owned busy
+// record says busy - the harness is mid-turn by its own hook. Dialog reports it; Composer keeps the busy record's answer,
+// so the callers that refuse on busy (story done/release) are unchanged.
+func TestDialogSeesWaitingDespiteBusyRecord(t *testing.T) {
+	epic := t.TempDir()
+	if _, err := busy.Arm(epic, "w1", "claude", []string{"hook", "dispatch", "interrupt", "recovery"}); err != nil {
+		t.Fatal(err)
+	}
+	c := New("run")
+	c.Plane = "terminal"
+	c.Epic = epic
+	state := "waiting"
+	c.run = func(args ...string) ([]byte, error) {
+		joined := strings.Join(args, " ")
+		switch {
+		case strings.Contains(joined, "terminal show"):
+			return []byte(`{"ok":true,"result":{"terminal":{"connected":true,"tabId":"T","leafId":"L"}}}`), nil
+		case strings.Contains(joined, "worktree ps"):
+			return []byte(`{"ok":true,"result":{"worktrees":[{"agents":[{"paneKey":"T:L","state":"` + state + `"}]}]}}`), nil
+		}
+		return nil, errors.New("no route: " + joined)
+	}
+	s := backend.Session{Kind: SessionKindTerminal, Handle: "term_w", Story: "w1"}
+	var _ backend.DialogReader = c
+	if !c.Dialog(s) {
+		t.Fatal("waiting agent with a busy record: Dialog = false, want true")
+	}
+	if got, _ := c.Composer(s); got != backend.ComposerBusy {
+		t.Fatalf("Composer = %q, want busy (the busy record still answers Composer)", got)
+	}
+	state = "working"
+	if c.Dialog(s) {
+		t.Fatal("working agent: Dialog = true, want false")
+	}
+	c.Plane = ""
+	state = "waiting"
+	if c.Dialog(s) {
+		t.Fatal("orchestration plane has no agents[] state: Dialog must be false")
 	}
 }

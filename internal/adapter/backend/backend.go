@@ -159,6 +159,14 @@ type Backend interface {
 	Mail() Mailbox
 }
 
+// DialogReader is an optional Backend capability: whether the worker is on a local harness dialog (a permission or
+// question prompt) even while its harness-owned busy record reads busy, which Composer reports first. Interrupt uses
+// it to tell the truth about a dialog its key did not close (B-01); a backend without it falls back to Composer's
+// "blocked".
+type DialogReader interface {
+	Dialog(s Session) bool
+}
+
 // Composer states returned by Backend.Composer.
 const (
 	ComposerEmpty   = "empty"   // the worker is idle at a bare prompt

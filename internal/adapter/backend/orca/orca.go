@@ -548,13 +548,22 @@ func (c *Client) Composer(s backend.Session) (string, error) {
 	if s.Handle == "" {
 		return backend.ComposerUnknown, nil
 	}
-	if c.terminalPlane() {
-		if st, found, err := c.agentStateForHandle(s.Handle); err == nil && found &&
-			strings.EqualFold(strings.TrimSpace(st), "waiting") {
-			return backend.ComposerBlocked, nil
-		}
+	if c.terminalPlane() && c.waiting(s.Handle) {
+		return backend.ComposerBlocked, nil
 	}
 	return c.composerState(s.Handle), nil
+}
+
+// Dialog reports whether the worker's agent is on a local dialog (agents[] "waiting": a permission or question prompt)
+// whatever its busy record says: a harness on a dialog is mid-turn by its own hook, so Composer reads it busy (B-01).
+// Only the terminal plane has the agents[] state; elsewhere it is false (not a proven dialog).
+func (c *Client) Dialog(s backend.Session) bool {
+	return c.terminalPlane() && s.Handle != "" && c.waiting(s.Handle)
+}
+
+func (c *Client) waiting(handle string) bool {
+	st, found, err := c.agentStateForHandle(handle)
+	return err == nil && found && strings.EqualFold(strings.TrimSpace(st), "waiting")
 }
 
 // composerState classifies a worker terminal's composer from a bounded `terminal read` tail: empty | pending | busy |

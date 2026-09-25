@@ -257,8 +257,34 @@ func TestPortControl(t *testing.T) {
 	// n/a devin_interrupt_invalidates_busy fm:tests/fm-control.test.sh:327 - devin has no cox harness card
 	// n/a devin_idle_interrupt_sends_one_press fm:tests/fm-control.test.sh:346 - devin has no cox harness card
 	// n/a devin_exit_after_turn_ended_types_quit_once fm:tests/fm-control.test.sh:363 - devin has no cox harness card
-	// n/a devin_interrupt_dismisses_revert_picker fm:tests/fm-control.test.sh:377 - devin has no cox harness card
-	// n/a devin_stuck_picker_refuses_and_exit_types_nothing fm:tests/fm-control.test.sh:390 - devin has no cox harness card
+	// n/a devin_interrupt_dismisses_revert_picker fm:tests/fm-control.test.sh:377 - devin has no cox harness card, and cox sends no second key to dismiss a surface (a harness dialog is answered by a human, never closed blind); the refusal half is the case below
+
+	// fm: tests/fm-control.test.sh:390@a8572f6 (B-01: firstmate's surface an interrupt left open - Devin's revert picker -
+	// is cox's local harness dialog, composer "blocked". The interrupt fails instead of reporting ok, the open dialog and
+	// its rows are recorded, and nothing is typed into it: no doorbell, no second key)
+	t.Run("FM/fm-control/stuck_picker_refuses_and_types_nothing", func(t *testing.T) {
+		for _, h := range registry.Names() {
+			epic := epicWith(t, h)
+			b := fake.New()
+			b.Liveness = backend.Alive
+			b.ComposerState = backend.ComposerBlocked
+			b.ScreenRows = []string{"Do you want to proceed?", "❯ 1. Yes", "  2. No"}
+			err := ctl(epic, b, h).Interrupt(story, sess)
+			if err == nil || !strings.Contains(err.Error(), "dialog") {
+				red(t, "control.interrupt-dialog", "%s: interrupt over an open dialog returned %v, want a dialog failure", h, err)
+				continue
+			}
+			if n := called(b, "Send"); n > 0 {
+				red(t, "control.interrupt-dialog", "%s: %d doorbell(s) typed into the open dialog", h, n)
+			}
+			events, _, lerr := state.Load(epic)
+			must(t, lerr)
+			last := events[len(events)-1].Evidence
+			if last["dialog"] != "open" || last["dialog_screen"] == nil {
+				red(t, "control.interrupt-dialog", "%s: the interrupt event does not record the open dialog: %v", h, last)
+			}
+		}
+	})
 
 	// fm: tests/fm-control.test.sh:410 (cox records canonical harness names; the translated half is "never guess")
 	t.Run("FM/fm-control/harness_family_resolution", func(t *testing.T) {
