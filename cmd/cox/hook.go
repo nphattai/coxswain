@@ -58,6 +58,12 @@ func cmdHook(args []string) int {
 	if err := fs.Parse(args[1:]); err != nil {
 		return 2
 	}
+	// A worker worktree carries the leader's hook settings once they are committed (in-repo workspace), and its launch
+	// env sets COX_STORY. The wake hooks are leader-only, so a worker skips them before resolving any workspace or epic.
+	if s := strings.TrimSpace(*story); s != "" && s != leaderStory && (name == "prompt-drain" || name == "stop-rewake") {
+		fmt.Fprintf(os.Stderr, "cox hook %s: worker session (story %s), leader hook skipped\n", name, s)
+		return 0
+	}
 
 	switch name {
 	case "prompt-drain":
