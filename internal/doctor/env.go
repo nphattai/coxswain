@@ -337,9 +337,10 @@ func InspectWorkspace(wsRoot string) WorkspaceReport {
 		})
 	}
 
-	// A repo checkout that still carries cox/policy.json: nothing reads it and it drifts from the workspace copy.
+	// A repo checkout that still carries cox/policy.json: nothing reads it and it drifts from the workspace copy. A repo
+	// registered at the workspace root (in-repo workspace) carries the workspace's own policy, which is not a copy.
 	for _, r := range ws.Repos {
-		if r.Path != "" && exists(filepath.Join(r.Path, "cox", "policy.json")) {
+		if r.Path != "" && !samePath(r.Path, wsRoot) && exists(filepath.Join(r.Path, "cox", "policy.json")) {
 			rep.PolicyInRepo = append(rep.PolicyInRepo, r.Alias)
 		}
 	}
@@ -347,6 +348,17 @@ func InspectWorkspace(wsRoot string) WorkspaceReport {
 	// cut from it. A name-only repo has no local path to check.
 	rep.RepoIssues = repoCheckoutIssues(ws)
 	return rep
+}
+
+// samePath reports whether two paths name one directory, resolving symlinks when both resolve (macOS /var is
+// /private/var, so a registered path and the discovered root can differ only by a link).
+func samePath(a, b string) bool {
+	if ra, err := filepath.EvalSymlinks(a); err == nil {
+		if rb, err := filepath.EvalSymlinks(b); err == nil {
+			return ra == rb
+		}
+	}
+	return filepath.Clean(a) == filepath.Clean(b)
 }
 
 // repoCheckoutIssues returns a fix-hinted message for every path-backed repo whose checkout is missing or is not a git
