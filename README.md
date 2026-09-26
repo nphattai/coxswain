@@ -225,7 +225,7 @@ The Claude plugin (`claude plugin install`) is an optional way to get the skills
 Start here, in order:
 
 - [Install](docs/getting-started/install.md) - Orca, the `cox` binary, your harness, and `cox doctor`.
-- [Create a workspace](docs/getting-started/workspace.md) - one `cox workspace init`, and both workspace shapes.
+- [Create a workspace](docs/getting-started/workspace.md) - one `cox workspace init`, and the three workspace shapes.
 - [First epic](docs/getting-started/first-epic.md) - `epic new`, `epic stories`, `story dispatch`, and the leader wake loop.
 
 Then:
