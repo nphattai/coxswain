@@ -43,7 +43,7 @@ Verify the result any time:
 cox doctor --root $HOME/Work/acme-ops
 ```
 
-## Two workspace shapes
+## Three workspace shapes
 
 ### Shape A - a company ops workspace over several repos
 
@@ -86,11 +86,46 @@ cox epic stories --epic $HOME/Work/henrylab-ops/henrylab/epics/notes-sync
 cox story dispatch notes-sync-henrylab --epic $HOME/Work/henrylab-ops/henrylab/epics/notes-sync
 ```
 
-### Do not put the workspace inside a monorepo
+### Shape C - one repo, in-repo workspace (Orca only)
 
-The in-repo layout - a `cox/` and epic tree inside the monorepo working tree - is **unsupported**. The epic tree,
-`.cox/` state, and worktree symlinks would land in the repo's working tree (polluting its status and diffs), and the
-worktrees would nest under the repo they are cut from. Keep the workspace in a sibling `<repo>-ops` folder, as shape B
-shows.
+The workspace root **is** the product repo checkout: `cox/`, the hooks, and the epic tree live in the repo itself, so
+DESIGN, stories, reports and `ledger.jsonl` become ordinary tracked docs of the product. It runs on the Orca backend
+only: Orca places every worktree under its own directory (`~/orca/workspaces/<repo>/<name>`), outside the repo. That
+placement is Orca's convention, not a cox check, so worktrees never nest under the checkout they are cut from.
+
+Preflight first. Init's ignore rules (`**/.cox/`, `**/epics/*/<alias>`) are repo-wide, so they would silently hide any
+product path that already matches them. This must print nothing:
+
+```bash
+git -C $HOME/Work/myrepo ls-files | grep -E '(^|/)\.cox/|/epics/'
+```
+
+Then init with the repo registered at the root, and put epics under `ops/` (`project=ops`, so an epic is
+`$REPO/ops/epics/<slug>`):
+
+```bash
+cox workspace init --root $HOME/Work/myrepo --repo myrepo=$HOME/Work/myrepo
+
+# bootstrap PR: commit every path init generated, the captain merges it to main
+#   cox/policy.json .claude/settings.json .codex/hooks.json .agents/skills/ .gitignore AGENTS.md
+
+cox epic new ops feature-x --repo myrepo --root $HOME/Work/myrepo
+cox epic stories --epic $HOME/Work/myrepo/ops/epics/feature-x
+cox story dispatch feature-x-myrepo --epic $HOME/Work/myrepo/ops/epics/feature-x
+```
+
+Rules that come with the shape:
+
+- **Bootstrap commit.** `cox epic new` cuts `epic/<slug>` from the production branch, not from the leader's working
+  tree, so workers see the generated files only once they are on `main`. Commit every path init generated in one PR
+  and have the captain merge it before the first `cox epic new`.
+- **`ops/**` only.** The leader keeps writing the epic tree on the root checkout's default branch. It commits and
+  pushes `ops/**` and nothing else there; every product change goes through a story branch and a captain-merged PR.
+- **Develop in a worktree.** Every agent session opened in the repo root runs the leader hooks and counts as a leader
+  terminal (`cox doctor` reports two as an ISSUE). While an epic is active, do other development in an Orca worktree
+  of the repo, not in the root checkout.
+- **One `AGENTS.md`, two roles.** The leader and every worker read the same file. `cox/workspace.json` exists only in
+  the leader checkout (it is gitignored), and `COX_STORY` is set only in a worker; the leader-only wake hooks skip a
+  worker session on that variable.
 
 Next: [First epic](first-epic.md) explains each command above in full.
