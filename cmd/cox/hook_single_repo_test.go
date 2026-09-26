@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -45,5 +47,34 @@ func TestWakeHooksRunForLeaderStory(t *testing.T) {
 	out, _ := captureStdErrOut(t, func() { code = cmdHook([]string{"prompt-drain"}) })
 	if code != 0 || !strings.Contains(out, "Watcher wakes") {
 		t.Errorf("leader prompt-drain: code=%d stdout=%q, want the wake attached", code, out)
+	}
+}
+
+// A probe that cannot reach Orca proves nothing about the recorded leader: a second terminal in the workspace root must
+// not re-bind .cox/leader on it. This goes through the real probeLeaderHandle with an `orca` on PATH that always fails.
+func TestLeaderTerminalKeepsOwnershipOnProbeError(t *testing.T) {
+	ws := t.TempDir()
+	mustWrite(t, filepath.Join(ws, "cox", "workspace.json"), "{}")
+	epic := filepath.Join(ws, "ops", "epics", "e1")
+	mustWrite(t, filepath.Join(epic, ".cox", "run"), "r1\n")
+	bin := t.TempDir()
+	mustWrite(t, filepath.Join(bin, "orca"), "#!/bin/sh\necho 'orca: transient failure' >&2\nexit 1\n")
+	if err := os.Chmod(filepath.Join(bin, "orca"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	for _, plane := range []string{"terminal", "orchestration"} {
+		t.Run(plane, func(t *testing.T) {
+			mustWrite(t, filepath.Join(epic, ".cox", "leader"), "term_old\n")
+			t.Setenv("COX_PLANE", plane)
+			t.Setenv("ORCA_TERMINAL_HANDLE", "term_new")
+			t.Chdir(ws)
+			if isLeader, rebound := leaderTerminal(epic); isLeader || rebound {
+				t.Errorf("probe error: isLeader=%v rebound=%v, want false/false", isLeader, rebound)
+			}
+			if got := readLeader(epic); got != "term_old" {
+				t.Errorf("probe error must not re-bind .cox/leader: %q", got)
+			}
+		})
 	}
 }
