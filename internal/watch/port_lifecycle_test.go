@@ -124,7 +124,8 @@ func lcCoxEnv(t *testing.T, extra ...string) []string {
 	if err := os.WriteFile(filepath.Join(bin, "orca"), []byte("#!/bin/sh\necho '{\"ok\":false,\"error\":{\"message\":\"fake orca\"}}'\nexit 1\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	return append(append(os.Environ(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"), "ORCA_RUN_ID=run-fake"), extra...)
+	// COX_STORY cleared: the child's stop-rewake is a leader hook, and a suite run from a worker session inherits it.
+	return append(append(os.Environ(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"), "ORCA_RUN_ID=run-fake", "COX_STORY="), extra...)
 }
 
 // lcCox starts a real cox child; cleanup kills it. done closes once it has been reaped (ProcessState is then set).

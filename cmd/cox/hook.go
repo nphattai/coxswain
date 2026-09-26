@@ -58,6 +58,12 @@ func cmdHook(args []string) int {
 	if err := fs.Parse(args[1:]); err != nil {
 		return 2
 	}
+	// A worker worktree carries the leader's hook settings once they are committed (in-repo workspace), and its launch
+	// env sets COX_STORY. The wake hooks are leader-only, so a worker skips them before resolving any workspace or epic.
+	if s := strings.TrimSpace(*story); s != "" && s != leaderStory && (name == "prompt-drain" || name == "stop-rewake") {
+		fmt.Fprintf(os.Stderr, "cox hook %s: worker session (story %s), leader hook skipped\n", name, s)
+		return 0
+	}
 
 	switch name {
 	case "prompt-drain":
@@ -297,8 +303,8 @@ func notLeaderTerminal(epicDir string) bool {
 //     this terminal is the leader; re-bind .cox/leader to ORCA_TERMINAL_HANDLE so the watcher rings it next tick.
 //   - otherwise -> not the leader.
 //
-// With no live backend (no run) or no ORCA_TERMINAL_HANDLE, liveness cannot be probed, so it falls back to plain handle
-// equality and never re-binds. prompt-drain, stop-rewake and session-start all reach this through filterLeaderEpics /
+// With no live backend (no run), no ORCA_TERMINAL_HANDLE, or a probe that errors or reports Unknown, liveness is not
+// proven, so it falls back to plain handle equality and never re-binds. prompt-drain, stop-rewake and session-start all reach this through filterLeaderEpics /
 // notLeaderTerminal, so a restarted leader re-binds on its first turn (finding 4).
 func leaderTerminal(epicDir string) (isLeader bool, rebound bool) {
 	recorded := readLeader(epicDir)
@@ -314,7 +320,7 @@ func leaderTerminal(epicDir string) (isLeader bool, rebound bool) {
 	}
 	live, canProbe := probeLeaderHandle(epicDir, recorded)
 	if !canProbe {
-		return false, false // no backend (no run): equality only, and equality already failed above
+		return false, false // no backend (no run) or the probe could not tell: equality only, and it already failed above
 	}
 	if live {
 		return false, false // a different, still-live leader owns the epic; do not steal it
@@ -329,14 +335,19 @@ func leaderTerminal(epicDir string) (isLeader bool, rebound bool) {
 
 // probeLeaderHandle reports whether the epic's recorded leader handle is live (Probe == Alive) and whether it could be
 // probed at all (canProbe=false when there is no live backend, i.e. no run). It is a package var so a test can inject a
-// fake prober without a real Orca. A probe error or any non-Alive liveness counts as not live.
+// fake prober without a real Orca. A probe error or an Unknown liveness is canProbe=false: ownership moves only to a
+// terminal that proved the recorded leader dead, never on a transient Orca failure (a second terminal in an in-repo
+// workspace root would otherwise steal the epic).
 var probeLeaderHandle = func(epicDir, handle string) (live bool, canProbe bool) {
 	b, _ := newBackend(epicDir)
 	if b == nil {
 		return false, false
 	}
 	l, err := b.Probe(backend.Session{Kind: "orca", Handle: handle})
-	return err == nil && l == backend.Alive, true
+	if err != nil || l == backend.Unknown {
+		return false, false
+	}
+	return l == backend.Alive, true
 }
 
 // sameWorkspaceAsEpic reports whether this terminal's cwd and the epic dir resolve to the same workspace root (the

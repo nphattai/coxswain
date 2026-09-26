@@ -71,5 +71,5 @@ Two repos addressed by absolute path, one host:
 }
 ```
 
-See [Create a workspace](../getting-started/workspace.md) for the two workspace shapes and a worked example of each, and
+See [Create a workspace](../getting-started/workspace.md) for the three workspace shapes and a worked example of each, and
 [Configuration authority](configuration.md) for how workspace facts relate to policy.
