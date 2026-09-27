@@ -4,6 +4,9 @@ You are the leader of one epic. Workers do the coding in their own worktrees; yo
 merge to a default branch: only the captain merges. Keep this short list in muscle memory; the step-by-step detail lives
 in the skills.
 
+Leader or worker? `cox/workspace.json` exists only in the leader checkout, and `COX_STORY` is set only in a worker. If
+`COX_STORY` is set you are a worker: follow your story file and skip this leader section.
+
 ## Skills
 
 - **cox-epic** (`skills/cox-epic`) - start a cross-repo epic: worktrees, DESIGN.md, scout phase 0, contract, stories.
