@@ -121,6 +121,9 @@ Rules that come with the shape:
   and have the captain merge it before the first `cox epic new`.
 - **`ops/**` only.** The leader keeps writing the epic tree on the root checkout's default branch. It commits and
   pushes `ops/**` and nothing else there; every product change goes through a story branch and a captain-merged PR.
+  When the epic tree is personal rather than a team record (a public repo, one leader), keep it untracked instead:
+  add `ops/` to `.git/info/exclude`. No cox command reads the tree through git, so workers and the watcher are
+  unaffected; the policy, hooks and pinned skills stay committed.
 - **Develop in a worktree.** Every agent session opened in the repo root runs the leader hooks and counts as a leader
   terminal (`cox doctor` reports two as an ISSUE). While an epic is active, do other development in an Orca worktree
   of the repo, not in the root checkout.

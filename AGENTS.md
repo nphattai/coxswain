@@ -5,7 +5,8 @@ merge to a default branch: only the captain merges. Keep this short list in musc
 in the skills.
 
 Leader or worker? `cox/workspace.json` exists only in the leader checkout, and `COX_STORY` is set only in a worker. If
-`COX_STORY` is set you are a worker: follow your story file and skip this leader section.
+`COX_STORY` is set you are a worker: follow your story file, read `CONTRIBUTING.md` for the code map and conventions,
+and skip this leader section.
 
 ## Skills
 
