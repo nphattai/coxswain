@@ -1,8 +1,11 @@
 # Workspace leader
 
 This is a Coxswain operations workspace. It holds the epic design, reports, and runtime state for the repos in
-`cox/workspace.json`; it does not contain product source. Resolve a source checkout from `cox/workspace.json`
-(`repos[]`) and read that checkout's own `AGENTS.md` before acting on its code.
+`cox/workspace.json`. Resolve a source checkout from `cox/workspace.json` (`repos[]`) and read that checkout's own
+`AGENTS.md` before acting on its code.
+
+Leader or worker? `cox/workspace.json` exists only in the leader checkout, and `COX_STORY` is set only in a worker. If
+`COX_STORY` is set you are a worker: follow your story file and skip this leader section.
 
 ## Every turn starts with a drain
 
