@@ -345,9 +345,13 @@ func InspectWorkspace(wsRoot string) WorkspaceReport {
 	}
 
 	// A repo checkout that still carries cox/policy.json: nothing reads it and it drifts from the workspace copy. A repo
-	// registered at the workspace root (in-repo workspace) carries the workspace's own policy, which is not a copy.
+	// registered at the workspace root (in-repo workspace) carries the workspace's own policy, which is not a copy; so
+	// does a checkout that is itself a workspace (it carries cox/workspace.json).
 	for _, r := range ws.Repos {
-		if r.Path != "" && !samePath(r.Path, wsRoot) && exists(filepath.Join(r.Path, "cox", "policy.json")) {
+		if r.Path == "" || samePath(r.Path, wsRoot) || exists(filepath.Join(r.Path, "cox", "workspace.json")) {
+			continue
+		}
+		if exists(filepath.Join(r.Path, "cox", "policy.json")) {
 			rep.PolicyInRepo = append(rep.PolicyInRepo, r.Alias)
 		}
 	}

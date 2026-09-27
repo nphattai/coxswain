@@ -409,10 +409,12 @@ func TestPidAlive(t *testing.T) {
 }
 
 // In an in-repo workspace the repo is registered at the workspace root, so its cox/policy.json is the workspace's own
-// policy, not a drifted copy: no PolicyInRepo for it. A distinct checkout carrying one is still flagged.
+// policy, not a drifted copy: no PolicyInRepo for it. A registered checkout that is itself a workspace (it carries
+// cox/workspace.json) owns its policy too. A distinct plain checkout carrying one is still flagged.
 func TestInspectWorkspaceInRepoPolicyNotFlagged(t *testing.T) {
 	root := t.TempDir()
 	other := t.TempDir()
+	nested := t.TempDir()
 	// Register the root through a symlinked spelling, as a /var vs /private/var temp dir would on macOS.
 	link := filepath.Join(t.TempDir(), "self-link")
 	if err := os.Symlink(root, link); err != nil {
@@ -421,8 +423,15 @@ func TestInspectWorkspaceInRepoPolicyNotFlagged(t *testing.T) {
 	if _, err := workspace.Init(root, &workspace.Workspace{Repos: []workspace.Repo{
 		{Alias: "self", Path: link, Production: "main"},
 		{Alias: "other", Path: other, Production: "main"},
+		{Alias: "nested", Path: nested, Production: "main"},
 	}}); err != nil {
 		t.Fatal(err)
+	}
+	if _, err := workspace.Init(nested, &workspace.Workspace{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(nested, "cox", "policy.json")); err != nil {
+		t.Fatalf("the nested workspace must carry its own policy: %v", err)
 	}
 	if err := os.MkdirAll(filepath.Join(other, "cox"), 0o755); err != nil {
 		t.Fatal(err)
