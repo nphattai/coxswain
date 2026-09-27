@@ -11,7 +11,7 @@ import (
 )
 
 // TestDocsLinks replaces the former strict docs-site build gate (DESIGN item 3 / AC 4). It walks README.md,
-// CONTRIBUTING.md, and docs/**/*.md and fails on a relative link to a missing file, or a `#anchor` that no heading in the target file
+// CONTRIBUTING.md, AGENTS.md, and docs/**/*.md and fails on a relative link to a missing file, or a `#anchor` that no heading in the target file
 // produces under GitHub's slug rules. External URLs (http, https, mailto, tel) are not fetched.
 //
 // This test FAILS on main @ 4dbd96f and passes on this PR: the former docs site rendered every page at a directory URL, so a
@@ -57,7 +57,7 @@ func TestDocsLinks(t *testing.T) {
 // so os.Stat and the link resolution below hit the real files.
 func docMarkdownFiles(t *testing.T) []string {
 	t.Helper()
-	files := []string{"../../README.md", "../../CONTRIBUTING.md"}
+	files := []string{"../../README.md", "../../CONTRIBUTING.md", "../../AGENTS.md"}
 	err := filepath.Walk("../../docs", func(p string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err

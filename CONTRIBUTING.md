@@ -1,8 +1,8 @@
 # Contributing
 
 Coxswain is one Go binary (`cox`) plus a harness plugin. The core talks to small interfaces, so a new backend or harness
-plugs in without touching the engine. This page is the contributor map for people and agents: where the code is, how a
-change flows, and where its docs go.
+plugs in without touching the engine. This page covers how to build, how a change flows, and where its docs go;
+[AGENTS.md](AGENTS.md) maps the code.
 
 ## Build and test
 
@@ -20,39 +20,16 @@ plugin validation, and a goreleaser snapshot. Every job must be green before a m
 
 ## Where to look
 
-Start with [docs/codemap.md](docs/codemap.md): every Go package with its one-line doc comment, generated from the code.
-For a package's detail, `go doc ./internal/<pkg>`; for callers, gopls or `grep -rn`.
+The code map for people and agents is [AGENTS.md](AGENTS.md): overview, structure, a where-to-look table, conventions,
+and gotchas, with a nested `AGENTS.md` in `cmd/cox/`, `internal/`, `internal/adapter/`, `internal/protocol/`, `tests/`,
+and `docs/`. Every package is listed in [docs/codemap.md](docs/codemap.md).
 
-| Task | Look in | Notes |
-|---|---|---|
-| Add or change a `cox` verb | `cmd/cox/<verb>.go` | flag parsing and wiring only; logic lives in `internal/` |
-| Story lifecycle, event log, fold | `internal/state` | append-only `coxswain.event.v1`; the fold is pure |
-| Watcher, wake queue | `internal/watch`, `internal/wake` | wake kinds are documented in `docs/protocol/wake.v1.md` |
-| Worker channels (steer, question, report, status, control, brief) | `internal/protocol/*` | one package per channel, each with a `docs/protocol/` page |
-| Epic new / stories / close | `internal/epic`, `templates/` | templates are embedded by `templates/embed.go` |
-| Workspace and policy files | `internal/workspace` | reference pages in `docs/reference/` |
-| `cox doctor` | `internal/doctor` | |
-| Backend (Orca, herdr) | `internal/adapter/backend/*` | core must not import a concrete backend (`tests/integration/import_boundary_test.go`) |
-| Harness (Claude, Codex, Pi) | `internal/adapter/harness/*` | capability cards in `docs/adapters/` |
-| Forge, review, service adapters | `internal/adapter/{forge,review,service}` | each has a fake for tests |
-| Arena | `internal/arena/*`, `agents/arena-*.md` | `docs/arena.md` |
-| Routing, quota, scorecard, lab | `internal/{routing,quota,scorecard,lab}` | |
-| Leader hooks | `hooks/leader.json`, `cmd/cox/hook.go` | |
-| Leader skills | `skills/cox-*` | source of truth; `.agents/skills/` holds the pinned copies `cox workspace init` writes |
-| v1 bash scripts | `bin/` | frozen (ADR 0006); fix only, never extend |
+## Guards that fail the build
 
-## Conventions that bite
-
-- **Every package has a doc comment** (`// Package x ...`). It is the package's entry in the code map; the
-  `TestCodemapFresh` integration test fails when a package lacks one or `docs/codemap.md` is stale.
-- **Every non-trivial change lands a runnable test.** Adapters are tested against their fake, never a live tool.
-- **Setup pages are executable.** Every `cox` command in a fence on README or `docs/getting-started/` must be run by
-  `tests/e2e/onboarding.sh`, and home paths use `$HOME`, not `~` (`tests/integration/docs_setup_test.go`).
-- **Doc links resolve on GitHub** (`tests/integration/docs_links_test.go`): relative links and `#anchors` are checked.
-- **Docs point to executable owners** instead of copying mutable command, schema, or configuration inventories. Dated
-  compatibility results belong under [Evidence](docs/evidence/index.md).
-- **Changing a leader skill** means editing `skills/cox-*` and copying it to `.agents/skills/` in the same commit.
-- No generated file is edited by hand (`docs/codemap.md`, anything marked generated).
+- `TestCodemapFresh`: a package without a doc comment, or a stale `docs/codemap.md`.
+- `TestDocsLinks`: a relative link or `#anchor` that does not resolve on GitHub.
+- `docs_setup_test.go`: a `cox` command on a setup page that the onboarding E2E does not run, or a `~` home path.
+- `import_boundary_test.go`: core importing a concrete backend.
 
 ## How a change flows
 

@@ -27,7 +27,7 @@ cox env smoke --epic <project>/epics/<slug>
 `smoke` is three-state: exit 1 on a fail, exit 3 on an unknown.
 
 ## 3. Phase 0 - scout (D25)
-One scout story per repo, in parallel, before the contract. Output shape: `templates/scout-report.md`; every path carries `file:line`. Each report refreshes `<project>/docs/architecture/<alias>.md`, stamped with the SHA it was verified against. When the workspace is the repo itself (Shape C), `<project>/` is private, so the scout refreshes the repo's public map instead: `make codemap` where it exists, and the "Where to look" and "Conventions that bite" sections of its `CONTRIBUTING.md`.
+One scout story per repo, in parallel, before the contract. Output shape: `templates/scout-report.md`; every path carries `file:line`. Each report refreshes `<project>/docs/architecture/<alias>.md`, stamped with the SHA it was verified against. When the workspace is the repo itself (Shape C), `<project>/` is private, so the scout refreshes the repo's public map instead: `make codemap` where it exists, and the WHERE TO LOOK, CONVENTIONS, and CRITICAL GOTCHAS sections of its root and nested `AGENTS.md`.
 
 ## 4. Design (captain-direct, never delegated)
 Write `DESIGN.md` from the reports with a concrete contract. Wave rule (D24): the contract lands in the backend story; every client story `depends` on it.
