@@ -23,3 +23,5 @@ cox/.cache/
 # working state + company data (kept private, not part of the shareable product)
 /epics/
 /plans/
+# local leader state: the epic tree of a Shape C workspace on this checkout (project "data")
+/data/

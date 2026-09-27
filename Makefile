@@ -4,7 +4,7 @@ PKG     := github.com/nphattai/coxswain
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -X $(PKG)/internal/version.Version=$(VERSION)
 
-.PHONY: build test install lint release-dry test-port vet-port
+.PHONY: build test install lint codemap release-dry test-port vet-port
 
 build:
 	go build -ldflags "$(LDFLAGS)" -o $(BIN) ./cmd/cox
@@ -25,6 +25,10 @@ vet-port:
 lint:
 	@test -z "$$(gofmt -l .)" || { echo "gofmt needed on:"; gofmt -l .; exit 1; }
 	go vet ./...
+
+# codemap regenerates docs/codemap.md from the Go package doc comments (TestCodemapFresh fails when it is stale).
+codemap:
+	COX_UPDATE_CODEMAP=1 go test ./tests/integration -run '^TestCodemapFresh$$' -count=1
 
 # release-dry builds the full release locally without publishing: four binaries plus archives with templates/skills.
 release-dry:

@@ -31,4 +31,6 @@ gh pr create --base <production> --head epic/<slug> --title "[PROD] <slug>"
 Edit the client PR numbers into the backend body; state the merge order.
 
 ## 5. Record
+If the repo keeps a design record (`docs/features/` or `docs/bugs/`, as coxswain does), add `docs/features/<created>-<slug>.md` (a fix: `docs/bugs/`) to the ship PR from `templates/feature-doc.md`: distilled by hand from DESIGN.md, `status: done`, an As built section with the PR numbers, and no worker names, ports, or wake ids.
+
 `DESIGN.md` Ship line, the dispatch log, memory. Report the URLs and the merge order. The captain merges.

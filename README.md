@@ -255,14 +255,14 @@ Understand and extend:
 - [Architecture](docs/ARCHITECTURE.md) - the system boundaries and why they hold.
 - [Adapter model](docs/adapters/index.md) - backends, harnesses, forges, and services.
 - [Protocol model](docs/protocol/index.md) - the on-disk event, fleet, inbox, checkpoint, wake, and quota formats.
-- [Contributing](docs/contributing.md) - the dev and test workflow.
+- [Contributing](CONTRIBUTING.md) - the dev and test workflow.
 - [Author an adapter](docs/contributing/adapters.md) - integrating a backend, harness, or service.
 - [Architecture decisions](docs/decisions/index.md) - the decision record.
 - [Verification evidence](docs/evidence/index.md) - the compatibility and migration evidence.
 
 ## Contributing
 
-Contributions are welcome - see [Contributing](docs/contributing.md) for the workflow, repo conventions, and how to run the tests.
+Contributions are welcome - see [Contributing](CONTRIBUTING.md) for the workflow, repo conventions, and how to run the tests.
 `make test` runs every suite, including the translated firstmate supervision corpus (it no longer sits behind a `port`
 build tag); `make test-port` is kept as an alias of `make test`.
 
