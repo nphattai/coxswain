@@ -11,7 +11,7 @@ Start here by task. Each page owns one topic; follow its links for depth. Contri
 | Understand the model (leader, worker, story, wake) | [Core concepts](getting-started/concepts.md), [Architecture](ARCHITECTURE.md) |
 | Fix a problem | [FAQ & troubleshooting](faq.md), [Operations](operations/index.md) |
 | Look up a command or a config key | [CLI map](reference/cli.md), [Configuration authority](reference/configuration.md), [`policy.json`](reference/policy-json.md), [`workspace.json`](reference/workspace-json.md), [Story frontmatter](reference/story-frontmatter.md) |
-| Find the code for something | [Code map](codemap.md) (generated), then the "Where to look" table in [CONTRIBUTING.md](../CONTRIBUTING.md#where-to-look) |
+| Find the code for something | [Code map](codemap.md) (generated), then the "Where to look" table in [AGENTS.md](../AGENTS.md#where-to-look) and the folder's own `AGENTS.md` |
 | Know why it was built this way | [Architecture decisions](decisions/index.md), [Evidence](evidence/index.md) |
 
 ## Features
