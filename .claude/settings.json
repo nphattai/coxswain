@@ -1,0 +1,50 @@
+{
+  "hooks": {
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "command": "cox hook precompact",
+            "timeout": 60,
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "command": "cox hook session-start",
+            "timeout": 30,
+            "type": "command"
+          }
+        ],
+        "matcher": "compact|resume"
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "asyncRewake": true,
+            "command": "cox hook stop-rewake",
+            "timeout": 3600,
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "command": "cox hook prompt-drain",
+            "timeout": 20,
+            "type": "command"
+          }
+        ]
+      }
+    ]
+  }
+}
