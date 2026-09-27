@@ -380,3 +380,33 @@ func TestPidAlive(t *testing.T) {
 		t.Error("pid 0 must not be alive")
 	}
 }
+
+// In an in-repo workspace the repo is registered at the workspace root, so its cox/policy.json is the workspace's own
+// policy, not a drifted copy: no PolicyInRepo for it. A distinct checkout carrying one is still flagged.
+func TestInspectWorkspaceInRepoPolicyNotFlagged(t *testing.T) {
+	root := t.TempDir()
+	other := t.TempDir()
+	// Register the root through a symlinked spelling, as a /var vs /private/var temp dir would on macOS.
+	link := filepath.Join(t.TempDir(), "self-link")
+	if err := os.Symlink(root, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := workspace.Init(root, &workspace.Workspace{Repos: []workspace.Repo{
+		{Alias: "self", Path: link, Production: "main"},
+		{Alias: "other", Path: other, Production: "main"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(other, "cox"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(other, "cox", "policy.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "cox", "policy.json")); err != nil {
+		t.Fatalf("init must write the workspace policy: %v", err)
+	}
+	if got := InspectWorkspace(root).PolicyInRepo; len(got) != 1 || got[0] != "other" {
+		t.Errorf("PolicyInRepo = %v, want [other]", got)
+	}
+}
