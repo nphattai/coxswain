@@ -80,7 +80,8 @@ type WorkspaceReport struct {
 }
 
 // Roots merges the default roots ($HOME/Work and $ORCA_WORKSPACES), $COX_ROOTS (path-list separated), and any explicit
-// --root values, de-duplicated in first-seen order.
+// --root values, made absolute (a root that cannot be is kept as typed) and de-duplicated in first-seen order, so `.`
+// and its absolute spelling name one root.
 func Roots(extra []string) []string {
 	var all []string
 	all = append(all, DefaultRoots()...)
@@ -91,7 +92,13 @@ func Roots(extra []string) []string {
 	seen := map[string]bool{}
 	var out []string
 	for _, r := range all {
-		if r == "" || seen[r] {
+		if r == "" {
+			continue
+		}
+		if abs, err := filepath.Abs(r); err == nil {
+			r = abs
+		}
+		if seen[r] {
 			continue
 		}
 		seen[r] = true

@@ -225,6 +225,33 @@ func TestRoots(t *testing.T) {
 	}
 }
 
+// Roots makes relative entries absolute against the working directory ($COX_ROOTS and --root alike), so `.` and its
+// absolute twin collapse to one root and a Shape C checkout is listed once.
+func TestRootsNormalisesRelative(t *testing.T) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("COX_ROOTS", "sub"+string(os.PathListSeparator)+cwd)
+	got := Roots([]string{".", cwd, "./", "sub/../sub"})
+	count := map[string]int{}
+	for _, r := range got {
+		if !filepath.IsAbs(r) {
+			t.Errorf("Roots kept a relative entry %q: %v", r, got)
+		}
+		count[r]++
+	}
+	if count[cwd] != 1 {
+		t.Errorf("cwd %q appears %d times, want 1: %v", cwd, count[cwd], got)
+	}
+	if sub := filepath.Join(cwd, "sub"); count[sub] != 1 {
+		t.Errorf("COX_ROOTS entry %q appears %d times, want 1: %v", sub, count[sub], got)
+	}
+	if one := Roots([]string{"."}); one[len(one)-1] != cwd {
+		t.Errorf("Roots([.]) last = %q, want %q", one[len(one)-1], cwd)
+	}
+}
+
 // FindWorkspaces recognises a v2 workspace by cox/workspace.json at a root and one level below, plus explicit dirs.
 func TestFindWorkspaces(t *testing.T) {
 	root := t.TempDir()
