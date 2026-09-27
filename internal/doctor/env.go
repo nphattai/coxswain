@@ -80,7 +80,8 @@ type WorkspaceReport struct {
 }
 
 // Roots merges the default roots ($HOME/Work and $ORCA_WORKSPACES), $COX_ROOTS (path-list separated), and any explicit
-// --root values, de-duplicated in first-seen order.
+// --root values, made absolute (a root that cannot be is kept as typed) and de-duplicated in first-seen order, so `.`
+// and its absolute spelling name one root.
 func Roots(extra []string) []string {
 	var all []string
 	all = append(all, DefaultRoots()...)
@@ -91,7 +92,13 @@ func Roots(extra []string) []string {
 	seen := map[string]bool{}
 	var out []string
 	for _, r := range all {
-		if r == "" || seen[r] {
+		if r == "" {
+			continue
+		}
+		if abs, err := filepath.Abs(r); err == nil {
+			r = abs
+		}
+		if seen[r] {
 			continue
 		}
 		seen[r] = true
@@ -338,9 +345,13 @@ func InspectWorkspace(wsRoot string) WorkspaceReport {
 	}
 
 	// A repo checkout that still carries cox/policy.json: nothing reads it and it drifts from the workspace copy. A repo
-	// registered at the workspace root (in-repo workspace) carries the workspace's own policy, which is not a copy.
+	// registered at the workspace root (in-repo workspace) carries the workspace's own policy, which is not a copy; so
+	// does a checkout that is itself a workspace (it carries cox/workspace.json).
 	for _, r := range ws.Repos {
-		if r.Path != "" && !samePath(r.Path, wsRoot) && exists(filepath.Join(r.Path, "cox", "policy.json")) {
+		if r.Path == "" || samePath(r.Path, wsRoot) || exists(filepath.Join(r.Path, "cox", "workspace.json")) {
+			continue
+		}
+		if exists(filepath.Join(r.Path, "cox", "policy.json")) {
 			rep.PolicyInRepo = append(rep.PolicyInRepo, r.Alias)
 		}
 	}
